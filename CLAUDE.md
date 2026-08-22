@@ -13,9 +13,10 @@ Check `specs/` for the active phase file. Work one phase at a time. Do not
 start Phase N+1 until Phase N's acceptance criteria in its spec file are met
 and committed.
 
-- `specs/phase-1-accounts.md` — users, roles, parent-child linking (START HERE)
-- Later phases (curriculum, scheduling, routing, assessment, payouts) get
-  their own spec file when we get there — don't write them in advance.
+- `specs/phase-1-accounts.md` — users, roles, parent-child linking (DONE)
+- `specs/phase-2-curriculum.md` — tracks, levels, placement review (CURRENT)
+- Later phases (scheduling, routing, assessment, payouts) get their own
+  spec file when we get there — don't write them in advance.
 
 ## Stack & conventions
 
