@@ -7,7 +7,7 @@ sub-teachers need routing + quality control without manual triage.
 Full product context: see `docs/mvp-spec.md` (all phases, data model reasoning).
 This file is a router only — don't duplicate spec content here, point to it.
 
-## Current phase
+## Current phase 
 
 Check `specs/` for the active phase file. Work one phase at a time. Do not
 start Phase N+1 until Phase N's acceptance criteria in its spec file are met
