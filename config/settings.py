@@ -1,8 +1,9 @@
 """
 Django settings for the Quran Academy platform.
 
-Phase 1 (accounts) only. Secrets and environment-specific values read from the
-environment with development-safe fallbacks so a fresh clone runs immediately.
+Phases 1-2 (accounts, curriculum). Secrets and environment-specific values read
+from the environment with development-safe fallbacks so a fresh clone runs
+immediately.
 """
 
 import os
@@ -41,6 +42,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     # Local
     "accounts",
+    "curriculum",
 ]
 
 MIDDLEWARE = [
@@ -107,10 +109,14 @@ USE_I18N = True
 USE_TZ = True
 
 
-# --- Static files -----------------------------------------------------------
+# --- Static and media files -------------------------------------------------
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Placement audio samples land here. Local disk for now — see tech-debt.md.
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -139,7 +145,10 @@ REST_AUTH = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "Quran Academy API",
-    "DESCRIPTION": "Identity layer: users, roles, parent links, teacher profiles.",
-    "VERSION": "0.1.0",
+    "DESCRIPTION": (
+        "Identity layer: users, roles, parent links, teacher profiles. "
+        "Curriculum: tracks, levels, placement review."
+    ),
+    "VERSION": "0.2.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }

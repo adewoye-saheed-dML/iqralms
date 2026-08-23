@@ -74,6 +74,52 @@ Format:
 - **Real fix:** Configure an email backend, then include the reset/change URLs.
 - **Revisit when:** First user forgets their password.
 
+## 2026-08-23 — Placement audio is stored on local disk
+- **What was skipped:** Any real file storage. `MEDIA_ROOT` is a directory in
+  the project tree, and in `DEBUG` Django itself serves it (`config/urls.py`).
+- **Why:** Phase 2 only needs the file to exist so the lead can play it back;
+  object storage is configuration, not design, and would slow the phase down.
+- **Real fix:** S3 (or equivalent) via `django-storages`, with private objects
+  and signed URLs — a recitation sample is a minor's voice, so it must not be
+  publicly readable, which is exactly what serving it off `MEDIA_URL` does.
+- **Revisit when:** Before the first real student uploads a sample. This is the
+  blocker of the three audio entries here — the other two are cleanup.
+
+## 2026-08-23 — Uploaded placement audio is not validated
+- **What was skipped:** Any check on the uploaded file's type, size or
+  duration. `PlacementResult.audio_sample` is a bare `FileField` and
+  `PlacementSubmitSerializer.audio_sample` a bare `FileField`, so a student can
+  POST a 2 GB `.exe` and it is accepted as a "recitation sample".
+- **Why:** The spec says only "file field, nullable", and the audio/skip
+  invariant (the rule the phase actually turns on) cares whether a file is
+  present, not what is in it.
+- **Real fix:** Validate content type and extension against an audio allowlist,
+  cap the size (`DATA_UPLOAD_MAX_MEMORY_SIZE` plus a serializer check), and
+  reject on mismatch. Sniff the magic bytes rather than trusting the
+  client-supplied `Content-Type`.
+- **Revisit when:** The upload endpoint is reachable by anyone who isn't us —
+  it is unauthenticated-adjacent (any student account can hit it), so this is
+  the cheapest real abuse vector in the codebase so far.
+
+## 2026-08-23 — Replaced placement audio is orphaned on disk
+- **What was skipped:** Deleting the previous file when a student re-submits a
+  placement, or when a `PlacementResult` row is deleted.
+- **Why:** `PlacementResult.submit()` reassigns `audio_sample` to implement the
+  spec's "update the existing row" rule; Django has not auto-deleted the
+  displaced file since 1.3. Verified: after a re-submit both files remain in
+  `MEDIA_ROOT`, and a beginner skip clears the field while leaving the file.
+  Deleting user-uploaded data is exactly the kind of call CLAUDE.md says to ask
+  about rather than decide silently, so nothing deletes anything for now.
+- **Real fix:** Decide the retention rule first (keep every sample as an audit
+  trail of how a student was levelled, or keep only the current one), then
+  implement it — `post_delete`/`pre_save` signals if only the current sample
+  matters, or an explicit `PlacementSample` history table if the old ones are
+  worth keeping. Student deletion cascades the row, so that path needs the same
+  answer.
+- **Revisit when:** Whichever comes first — the storage bill, or the first
+  data-deletion request. Moving to object storage does not fix this, it just
+  moves where the orphans pile up.
+
 ## 2026-08-22 — `SECRET_KEY` and `DEBUG` have development defaults
 - **What was skipped:** Forcing these to be set from the environment.
 - **Why:** Keeps a fresh clone runnable with no setup.

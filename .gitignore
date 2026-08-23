@@ -10,6 +10,8 @@ venv/
 db.sqlite3
 db.sqlite3-journal
 /staticfiles/
+# User uploads (placement audio samples) — local-disk MEDIA_ROOT, see tech-debt.md
+/media/
 *.log
 
 # Environment

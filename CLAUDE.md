@@ -14,7 +14,7 @@ start Phase N+1 until Phase N's acceptance criteria in its spec file are met
 and committed.
 
 - `specs/phase-1-accounts.md` — users, roles, parent-child linking (DONE)
-- `specs/phase-2-curriculum.md` — tracks, levels, placement review (CURRENT)
+- `specs/phase-2-curriculum.md` — tracks, levels, placement review (DONE)
 - Later phases (scheduling, routing, assessment, payouts) get their own
   spec file when we get there — don't write them in advance.
 
