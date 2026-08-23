@@ -123,3 +123,4 @@ capacity this phase; that's Phase 4's job), rubric assessment, payouts,
 pricing exceptions, preferred-teacher waitlists. Do not add a
 `routed_reason` field or any routing-related column to `Booking` in this
 phase — Phase 4 adds what it needs when it needs it.
+ 

@@ -44,7 +44,8 @@
       "Bash(DJANGO_DB_NAME=/tmp/fresh_phase3.sqlite3 .venv/bin/python manage.py migrate)",
       "Bash(.venv/bin/python -c ' *)",
       "Bash(.venv/bin/python manage.py spectacular --file /tmp/schema.yml)",
-      "Bash(.venv/bin/python manage.py spectacular --file /tmp/schema2.yml)"
+      "Bash(.venv/bin/python manage.py spectacular --file /tmp/schema2.yml)",
+      "Bash(git config *)"
     ]
   }
 }
