@@ -134,7 +134,7 @@ class Availability(models.Model):
 
     @classmethod
     def create_from_local(
-        cls, *, teacher, weekday, start_local, end_local, tz_name=None
+        cls, *, teacher, weekday, start_local, end_local, tz_name=None, on_or_after=None
     ):
         """Create the row(s) for a window a teacher stated in their own zone.
 
@@ -151,7 +151,7 @@ class Availability(models.Model):
                 end_time_utc=end_utc,
             )
             for utc_weekday, start_utc, end_utc in local_window_to_utc(
-                weekday, start_local, end_local, tz_name
+                weekday, start_local, end_local, tz_name, on_or_after
             )
         ]
 
