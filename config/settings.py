@@ -1,9 +1,9 @@
 """
 Django settings for the Quran Academy platform.
 
-Phases 1-2 (accounts, curriculum). Secrets and environment-specific values read
-from the environment with development-safe fallbacks so a fresh clone runs
-immediately.
+Phases 1-3 (accounts, curriculum, scheduling). Secrets and environment-specific
+values read from the environment with development-safe fallbacks so a fresh
+clone runs immediately.
 """
 
 import os
@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     # Local
     "accounts",
     "curriculum",
+    "scheduling",
 ]
 
 MIDDLEWARE = [

@@ -7,7 +7,7 @@ sub-teachers need routing + quality control without manual triage.
 Full product context: see `docs/mvp-spec.md` (all phases, data model reasoning).
 This file is a router only — don't duplicate spec content here, point to it.
 
-## Current phase 
+## Current phase
 
 Check `specs/` for the active phase file. Work one phase at a time. Do not
 start Phase N+1 until Phase N's acceptance criteria in its spec file are met
@@ -15,8 +15,19 @@ and committed.
 
 - `specs/phase-1-accounts.md` — users, roles, parent-child linking (DONE)
 - `specs/phase-2-curriculum.md` — tracks, levels, placement review (DONE)
-- Later phases (scheduling, routing, assessment, payouts) get their own
-  spec file when we get there — don't write them in advance.
+- `specs/phase-3-scheduling.md` — availability, direct booking, video (CURRENT)
+- Later phases (routing, assessment, payouts) get their own spec file when
+  we get there — don't write them in advance.
+
+## Known pre-launch blockers (see tech-debt.md for full detail)
+
+- Placement audio is stored on local disk and publicly readable by URL in
+  DEBUG mode. Must move to private object storage with signed URLs before
+  any real student uploads anything.
+- No upload validation (type, size, magic bytes) on placement audio.
+
+Neither blocks Phase 3+ development, but neither should still be true when
+real students start using this.
 
 ## Stack & conventions
 

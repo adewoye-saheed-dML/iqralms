@@ -1,8 +1,13 @@
 """Identity layer for the academy: users, parent links, teacher profiles.
 
-Field sets here mirror specs/phase-1-accounts.md exactly. The one addition is
-User.signup_code, which was agreed explicitly as the parent-link mechanism
-(see learnings.md). Nothing about curriculum, booking or payment lives here.
+Field sets here mirror specs/phase-1-accounts.md, plus two additions that were
+each agreed explicitly rather than added silently:
+
+* ``User.signup_code``, the parent-link mechanism (see learnings.md).
+* ``TeacherProfile.specialties``, added by Phase 3 so booking can eventually
+  know which tracks a teacher may teach. Nothing enforces it yet.
+
+Nothing about curriculum, booking or payment behaviour lives here.
 """
 
 from django.contrib.auth.models import AbstractUser
@@ -177,6 +182,19 @@ class TeacherProfile(models.Model):
     approved = models.BooleanField(
         default=False,
         help_text="A sub-teacher is not bookable until a lead flips this true.",
+    )
+    specialties = models.ManyToManyField(
+        # String reference, not an import: curriculum imports this module, so a
+        # real import would be circular. Added in Phase 3 with explicit
+        # approval — it is a change to an already-shipped model.
+        "curriculum.Track",
+        blank=True,
+        related_name="specialist_teachers",
+        help_text=(
+            "Tracks this teacher is eligible to teach. Recorded now, not "
+            "enforced: Phase 4's routing is what matches a level's track "
+            "against this (see tech-debt.md)."
+        ),
     )
 
     def clean(self):
