@@ -36,7 +36,15 @@
       "Bash(grep -E \"^test|ok$|FAIL|ERROR|Ran|OK\")",
       "Bash(.venv/bin/python manage.py test curriculum.tests.test_audio_cleanup -v 2)",
       "Bash(.venv/bin/python -c \"import django, rest_framework; print\\(django.get_version\\(\\), rest_framework.VERSION\\)\")",
-      "Bash(.venv/bin/python manage.py makemigrations accounts scheduling)"
+      "Bash(.venv/bin/python manage.py makemigrations accounts scheduling)",
+      "Bash(python manage.py test scheduling.tests.test_models)",
+      "Bash(.venv/bin/python manage.py test scheduling.tests.test_models)",
+      "Bash(.venv/bin/python manage.py test scheduling)",
+      "Bash(rm -f /tmp/fresh_phase3.sqlite3)",
+      "Bash(DJANGO_DB_NAME=/tmp/fresh_phase3.sqlite3 .venv/bin/python manage.py migrate)",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(.venv/bin/python manage.py spectacular --file /tmp/schema.yml)",
+      "Bash(.venv/bin/python manage.py spectacular --file /tmp/schema2.yml)"
     ]
   }
 }

@@ -118,7 +118,69 @@ Format:
   quality review (Phase 4's purpose) needs to see the sample a level was set
   from. Not before — the current rule is deliberate, not an oversight.
 
-## 2026-08-22 — `SECRET_KEY` and `DEBUG` have development defaults
+## 2026-08-23 — Teacher specialties are recorded but never enforced
+- **What was skipped:** Any check that a booking's `level.track` is one of the
+  teacher's `TeacherProfile.specialties`. The field exists (added in Phase 3
+  with explicit approval, since it changes an already-shipped Phase 1 model) and
+  the admin can populate it, but nothing reads it.
+- **Why:** The spec says so in as many words: this phase trusts whoever is
+  booking to pick a sensible teacher, and Phase 4's matching logic is where
+  eligibility actually gets enforced. Building the check now would mean
+  building it twice, and the second version has to consider capacity and
+  routing reasons the first one can't see.
+- **Real fix:** Phase 4 routing reads `specialties` when selecting a teacher. If
+  direct booking survives alongside routing, `Booking.clean()` also needs a
+  rule rejecting a level whose track the teacher does not teach.
+- **Revisit when:** Phase 4. Until then a parent can book a hifz teacher for an
+  Arabic level and nothing objects.
+
+## 2026-08-23 — No teacher-facing API for editing availability
+- **What was skipped:** Any write endpoint for `Availability`. The API is
+  read-only (`GET /api/scheduling/availability/?teacher_id=`); hours are
+  maintained in the Django admin.
+- **Why:** The spec's API surface lists exactly one availability endpoint and it
+  is the public read. It is also not just CRUD boilerplate: one local window can
+  convert into *two* UTC rows, so a naive ModelForm/serializer would silently
+  drop half of any window that crosses midnight UTC.
+  `Availability.create_from_local()` exists and returns a list for that reason.
+- **Real fix:** A teacher-scoped viewset that takes local weekday/start/end plus
+  the teacher's zone, calls `create_from_local`, and treats the returned rows as
+  one logical window — which means a grouping key on the model so the two halves
+  can be edited and deleted together.
+- **Revisit when:** A sub-teacher who isn't us needs to set their own hours.
+  Until then availability entry is a staff action.
+
+## 2026-08-23 — Nothing stops a booking in the past
+- **What was skipped:** Any "start_time_utc must be in the future" rule.
+- **Why:** The spec doesn't ask for one, and the rules it does ask for
+  (declared hours, no overlap) are indifferent to when "now" is. Availability is
+  a weekly rule, so last Monday 09:00 is as inside the window as next Monday's.
+- **Real fix:** A `clean()` rule rejecting a new booking whose start is in the
+  past, with a small grace period so a booking made at 09:00:01 for 09:00 isn't
+  refused. It has to be creation-only, like the availability check, or existing
+  bookings become unsaveable the moment they end.
+- **Revisit when:** Before real students book. Two consequences make this more
+  than cosmetic: the overlap rule only considers *scheduled* bookings, so a
+  completed session's slot is re-bookable (proven by test), and backdated
+  bookings would corrupt any attendance or payout figure computed from history.
+
+## 2026-08-23 — Overlap detection compares ranges in Python
+- **What was skipped:** Doing the overlap check in SQL, or as a database
+  constraint.
+- **Why:** `duration_minutes` is an integer, not an interval, so
+  `start + duration` is backend-specific — and the project is still on SQLite
+  (see the entry above), which has neither range types nor exclusion
+  constraints. `Booking.clashing_bookings()` therefore filters to a bounded
+  candidate set in SQL and compares ends in Python.
+- **Real fix:** On Postgres, a `tstzrange` generated column plus an
+  `ExclusionConstraint` on `(teacher, range)` where `status='scheduled'` — which
+  makes the rule race-proof, not merely correct. Today two simultaneous
+  requests for the same slot can both pass `clean()` and both commit.
+- **Revisit when:** The Postgres move, or sooner if two people ever book the
+  same teacher at the same second. The candidate query is bounded by
+  `LONGEST_POSSIBLE_BOOKING`, so this is a correctness-under-concurrency issue,
+  not a performance one.
+
 - **What was skipped:** Forcing these to be set from the environment.
 - **Why:** Keeps a fresh clone runnable with no setup.
 - **Real fix:** Raise on a missing `DJANGO_SECRET_KEY` when `DEBUG` is False,

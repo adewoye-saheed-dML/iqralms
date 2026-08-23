@@ -155,6 +155,7 @@ Format:
   is in `tech-debt.md`; moving to object storage does not change any of this.
 
 
+## 2026-08-23 — `Track.slug` uniqueness raises `IntegrityError`, not `ValidationError`
 - **What happened:** A test asserting `ValidationError` on a duplicate
   `Track.slug` failed with `IntegrityError`.
 - **What we decided:** Nothing to fix — it's correct. `Level` and
@@ -168,3 +169,73 @@ Format:
   `assertRaises` — and wrap `IntegrityError` expectations in
   `transaction.atomic()` inside a `TestCase`, or the broken transaction fails
   the rest of the test.
+
+## 2026-08-23 — A weekday+time availability rule cannot be DST-correct
+- **What happened:** `Availability` stores a weekday plus two UTC *times*, per
+  the spec. A bare time carries no date, so converting a teacher's local window
+  to UTC needs a reference date — and the answer differs by an hour either side
+  of a DST boundary. The same "Mondays 18:00 New York" is 22:00 UTC in July and
+  23:00 UTC in January. One stored row cannot be both.
+- **What we decided:** Convert against the *next* occurrence of the weekday
+  (`utils.next_date_for_weekday`), which makes every window correct as of now,
+  and take the drift on the chin. `local_window_to_utc` accepts an `on_or_after`
+  argument so tests can pin the reference date instead of being seasonal. Not
+  papered over: it is the best a weekday+time model can do.
+- **Why it matters for later phases:** Twice a year, a DST-observing teacher's
+  stored hours are an hour wrong until someone re-enters them. The real fix is
+  storing the window in the teacher's zone plus their zone name and converting at
+  query time — a schema change to `Availability`, so it needs a decision, not a
+  patch. Timezones without DST (Africa/Lagos, Asia/Karachi — much of the
+  expected roster) are unaffected, which is why this is not a launch blocker.
+
+## 2026-08-23 — Converting one local window can produce two UTC rows
+- **What happened:** A Lagos teacher's "Monday 00:30–02:30" is Sunday
+  23:30–midnight *plus* Monday 00:00–01:30 in UTC. One local window, two UTC
+  days, and a different weekday than the teacher named.
+- **What we decided:** `local_window_to_utc` returns a *list* of segments and
+  `Availability.create_from_local` creates one row per segment. A window may
+  never wrap past midnight UTC — `clean()` requires `end > start` — so the split
+  is the only representation. Related: an end at exactly 00:00 UTC is stored as
+  `time.max` (`utils.END_OF_DAY`), because 00:00 would violate `end > start`.
+  That sentinel does *not* round-trip: 20:00 local reads back as
+  19:59:59.999999. Harmless, and there is a test saying so — the same sentinel
+  is applied to a booking's segments, so a session ending at UTC midnight still
+  matches its window.
+- **Why it matters for later phases:** Anything that edits or deletes "a window"
+  must handle the two-row case, which is exactly why there is no teacher-facing
+  hours editor yet (`tech-debt.md`). A UI showing stored rows to a teacher will
+  also show them a Sunday window they think they set on Monday — show
+  `local_window()`, never the raw UTC fields.
+
+## 2026-08-23 — Booking validation is split on purpose: creation-only vs always
+- **What happened:** Running every rule on every `save()` made an existing
+  booking unsaveable as soon as a teacher narrowed their hours — and therefore
+  *uncancellable*, since `cancel()` goes through `save()`. A student could be
+  stuck with a session neither side could get rid of.
+- **What we decided:** The availability check runs only when
+  `self._state.adding`; the overlap check runs for as long as the booking is
+  `scheduled` (so a cancelled booking stops blocking its slot, which is what
+  makes cancel-and-rebook the supported reschedule path). Both have tests
+  pinning the distinction.
+- **Why it matters for later phases:** The teacher-approval gate is deliberately
+  *not* creation-only, so it has the frozen-booking problem the availability
+  check was fixed for: revoking a teacher's approval makes their live bookings
+  unsaveable, cancellation included. There is a test documenting this. The
+  operational order is cancel first, then unapprove — and if Phase 4 ever
+  revokes approval automatically (quality control is its purpose), it must cancel
+  that teacher's scheduled bookings in the same transaction or it will wedge
+  them.
+
+## 2026-08-23 — A student can double-book themselves across two teachers
+- **What happened:** The overlap rule is per teacher. Nothing stops one student
+  from holding two bookings at the same instant with two different teachers.
+- **What we decided:** Left as-is — the spec explicitly says this isn't Phase 3's
+  problem to solve, and asks for it to be flagged here rather than silently
+  constrained. There is a test asserting the permissive behaviour, so a later
+  phase that decides otherwise has to change a test on purpose instead of
+  discovering the rule by accident.
+- **Why it matters for later phases:** The check is a mirror of
+  `clashing_bookings()` with `student` swapped for `teacher`. Worth adding when
+  bookings are paid for (a student paying for two overlapping sessions is a
+  refund conversation), and it belongs in `clean()` next to the teacher rule, not
+  in a serializer.
