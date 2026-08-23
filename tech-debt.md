@@ -82,8 +82,9 @@ Format:
 - **Real fix:** S3 (or equivalent) via `django-storages`, with private objects
   and signed URLs — a recitation sample is a minor's voice, so it must not be
   publicly readable, which is exactly what serving it off `MEDIA_URL` does.
-- **Revisit when:** Before the first real student uploads a sample. This is the
-  blocker of the three audio entries here — the other two are cleanup.
+- **Revisit when:** Before the first real student uploads a sample. Of the three
+  audio entries here this is the only blocker; the other two are a hardening
+  step and an accepted tradeoff.
 
 ## 2026-08-23 — Uploaded placement audio is not validated
 - **What was skipped:** Any check on the uploaded file's type, size or
@@ -101,24 +102,21 @@ Format:
   it is unauthenticated-adjacent (any student account can hit it), so this is
   the cheapest real abuse vector in the codebase so far.
 
-## 2026-08-23 — Replaced placement audio is orphaned on disk
-- **What was skipped:** Deleting the previous file when a student re-submits a
-  placement, or when a `PlacementResult` row is deleted.
-- **Why:** `PlacementResult.submit()` reassigns `audio_sample` to implement the
-  spec's "update the existing row" rule; Django has not auto-deleted the
-  displaced file since 1.3. Verified: after a re-submit both files remain in
-  `MEDIA_ROOT`, and a beginner skip clears the field while leaving the file.
-  Deleting user-uploaded data is exactly the kind of call CLAUDE.md says to ask
-  about rather than decide silently, so nothing deletes anything for now.
-- **Real fix:** Decide the retention rule first (keep every sample as an audit
-  trail of how a student was levelled, or keep only the current one), then
-  implement it — `post_delete`/`pre_save` signals if only the current sample
-  matters, or an explicit `PlacementSample` history table if the old ones are
-  worth keeping. Student deletion cascades the row, so that path needs the same
-  answer.
-- **Revisit when:** Whichever comes first — the storage bill, or the first
-  data-deletion request. Moving to object storage does not fix this, it just
-  moves where the orphans pile up.
+## 2026-08-23 — A placement keeps no record of superseded samples
+- **What was skipped:** Any history of recitation samples. A placement holds
+  exactly one; replacing or deleting it removes the file (`curriculum/signals.py`).
+- **Why:** The retention question was put to the product owner rather than
+  guessed, and the call was keep-current-only — cheapest storage, and a deletion
+  request is satisfied by deleting the row. Accepted tradeoff: nothing records
+  what a *past* review actually listened to, so a levelling decision cannot be
+  re-heard after the student re-submits.
+- **Real fix:** A `PlacementSample` table — one row per submission, with
+  `PlacementResult` pointing at the current one — if the audit trail is wanted.
+  That reopens the retention question rather than closing it, so it needs the
+  same explicit decision, not a silent addition.
+- **Revisit when:** A levelling decision is actually disputed, or sub-teacher
+  quality review (Phase 4's purpose) needs to see the sample a level was set
+  from. Not before — the current rule is deliberate, not an oversight.
 
 ## 2026-08-22 — `SECRET_KEY` and `DEBUG` have development defaults
 - **What was skipped:** Forcing these to be set from the environment.

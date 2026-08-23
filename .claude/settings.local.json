@@ -31,7 +31,10 @@
       "Bash(.venv/bin/python manage.py spectacular --validate --fail-on-warn)",
       "Bash(.venv/bin/python manage.py spectacular --validate --fail-on-warn --file /home/woyes/.claude/jobs/d93d2419/tmp/schema.yml)",
       "Bash(cat *)",
-      "Bash(.venv/bin/python manage.py makemigrations --check --dry-run)"
+      "Bash(.venv/bin/python manage.py makemigrations --check --dry-run)",
+      "Bash(git commit *)",
+      "Bash(grep -E \"^test|ok$|FAIL|ERROR|Ran|OK\")",
+      "Bash(.venv/bin/python manage.py test curriculum.tests.test_audio_cleanup -v 2)"
     ]
   }
 }

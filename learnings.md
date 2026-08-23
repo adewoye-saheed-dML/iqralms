@@ -126,23 +126,33 @@ Format:
   placements already pointing at the levels being shifted). Don't add it
   casually; `recommended_level` is `PROTECT`ed for the same reason.
 
-## 2026-08-23 — Re-submitting a placement orphans the old audio file
+## 2026-08-23 — Re-submitting a placement orphaned the old audio file
 - **What happened:** The spec's "a second placement request updates the existing
   row" rule is implemented by reassigning `audio_sample` in
   `PlacementResult.submit()`. Django has not deleted the displaced file since
-  1.3, so the old sample stays in `MEDIA_ROOT` — verified by test: after a
-  re-submit both files are on disk, and a beginner skip clears the field while
+  1.3, so the old sample stayed in `MEDIA_ROOT` — proven by test: after a
+  re-submit both files were on disk, and a beginner skip cleared the field while
   leaving the file behind.
-- **What we decided:** Nothing deletes anything yet. Retention of a student's
-  recitation samples is a data-deletion question, which CLAUDE.md says to ask
-  about rather than settle silently, so it is logged in `tech-debt.md` (three
-  linked entries: local disk, no upload validation, orphaned files) and raised
-  with the product owner instead of being fixed in passing.
-- **Why it matters for later phases:** "Update the row, don't duplicate it" is a
-  pattern that will recur (re-uploads, re-assessments). Any model that swaps a
-  `FileField` value needs an explicit answer to *what happens to the old file* —
-  the ORM will not volunteer one. Also don't assume moving to object storage
-  fixes it; it relocates the orphans.
+- **What we decided:** Asked rather than guessed, because retention of a
+  student's recording is a data-deletion call. Product owner chose **keep only
+  the current sample**: `curriculum/signals.py` deletes the displaced file on
+  replace and the current file on delete. Two implementation points that are
+  easy to get wrong:
+  - Deletion is deferred to `transaction.on_commit`. File storage is not
+    transactional, so deleting inline would destroy the file even if the write
+    that displaced it rolled back, leaving a row pointing at nothing. `TestCase`
+    never commits, so those tests need
+    `self.captureOnCommitCallbacks(execute=True)` or they silently assert
+    nothing.
+  - Registering the receivers is what takes `PlacementResult` off Django's
+    fast-delete path, and that is the only reason cleanup fires for *cascades* —
+    deleting a `User` cascades to their placements. Remove the receivers and
+    cascade cleanup silently stops.
+- **Why it matters for later phases:** "Update the row, don't duplicate it" will
+  recur (re-uploads, re-assessments). Any model that swaps a `FileField` value
+  needs an explicit answer to *what happens to the old file* — the ORM will not
+  volunteer one. The accepted tradeoff (no record of what a past review heard)
+  is in `tech-debt.md`; moving to object storage does not change any of this.
 
 
 - **What happened:** A test asserting `ValidationError` on a duplicate
