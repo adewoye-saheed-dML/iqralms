@@ -60,16 +60,21 @@ def split_utc_interval(start: datetime, end: datetime):
         cursor = midnight
 
 
-def local_window_to_utc(weekday: int, start_local: time, end_local: time, tz_name: str):
+def local_window_to_utc(
+    weekday: int, start_local: time, end_local: time, tz_name: str, on_or_after=None
+):
     """Convert one weekly local window into the UTC segments that represent it.
 
     This is the "point of entry" conversion CLAUDE.md calls for: a teacher
     states a window in their own zone and it is stored in UTC, never local. An
     ``end_local`` at or before ``start_local`` is read as running past local
     midnight (22:00-01:00), not as an error.
+
+    ``on_or_after`` pins the reference date, which is what a DST zone's answer
+    depends on. Callers normally omit it and get "as it converts this week".
     """
     zone = ZoneInfo(tz_name)
-    reference = next_date_for_weekday(weekday)
+    reference = next_date_for_weekday(weekday, on_or_after)
     start = datetime.combine(reference, start_local, tzinfo=zone)
     end = datetime.combine(reference, end_local, tzinfo=zone)
     if end <= start:
@@ -77,7 +82,7 @@ def local_window_to_utc(weekday: int, start_local: time, end_local: time, tz_nam
     return list(split_utc_interval(start, end))
 
 
-def utc_time_to_local(weekday: int, value: time, tz_name: str):
+def utc_time_to_local(weekday: int, value: time, tz_name: str, on_or_after=None):
     """Render a stored UTC weekday+time in ``tz_name`` as ``(weekday, time)``.
 
     Display-layer only. A bad stored timezone returns the value untouched
@@ -91,6 +96,6 @@ def utc_time_to_local(weekday: int, value: time, tz_name: str):
     except (ZoneInfoNotFoundError, ValueError, TypeError):
         return (weekday, value)
     moment = datetime.combine(
-        next_date_for_weekday(weekday), value, tzinfo=UTC
+        next_date_for_weekday(weekday, on_or_after), value, tzinfo=UTC
     ).astimezone(zone)
     return (moment.weekday(), moment.time())

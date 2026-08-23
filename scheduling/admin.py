@@ -17,7 +17,7 @@ A proper teacher-facing hours editor is a known gap (tech-debt.md).
 
 from django.contrib import admin
 
-from .models import Availability, Booking
+from .models import Availability, Booking, Weekday
 
 
 @admin.register(Availability)
@@ -36,8 +36,10 @@ class AvailabilityAdmin(admin.ModelAdmin):
     @admin.display(description="Teacher's local time")
     def teacher_local_window(self, obj):
         weekday, start, end = obj.local_window(obj.teacher.timezone)
-        day = Availability(weekday=weekday).get_weekday_display()
-        return f"{day} {start:%H:%M}-{end:%H:%M} ({obj.teacher.timezone})"
+        return (
+            f"{Weekday(weekday).label} {start:%H:%M}-{end:%H:%M} "
+            f"({obj.teacher.timezone})"
+        )
 
 
 @admin.register(Booking)

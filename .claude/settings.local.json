@@ -35,7 +35,8 @@
       "Bash(git commit *)",
       "Bash(grep -E \"^test|ok$|FAIL|ERROR|Ran|OK\")",
       "Bash(.venv/bin/python manage.py test curriculum.tests.test_audio_cleanup -v 2)",
-      "Bash(.venv/bin/python -c \"import django, rest_framework; print\\(django.get_version\\(\\), rest_framework.VERSION\\)\")"
+      "Bash(.venv/bin/python -c \"import django, rest_framework; print\\(django.get_version\\(\\), rest_framework.VERSION\\)\")",
+      "Bash(.venv/bin/python manage.py makemigrations accounts scheduling)"
     ]
   }
 }

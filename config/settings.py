@@ -125,6 +125,15 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 TEST_RUNNER = "config.test_runner.FastHasherDiscoverRunner"
 
 
+# --- Video (Jitsi) ----------------------------------------------------------
+# Each booking gets its own unguessable room name; the room comes into existence
+# when the first participant joins it, so there is no API call and no key. The
+# managed free tier is deliberate for now — self-hosting is a later
+# optimisation, once volume justifies running a server (see docs/mvp-spec.md).
+
+JITSI_DOMAIN = os.environ.get("JITSI_DOMAIN", "meet.jit.si")
+
+
 # --- DRF / dj-rest-auth / spectacular ---------------------------------------
 
 REST_FRAMEWORK = {
@@ -148,8 +157,9 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "Quran Academy API",
     "DESCRIPTION": (
         "Identity layer: users, roles, parent links, teacher profiles. "
-        "Curriculum: tracks, levels, placement review."
+        "Curriculum: tracks, levels, placement review. "
+        "Scheduling: teacher availability, direct booking, Jitsi video."
     ),
-    "VERSION": "0.2.0",
+    "VERSION": "0.3.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
