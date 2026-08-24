@@ -221,6 +221,29 @@ Format:
 - **Revisit when:** The assessment phase has produced enough rubric data for an
   average to mean anything.
 
+## 2026-08-24 — Routing answers only the instant it was asked about
+- **What was skipped:** Any search for a *different* time. `route_session` takes one
+  `start_time_utc`, tests every candidate against exactly that instant, and raises
+  `NoCapacity` if none passes. It never walks forward through the teacher's declared
+  hours to find the 10:00 slot that would have worked when 09:00 was full, and the
+  `considered` payload names who declined rather than when they were free. The one
+  exception is deliberate and bounded: step 1 will seat a student in a cohort whose
+  `schedule_start_utc` is within `COHORT_START_TOLERANCE` (±2h) of the request, which
+  is what the spec's "reasonably close to the requested window" buys.
+- **Why:** The Phase 4 spec's step 4 is explicit that a clear failure is correct
+  behaviour, not a bug to route around, and "propose an alternative" is a different
+  feature from "decide who teaches this". Picking a substitute time silently is also
+  the one outcome a parent cannot check — a student turning up an hour late to a
+  session they never agreed to is worse than an honest 409.
+- **Real fix:** Belongs to the preferred-teacher waitlist phase, which is the natural
+  home for "we could not seat you now, here is what we can do". Two shapes to decide
+  between when we get there: return candidate alternate slots alongside the refusal
+  (the student picks, so nothing is silent), or record the unmet request and notify
+  when capacity appears. The refusal payload should extend `considered` rather than
+  invent a second reporting shape — same note as in learnings.md.
+- **Revisit when:** The pricing-exceptions + waitlist phase (next up), or sooner if
+  the 409 rate shows students asking for hours nobody has declared.
+
 ## 2026-08-23 — No teacher-facing API for editing availability
 - **What was skipped:** Any write endpoint for `Availability`. The API is
   read-only (`GET /api/scheduling/availability/?teacher_id=`); hours are
