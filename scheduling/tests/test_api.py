@@ -17,6 +17,7 @@ from datetime import time, timedelta
 
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone as dj_timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -308,6 +309,29 @@ class BookingCreateAPITests(APITestCase):
         response = self.client.post(BOOKINGS_URL, self.payload(150))
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Booking.objects.count(), 2)
+
+    def test_a_booking_in_the_past_is_rejected(self):
+        """Phase 3.5 — the past-start rule surfaces as a 400, not a 500.
+
+        The timestamp is a *fortnight-old* Monday at 11:00, so it sits squarely
+        inside the teacher's declared Monday 09:00-17:00 hours: availability is a
+        weekly rule and has no opinion about which Monday. That is what makes this
+        a test of the past-start rule rather than of the availability rule, and
+        why the assertion is on the ``start_time_utc`` key specifically.
+        """
+        two_weeks_ago = (dj_timezone.now() - timedelta(days=14)).date()
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            BOOKINGS_URL,
+            self.payload(
+                start_time_utc=slot_at(
+                    self.window, 120, on_or_after=two_weeks_ago
+                ).isoformat()
+            ),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("start_time_utc", response.data)
+        self.assertFalse(Booking.objects.exists())
 
     def test_a_booking_against_an_unapproved_teacher_is_rejected(self):
         """Acceptance criterion 4, over HTTP."""

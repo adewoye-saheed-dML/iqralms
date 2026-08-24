@@ -15,6 +15,7 @@ never build a state the model would reject:
 from datetime import datetime, time, timedelta
 
 import factory
+from django.utils import timezone as dj_timezone
 
 from accounts.tests.factories import (
     LeadTeacherFactory,
@@ -44,7 +45,17 @@ def slot_at(window, offset_minutes: int = 0, on_or_after=None):
     Bookings are datetimes but availability is a weekly rule, so tests need a
     real instant that lands inside a given window. Derived from the window
     rather than hardcoded, so the two cannot drift apart.
+
+    The reference date defaults to *tomorrow*, not today: Phase 3.5 rejects a
+    booking whose start is already in the past, and ``next_date_for_weekday``
+    returns today when today is the window's weekday — so a window at, say,
+    09:00 on this weekday would resolve to 09:00 *today*, which is in the past
+    for any test run after 09:00 UTC. Starting the search tomorrow makes every
+    derived slot future-dated whatever the wall clock says, while a caller who
+    needs a genuinely past slot passes ``on_or_after`` explicitly.
     """
+    if on_or_after is None:
+        on_or_after = dj_timezone.now().astimezone(UTC).date() + timedelta(days=1)
     date = next_date_for_weekday(window.weekday, on_or_after)
     start = datetime.combine(date, window.start_time_utc, tzinfo=UTC)
     return start + timedelta(minutes=offset_minutes)

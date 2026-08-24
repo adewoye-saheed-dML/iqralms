@@ -151,6 +151,10 @@ Format:
   Until then availability entry is a staff action.
 
 ## 2026-08-23 — Nothing stops a booking in the past
+- **Resolved 2026-08-24 (Phase 3.5).** `Booking.clean()` now rejects a new
+  scheduled booking starting before `now - PAST_BOOKING_GRACE` (30s), gated on
+  `_state.adding` so a session that has merely been taught stays saveable.
+  Kept here for the reasoning, not as outstanding work.
 - **What was skipped:** Any "start_time_utc must be in the future" rule.
 - **Why:** The spec doesn't ask for one, and the rules it does ask for
   (declared hours, no overlap) are indifferent to when "now" is. Availability is
@@ -159,10 +163,10 @@ Format:
   past, with a small grace period so a booking made at 09:00:01 for 09:00 isn't
   refused. It has to be creation-only, like the availability check, or existing
   bookings become unsaveable the moment they end.
-- **Revisit when:** Before real students book. Two consequences make this more
-  than cosmetic: the overlap rule only considers *scheduled* bookings, so a
-  completed session's slot is re-bookable (proven by test), and backdated
-  bookings would corrupt any attendance or payout figure computed from history.
+- **Revisit when:** Done. The consequence that made it more than cosmetic — a
+  completed session's slot reading as free, since the overlap rule only
+  considers *scheduled* bookings — is now closed off by the past-start rule
+  rather than by changing the overlap rule.
 
 ## 2026-08-23 — Overlap detection compares ranges in Python
 - **What was skipped:** Doing the overlap check in SQL, or as a database
@@ -174,13 +178,29 @@ Format:
   candidate set in SQL and compares ends in Python.
 - **Real fix:** On Postgres, a `tstzrange` generated column plus an
   `ExclusionConstraint` on `(teacher, range)` where `status='scheduled'` — which
-  makes the rule race-proof, not merely correct. Today two simultaneous
-  requests for the same slot can both pass `clean()` and both commit.
-- **Revisit when:** The Postgres move, or sooner if two people ever book the
-  same teacher at the same second. The candidate query is bounded by
-  `LONGEST_POSSIBLE_BOOKING`, so this is a correctness-under-concurrency issue,
-  not a performance one.
+  makes the rule race-proof *in the database*, rather than by agreement between
+  writers. That also retires `TeacherBookingLock` and the `transaction_mode`
+  setting the mitigation below depends on.
+- **Revisit when:** The Postgres move. No longer urgent — the race it describes
+  is mitigated (below), so this is now about deleting a workaround, not about
+  correctness. The candidate query is bounded by `LONGEST_POSSIBLE_BOOKING`, so
+  this was never a performance issue.
+- **Mitigation now (Phase 3.5):** Creating a booking holds a per-teacher
+  `TeacherBookingLock` row inside `transaction.atomic()`, so the overlap check
+  and the INSERT are one atomic unit and a second request for the same slot is
+  refused by `clean()` instead of committing. This leans on
+  `DATABASES["default"]["OPTIONS"]["transaction_mode"] = "IMMEDIATE"`; without
+  it SQLite takes its write lock too late and the pair deadlocks into
+  "database is locked" rather than queueing. Both halves have tests
+  (`scheduling/tests/test_concurrency.py`) that fail if either is removed.
+  Two things it does *not* do: it only guards creation, since no supported
+  operation moves an existing booking onto a new slot (reschedule is
+  cancel-and-rebook), and it serialises through a row rather than the database,
+  so it is only as good as every writer remembering to take it — which is the
+  precise weakness the exclusion constraint above removes.
 
+
+## 2026-08-22 — `SECRET_KEY` and `DEBUG` are hardcoded
 - **What was skipped:** Forcing these to be set from the environment.
 - **Why:** Keeps a fresh clone runnable with no setup.
 - **Real fix:** Raise on a missing `DJANGO_SECRET_KEY` when `DEBUG` is False,
