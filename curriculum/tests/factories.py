@@ -48,6 +48,12 @@ class LevelFactory(factory.django.DjangoModelFactory):
     group_eligible = False
 
 
+class GroupEligibleLevelFactory(LevelFactory):
+    """A level that may run as a cohort — the precondition Phase 4 reads."""
+
+    group_eligible = True
+
+
 class TrackWithLevelsFactory(TrackFactory):
     """A track that already has a ladder of levels, orders 1..n.
 

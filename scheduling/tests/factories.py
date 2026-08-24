@@ -1,7 +1,7 @@
 """factory_boy factories for the scheduling app.
 
 Per CLAUDE.md every model gets a factory here before tests are written against
-it. Two of these derive values rather than hardcoding them, so a factory can
+it. Several of these derive values rather than hardcoding them, so a factory can
 never build a state the model would reject:
 
 * ``BookableTeacherFactory`` attaches an *approved* ``TeacherProfile``, because
@@ -10,6 +10,10 @@ never build a state the model would reject:
   teacher and a start time inside that window from it. Overriding ``teacher``
   directly is therefore the wrong lever — pass ``availability=`` instead, or the
   booking lands outside the teacher's declared hours and is rejected.
+* ``BookingFactory`` and ``CohortFactory`` also record the level's track among
+  the teacher's specialties before saving (Phase 4 makes that a hard rule). A
+  test that wants the *rejection* builds its booking directly rather than through
+  the factory — see ``teaches`` below.
 """
 
 from datetime import datetime, time, timedelta
@@ -23,20 +27,36 @@ from accounts.tests.factories import (
     SubTeacherFactory,
     TeacherProfileFactory,
 )
-from curriculum.tests.factories import LevelFactory
+from curriculum.tests.factories import GroupEligibleLevelFactory, LevelFactory
 from scheduling.models import (
     Availability,
     Booking,
     BookingStatus,
+    Cohort,
     DEFAULT_DURATION_MINUTES,
+    DEFAULT_MAX_STUDENTS,
     Weekday,
 )
 from scheduling.utils import UTC, next_date_for_weekday
 
 #: A generous default window, so a test that only cares about "some legal slot"
 #: does not have to think about times at all.
+DEFAULT_WEEKDAY = Weekday.MONDAY
 DEFAULT_WINDOW_START = time(9, 0)
 DEFAULT_WINDOW_END = time(17, 0)
+
+
+def teaches(teacher, level):
+    """Record ``level.track`` among ``teacher``'s specialties, and return them.
+
+    Phase 4 makes ``Booking.clean()`` reject a level whose track is not one the
+    teacher specialises in, so "bookable" is no longer a property of a teacher
+    alone — it is a property of a teacher *and* a level. Any test that builds a
+    booking without going through ``BookingFactory`` needs this first, and any
+    test asserting the rejection needs to *not* call it.
+    """
+    teacher.teacher_profile.specialties.add(level.track)
+    return teacher
 
 
 def slot_at(window, offset_minutes: int = 0, on_or_after=None):
@@ -100,7 +120,7 @@ class AvailabilityFactory(factory.django.DjangoModelFactory):
         model = Availability
 
     teacher = factory.SubFactory(BookableTeacherFactory)
-    weekday = Weekday.MONDAY
+    weekday = DEFAULT_WEEKDAY
     start_time_utc = DEFAULT_WINDOW_START
     end_time_utc = DEFAULT_WINDOW_END
 
@@ -124,6 +144,24 @@ class BookingFactory(factory.django.DjangoModelFactory):
     start_time_utc = factory.LazyAttribute(lambda o: slot_at(o.availability))
     duration_minutes = DEFAULT_DURATION_MINUTES
 
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        """Grant the specialty first, then build — a factory keeps its promise.
+
+        Phase 4 rejects a booking whose teacher does not teach the level's track,
+        and both defaults here are independent (a window's teacher, a fresh
+        level's fresh track), so without this the factory would build nothing but
+        rejections. It cannot be a ``post_generation`` hook: those run *after*
+        ``save()``, which is where the rule fires.
+
+        A test that wants the rejection constructs its ``Booking`` directly and
+        simply does not call ``teaches``.
+        """
+        teacher, level = kwargs.get("teacher"), kwargs.get("level")
+        if teacher is not None and level is not None:
+            teaches(teacher, level)
+        return super()._create(model_class, *args, **kwargs)
+
 
 class CancelledBookingFactory(BookingFactory):
     """Already cancelled, so it no longer occupies its slot."""
@@ -135,3 +173,41 @@ class CompletedBookingFactory(BookingFactory):
     """Already taught — attendance history, and no longer cancellable."""
 
     status = BookingStatus.COMPLETED
+
+
+class CohortFactory(factory.django.DjangoModelFactory):
+    """An open group class starting inside its teacher's declared hours.
+
+    Same shape as ``BookingFactory``: pass ``availability=`` to control the
+    teacher and the window, and the start time is derived from it so a seat
+    booking is actually creatable. The level is group-eligible by default,
+    because a cohort on any other kind of level is a state ``Cohort.clean()``
+    refuses.
+    """
+
+    class Meta:
+        model = Cohort
+        exclude = ("availability",)
+
+    availability = factory.SubFactory(AvailabilityFactory)
+    teacher = factory.SelfAttribute("availability.teacher")
+    level = factory.SubFactory(GroupEligibleLevelFactory)
+    max_students = DEFAULT_MAX_STUDENTS
+    schedule_start_utc = factory.LazyAttribute(lambda o: slot_at(o.availability))
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        # Cohort.clean() refuses a teacher who does not teach the level's track,
+        # for the same reason Booking.clean() does — see BookingFactory._create.
+        teacher, level = kwargs.get("teacher"), kwargs.get("level")
+        if teacher is not None and level is not None:
+            teaches(teacher, level)
+        return super()._create(model_class, *args, **kwargs)
+
+
+class LeadCohortFactory(CohortFactory):
+    """A group class the lead teacher runs themselves."""
+
+    availability = factory.SubFactory(
+        AvailabilityFactory, teacher=factory.SubFactory(BookableLeadTeacherFactory)
+    )

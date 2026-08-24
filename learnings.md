@@ -305,6 +305,112 @@ Format:
   fail: each half of this mechanism was verified by removing it and watching the
   suite go red, which is the only reason we know the tests test anything.
 
+## 2026-08-24 — A cohort of six is six Booking rows the overlap rule must not reject
+- **What happened:** Phase 4's spec adds `Booking.cohort`, "set when a booking is
+  a cohort seat". Six students in one group class is therefore six `Booking` rows
+  with the same teacher at the same instant — which Phase 3's per-teacher overlap
+  rule rejects. The second student in every cohort would have been unbookable.
+- **What we decided:** Asked rather than guessed, because it relaxes a rule from
+  an already-committed phase. Product owner chose **seats stay bookings**:
+  `clashing_bookings()` excludes rows sharing this booking's `cohort_id`. The
+  relaxation is deliberately narrow — a 1:1 session still clashes with a seat, and
+  two *different* cohorts at one time still clash, because those really are one
+  teacher in two places. Tests pin all three cases. The payoff is that a seat is an
+  ordinary booking: it gets a video room, it can be cancelled, and payouts will see
+  it. The alternative (membership only, no rows) would have left `Booking.cohort`
+  permanently null and `routed_reason=cohort_assigned` with nowhere to live.
+- **Why it matters for later phases:** `cohort_id` is now load-bearing for the
+  overlap rule, so anything that writes a `Booking` with a cohort must be sure the
+  cohort is the one that session belongs to — `Booking.clean()` enforces that the
+  teacher, level and start all match, precisely so a mismatched row cannot opt
+  itself out of the overlap check. The Postgres exclusion constraint in
+  tech-debt.md must carry the same exemption, or every cohort breaks on migration.
+
+## 2026-08-24 — Counting only `scheduled` minutes would have leaked the weekly cap
+- **What happened:** Phase 4's spec defines the capacity check as "total
+  `scheduled` booking minutes for the current week". Taken literally, a teacher's
+  load *drops* as Monday's sessions are marked `completed`, so a 20-hour teacher
+  could be booked to 20 hours again by Thursday. The cap would have been per-open-
+  booking, not per week.
+- **What we decided:** Asked; product owner chose **everything except cancelled**
+  (`CAPACITY_CONSUMING_STATUSES` = scheduled + completed + no_show). Cancelling is
+  the one thing that gives capacity back. A `no_show` counts because the teacher
+  held the slot and turned up. Also: a cohort session counts **once**, not once per
+  seat — charging per seat would make cohorts look more expensive than the 1:1
+  sessions they exist to replace, and a six-seat class would eat three hours of a
+  cap for thirty minutes of teaching.
+- **Why it matters for later phases:** Payouts must read
+  `weekly_committed_minutes` / `week_bounds` rather than assembling their own sum,
+  which is exactly what the spec asked for ("don't let the routing check and any
+  future payout calculation use different week boundaries"). Note the cohort
+  deduplication is by `cohort_id`, which is exact only while a cohort has a single
+  `schedule_start_utc` — a recurring cohort needs it per session, not per cohort.
+
+## 2026-08-24 — Enforcing specialties broke 20 existing tests, all legitimately
+- **What happened:** Closing the Phase 3 tech-debt item (`specialties` recorded but
+  never read) made `Booking.clean()` reject a level whose track the teacher does
+  not teach. Twenty Phase 1-3 tests failed instantly — every one that built a
+  booking outside `BookingFactory` and expected success, because a fresh teacher
+  and a fresh level share no track.
+- **What we decided:** A teacher with *no* specialties recorded teaches nothing.
+  That is the strict reading and the right default for a quality gate, but it means
+  an existing teacher is unbookable until their tracks are set (logged in
+  tech-debt.md as an onboarding step, not a bug). `BookingFactory._create` and
+  `CohortFactory._create` grant the specialty before saving, so a factory still
+  cannot build a state the model would reject — it has to be `_create` rather than
+  a `post_generation` hook, because those run *after* `save()`, which is where the
+  rule fires. Tests that want the rejection construct their `Booking` directly and
+  simply don't call the new `teaches()` helper.
+- **Why it matters for later phases:** "Bookable" is no longer a property of a
+  teacher alone; it is a property of a teacher *and* a level. Any future fixture
+  or test that pairs the two needs `teaches()` first. The rule is creation-only,
+  like the availability and cap rules, so editing a teacher's specialties cannot
+  freeze the bookings they already hold — the same trap documented above for the
+  approval gate, avoided this time on purpose.
+
+## 2026-08-24 — An M2M cap cannot live in `clean()`
+- **What happened:** Phase 4 asks for `Cohort.max_students` to be enforced "in
+  `clean()` or a custom `add_student()` method, not just at the serializer layer".
+  `clean()` cannot do it: an M2M is written *after* the row is saved, so
+  `full_clean()` on a new cohort runs before any student is attached and has
+  nothing to count — and `cohort.students.add(...)` never calls `save()` or
+  `clean()` at all. It is a write straight to the join table.
+- **What we decided:** Both. `Cohort.add_student()` is the supported path and
+  raises `CohortFull`; a `pre_add` `m2m_changed` receiver
+  (`scheduling/signals.py`) is the backstop that catches a raw `.add()`, including
+  the reverse direction (`user.cohort_memberships.add(cohort)`). One trap worth
+  knowing: Django runs `add()` inside `atomic(savepoint=False)`, so raising from
+  the receiver marks the surrounding transaction as needing rollback. Under
+  `TestCase` — itself a transaction — every query after the refusal then dies with
+  `TransactionManagementError`, so those tests wrap the refusal in
+  `transaction.atomic()` for the savepoint. In production (autocommit) `add()`'s
+  own block is outermost and the refusal leaves the connection perfectly usable;
+  verified directly rather than assumed.
+- **Why it matters for later phases:** Same shape as the `IntegrityError` note
+  above — the exception a rule raises depends on *where* the rule lives. Any future
+  M2M with a cap (a waitlist, a cohort roster edit) needs the receiver, not
+  `clean()`, and its tests need the savepoint.
+
+## 2026-08-24 — Routing tests a candidate by building an unsaved Booking
+- **What happened:** Routing needs to know whether a teacher *could* take a
+  session — declared hours, no clash, approved, right specialty, under cap, not in
+  the past. Reimplementing those checks in `routing.py` would have meant two
+  copies of every eligibility rule, guaranteed to drift.
+- **What we decided:** `routing._candidate()` builds an unsaved `Booking` and calls
+  `full_clean()`. A `ValidationError` means "not eligible, and here is why";
+  clean means "eligible, and this is the row to save". So routing knows *no* rules
+  of its own, and a rule added to `Booking.clean()` later is picked up for free.
+  The refusals are kept as `{field: [{code, message}]}` and returned in
+  `NoCapacity.considered` / `Routed.considered`, which is what makes the 409 body
+  explainable to a parent instead of a bare error — and what lets the tests assert
+  on error *codes* rather than on prose.
+- **Why it matters for later phases:** The candidate is validated, then saved —
+  and `save()` re-runs everything under the teacher's lock, so a candidate that
+  loses its slot to a concurrent write is refused rather than quietly reassigned.
+  Do not "optimise" the second validation away; it is the whole reason routing is
+  race-safe. The preferred-teacher waitlist (a later phase) should extend
+  `considered` rather than inventing a second reporting shape.
+
 ## 2026-08-24 — The booking factory quietly produced past-dated sessions
 - **What happened:** `BookingFactory` derives its start from
   `slot_at(window)`, which used `next_date_for_weekday(weekday)` — and that

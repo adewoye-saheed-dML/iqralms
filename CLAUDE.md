@@ -17,18 +17,34 @@ and committed.
 - `specs/phase-2-curriculum.md` — tracks, levels, placement review (DONE)
 - `specs/phase-3-scheduling.md` — availability, direct booking, video (DONE)
 - `specs/phase-3.5-debt-cleanup.md` — booking concurrency + past-booking fix (DONE)
-- `specs/phase-4-routing.md` — cohorts, capacity-based auto-assignment (CURRENT)
+- `specs/phase-4-routing.md` — cohorts, capacity-based auto-assignment (DONE)
 - Later phases (pricing/waitlist, assessment, payouts) get their own spec
-  file when we get there — don't write them in advance.
+  file when we get there — don't write them in advance. Next up is pricing
+  exceptions + the preferred-teacher waitlist, which mvp-spec sections 3 and 4
+  describe and Phase 4 deliberately left out.
 
-## Note for Phase 4 specifically
+## Notes carried out of Phase 4
 
-Phase 3.5 added `TeacherBookingLock` and `Booking.save()`'s locking
-sequence. Routing must create/assign bookings through `Booking.save()`,
-never a bulk operation — a `bulk_create` of cohort seat assignments would
-bypass both the lock and `clean()` entirely, silently reopening the race
-Phase 3.5 closed. See `learnings.md`, 2026-08-24 entries, before touching
-booking creation in this phase.
+Three rules landed in `Booking.clean()` that anything creating a booking must
+now satisfy — they are creation-only, so editing a teacher's hours, specialties
+or cap never freezes bookings they already hold:
+
+- The teacher must specialise in the level's track. A teacher with **no**
+  specialties recorded therefore teaches nothing and is unbookable until their
+  tracks are set in the admin (tech-debt.md).
+- `max_weekly_hours` is a hard cap. "The week" is `utils.week_bounds` (Monday
+  00:00 UTC, Monday to Monday) and nothing else — payouts must read that and
+  `models.weekly_committed_minutes`, not assemble their own sum.
+- A cohort seat is an ordinary `Booking` with `cohort` set, and seats sharing a
+  cohort deliberately do not clash. Any future exclusion constraint needs that
+  same exemption.
+
+Routing writes through `Booking.save()` (`scheduling/routing.py`), which is what
+takes `TeacherBookingLock` — `scheduling/tests/test_concurrency.py` has a test
+that fails specifically if a cohort seat is ever written with `bulk_create`.
+Routing also tests candidates by building an unsaved `Booking` and calling
+`full_clean()`, so it holds no copy of the eligibility rules; add rules to
+`clean()` and routing picks them up.
 
 ## Known pre-launch blockers (see tech-debt.md for full detail)
 

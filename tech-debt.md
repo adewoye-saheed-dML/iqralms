@@ -119,6 +119,13 @@ Format:
   from. Not before — the current rule is deliberate, not an oversight.
 
 ## 2026-08-23 — Teacher specialties are recorded but never enforced
+- **Resolved 2026-08-24 (Phase 4).** `Booking.clean()` now rejects a level whose
+  track is not in the teacher's `TeacherProfile.specialties`
+  (`models.specialty_error`), for routing and direct booking alike, and
+  `Cohort.clean()` applies the same rule to a group class's teacher. Creation-only,
+  so editing a teacher's specialties cannot freeze bookings they already hold.
+  Kept here for the reasoning, not as outstanding work — but see the entries it
+  created, below.
 - **What was skipped:** Any check that a booking's `level.track` is one of the
   teacher's `TeacherProfile.specialties`. The field exists (added in Phase 3
   with explicit approval, since it changes an already-shipped Phase 1 model) and
@@ -131,8 +138,88 @@ Format:
 - **Real fix:** Phase 4 routing reads `specialties` when selecting a teacher. If
   direct booking survives alongside routing, `Booking.clean()` also needs a
   rule rejecting a level whose track the teacher does not teach.
-- **Revisit when:** Phase 4. Until then a parent can book a hifz teacher for an
-  Arabic level and nothing objects.
+- **Revisit when:** Done, both halves — routing reads it, and direct booking is
+  gated by it (`test_routing_api.py::SpecialtyEnforcementAPITests`, acceptance
+  criterion 7).
+
+## 2026-08-24 — A teacher with no specialties recorded is unbookable
+- **What was skipped:** Any migration or default granting existing teachers a
+  track. Phase 4 enforces `specialties`, and the strict reading — no specialties
+  means teaches nothing — is what shipped.
+- **Why:** It is the correct default for a quality gate: assuming a teacher can
+  teach a track nobody recorded them against is exactly the mistake the rule
+  exists to prevent, and backfilling "all tracks" would silently undo the gate for
+  everyone who already exists. There is one teacher in the system today, so the
+  cost is a single admin action.
+- **Real fix:** Nothing in code — it is an **onboarding step**: a teacher's tracks
+  must be set in the admin before they can be booked or run a cohort. Worth
+  surfacing as an admin warning on an approved profile with zero specialties, and
+  worth a check in whatever sub-teacher onboarding flow eventually exists.
+- **Revisit when:** The first sub-teacher is onboarded by someone who isn't us.
+  The failure mode is a confusing "does not teach" 400 rather than anything unsafe,
+  but it is confusing at exactly the wrong moment.
+
+## 2026-08-24 — Cancelling a cohort seat leaves the membership behind
+- **What was skipped:** Any link between cancelling a seat `Booking` and removing
+  the student from `Cohort.students`. `cancel()` sets the status; the M2M row stays.
+- **Why:** Cancelling one seat and leaving a group class are arguably different
+  acts — a student who misses a session has not dropped the course — and the spec
+  says nothing about it. The wrong guess is worse than the gap: auto-removal would
+  silently free a seat somebody may still consider theirs.
+- **Consequence now:** The student holds a seat with nothing to attend, and the
+  class reads as fuller than it is, so `Cohort.open_near` may skip a cohort that
+  effectively has room. There is a test asserting the current behaviour
+  (`test_routing.py::test_a_routed_seat_keeps_the_student_in_the_cohort_after_cancelling`),
+  so a later phase has to change it on purpose.
+- **Real fix:** Decide what a cancelled seat means, then either drop the membership
+  in `cancel()` (needs the seat-vs-course distinction) or count *scheduled seat
+  bookings* rather than M2M rows when deciding whether a cohort is open, plus an
+  explicit `leave_cohort()`. The second is more truthful and more work.
+- **Revisit when:** A real cohort runs and somebody cancels — a data-quality
+  problem before it is a capacity one.
+
+## 2026-08-24 — A cohort is a single session, not a recurring class
+- **What was skipped:** Any recurrence on `Cohort`. It has one
+  `schedule_start_utc`, per the Phase 4 spec's field list.
+- **Why:** That is the spec, and one session is enough to prove routing's
+  cohort-first step. Recurrence is a scheduling model in its own right (how many
+  weeks, what happens to a cancelled week, how a student joins late), and inventing
+  one here would have been a large silent decision.
+- **Real fix:** A `CohortSession` table — one row per occurrence, seats hanging off
+  the session rather than the cohort — or a recurrence rule plus generated sessions.
+  This also makes the weekly capacity count more exact: cohort deduplication in
+  `weekly_committed_minutes` is keyed on `cohort_id`, which only equals "per
+  session" while a cohort *has* one session.
+- **Revisit when:** The first real group class is offered. A weekly beginner class
+  is the actual product (mvp-spec section 2), and today a lead would have to create
+  one cohort per week.
+
+## 2026-08-24 — Sub-teacher selection ignores timezone overlap
+- **What was skipped:** The mvp-spec's step 3 matches subs by "specialty, timezone
+  overlap, and remaining capacity". Only specialty and capacity are read.
+- **Why:** Availability already carries the answer implicitly — a teacher whose
+  declared hours cover the requested UTC instant is by construction awake for it. A
+  separate timezone score would either duplicate that or start weighting
+  candidates, and the Phase 4 spec explicitly forbids growing step 3 into a scoring
+  system.
+- **Real fix:** Nothing, unless "overlap" is meant to mean something availability
+  cannot express — preferring a teacher for whom the slot is mid-morning over one
+  for whom it is the last hour of their day, say. That is a ranking decision.
+- **Revisit when:** The rubric-ranking entry below, so both are decided together.
+
+## 2026-08-24 — Sub-teacher ranking is remaining capacity only
+- **What was skipped:** Any quality signal in routing's step 3. The sub with the
+  most remaining weekly minutes wins; ties break on lowest pk for determinism.
+- **Why:** The Phase 4 spec asks for exactly this and names the temptation to
+  resist: "simplest correct rule for this phase: whoever has the most remaining
+  weekly capacity (spreads load evenly). Don't build anything fancier
+  (rubric-average-based ranking, etc.) yet — log it in tech-debt.md if you're
+  tempted." This is that log entry.
+- **Real fix:** Once the assessment rubric exists, rank on some combination of
+  rubric average and capacity. That is a real design decision — what weight, and
+  what happens to a new sub-teacher with no scores — not something to back into.
+- **Revisit when:** The assessment phase has produced enough rubric data for an
+  average to mean anything.
 
 ## 2026-08-23 — No teacher-facing API for editing availability
 - **What was skipped:** Any write endpoint for `Availability`. The API is
@@ -180,7 +267,10 @@ Format:
   `ExclusionConstraint` on `(teacher, range)` where `status='scheduled'` — which
   makes the rule race-proof *in the database*, rather than by agreement between
   writers. That also retires `TeacherBookingLock` and the `transaction_mode`
-  setting the mitigation below depends on.
+  setting the mitigation below depends on. **Phase 4 caveat:** the constraint must
+  carry the same exemption `clashing_bookings()` now has — seats sharing a
+  `cohort_id` do not clash, because a group class is one teacher teaching once. A
+  constraint without it breaks every cohort the moment it is applied.
 - **Revisit when:** The Postgres move. No longer urgent — the race it describes
   is mitigated (below), so this is now about deleting a workaround, not about
   correctness. The candidate query is bounded by `LONGEST_POSSIBLE_BOOKING`, so

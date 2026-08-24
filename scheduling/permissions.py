@@ -37,3 +37,20 @@ class IsStudentOrParent(BasePermission):
             and user.is_authenticated
             and user.role in {Role.STUDENT, Role.PARENT}
         )
+
+
+class IsLeadTeacher(BasePermission):
+    """Opening a group class is the lead's call, not a sub-teacher's.
+
+    Deliberately a separate class from ``curriculum.permissions.IsLeadTeacher``
+    rather than an import: same rule today, but the two gates answer different
+    questions ("who reviews placements" vs "who commits a teacher's time to a
+    cohort") and should be free to diverge without one silently dragging the
+    other along.
+    """
+
+    message = "Only the lead teacher can create a cohort."
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(user and user.is_authenticated and user.role == Role.LEAD)

@@ -41,6 +41,7 @@ from .factories import (
     CancelledBookingFactory,
     CompletedBookingFactory,
     slot_at,
+    teaches,
 )
 from .test_models import unapprove
 
@@ -165,6 +166,11 @@ class BookingCreateAPITests(APITestCase):
         )
         self.teacher = self.window.teacher
         self.level = LevelFactory()
+        # Phase 4 makes the track specialty a hard rule for direct booking too,
+        # so a bookable teacher is now one who *also* teaches the level in
+        # question. The rejection when they don't is asserted separately, in
+        # SpecialtyEnforcementAPITests.
+        teaches(self.teacher, self.level)
         self.student = StudentFactory(timezone="Africa/Lagos")
 
     def payload(self, offset_minutes=0, **overrides):

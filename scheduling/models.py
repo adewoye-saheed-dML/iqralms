@@ -1,11 +1,12 @@
-"""Scheduling: when a teacher is free, and who is booked when.
+"""Scheduling: when a teacher is free, who is booked when, and who teaches it.
 
-Field sets mirror specs/phase-3-scheduling.md exactly. What is deliberately
-*not* here, per that spec: cohorts, capacity limits (``max_weekly_hours`` is not
-enforced yet), routing, pricing. No routing-related column exists on ``Booking``
-— Phase 4 adds what it needs when it needs it.
+Field sets mirror specs/phase-3-scheduling.md and specs/phase-4-routing.md
+exactly. What is deliberately *not* here: pricing, preferred-teacher waitlists,
+rubric-based ranking. Phase 4's spec names all three as out of scope and warns
+specifically against letting step 3's "most remaining capacity" rule grow into a
+weighted scoring system — that is a later phase's design decision.
 
-Three decisions worth knowing before reading:
+Decisions worth knowing before reading:
 
 * Validation lives in ``clean()``, called from ``save()``, the same pattern as
   Phase 1's role checks. The spec asks for the overlap rule specifically not to
@@ -23,7 +24,14 @@ Three decisions worth knowing before reading:
   happens in serializers, using ``utils.utc_time_to_local``.
 * Creating a booking holds ``TeacherBookingLock`` for that teacher (Phase 3.5).
   The overlap rule is a read followed by a write, so without it two concurrent
-  requests for one slot both pass a clean check and both commit.
+  requests for one slot both pass a clean check and both commit. Phase 4's
+  routing writes bookings through ``Booking.save()`` for exactly this reason —
+  a ``bulk_create`` of cohort seats would bypass the lock and ``clean()`` alike.
+* Phase 4 adds two creation-time rules that apply to *every* booking, routed or
+  directly booked: the teacher must specialise in the level's track, and the
+  booking must not push them past ``max_weekly_hours``. Both are creation-only,
+  for the same reason the availability check is — a teacher whose specialties or
+  cap are edited later must not be left holding unsaveable bookings.
 """
 
 import uuid
@@ -40,11 +48,22 @@ from django.utils import timezone as dj_timezone
 from accounts.models import Role, User
 from curriculum.models import Level
 
-from .exceptions import BookingNotCancellable
-from .utils import local_window_to_utc, split_utc_interval, utc_time_to_local
+from .exceptions import BookingNotCancellable, CohortFull
+from .utils import (
+    local_window_to_utc,
+    split_utc_interval,
+    utc_time_to_local,
+    week_bounds,
+)
 
 #: Spec default session length.
 DEFAULT_DURATION_MINUTES = 30
+
+#: Spec default cohort size. The mvp-spec's "4-6 students at once" is the reason
+#: group classes are the biggest throughput lever in the product.
+DEFAULT_MAX_STUDENTS = 6
+
+MINUTES_PER_HOUR = 60
 
 #: Prefixed so a room is identifiable in a shared Jitsi namespace; the uuid is
 #: what makes it unguessable.
@@ -61,6 +80,13 @@ LONGEST_POSSIBLE_BOOKING = timedelta(days=1)
 #: Small enough that no real backdating slips through, since the next thing a
 #: student could book is a whole slot later.
 PAST_BOOKING_GRACE = timedelta(seconds=30)
+
+#: What "a schedule_start_utc reasonably close to the requested window" (the
+#: Phase 4 spec's phrase) is worth in real time. Wide enough that a student
+#: asking for 10:00 is offered the 09:00 group class rather than being told there
+#: is no capacity; narrow enough that nobody is quietly moved to a different part
+#: of their day. Routing never widens this on its own.
+COHORT_START_TOLERANCE = timedelta(hours=2)
 
 
 class Weekday(models.IntegerChoices):
@@ -80,6 +106,32 @@ class BookingStatus(models.TextChoices):
     COMPLETED = "completed", "Completed"
     NO_SHOW = "no_show", "No show"
     CANCELLED = "cancelled", "Cancelled"
+
+
+#: Statuses that consume a teacher's weekly capacity. Cancelling is the one
+#: thing that gives capacity back: a session that has merely been *taught* must
+#: not refund the teacher's weekly budget, or a 20-hour teacher could be booked
+#: well past 20 hours in one week simply because Monday's sessions had already
+#: been marked completed. Product owner's call, 2026-08-24 — the Phase 4 spec's
+#: wording was "scheduled booking minutes", which has that hole in it.
+CAPACITY_CONSUMING_STATUSES = frozenset(
+    {BookingStatus.SCHEDULED, BookingStatus.COMPLETED, BookingStatus.NO_SHOW}
+)
+
+
+class RoutedReason(models.TextChoices):
+    """How a booking's teacher came to be its teacher.
+
+    The field Phase 3 explicitly declined to add until something read it. Phase
+    4's routing engine is that something, and ``student_choice`` is what Phase
+    3's direct-booking endpoint records — so the value is never absent, only
+    ever one of four honest answers.
+    """
+
+    LEAD_AVAILABLE = "lead_available", "Routed to the lead teacher, who had capacity"
+    LEAD_FULL_ROUTED = "lead_full_routed", "Lead teacher full, routed to a sub teacher"
+    STUDENT_CHOICE = "student_choice", "Teacher named directly by the student or parent"
+    COHORT_ASSIGNED = "cohort_assigned", "Assigned a seat in an open cohort"
 
 
 def generate_video_room_name() -> str:
@@ -119,6 +171,34 @@ def bookable_teacher_error(user):
             params={"username": user.username},
         )
     return None
+
+
+def specialty_error(user, level):
+    """Why ``user`` may not teach ``level``, or None if they may.
+
+    Phase 4 closes the Phase 3 tech-debt item that recorded
+    ``TeacherProfile.specialties`` without ever reading it. A teacher with no
+    specialties recorded therefore teaches *nothing* — which is the strict
+    reading of the rule and the right default for a quality gate, but it does
+    mean an existing teacher is unbookable until their tracks are set in the
+    admin. Callers pass the error to whichever field is theirs.
+    """
+    profile = getattr(user, "teacher_profile", None)
+    if profile is None:
+        # bookable_teacher_error() has already reported this; nothing to add.
+        return None
+    if profile.specialties.filter(pk=level.track_id).exists():
+        return None
+    return ValidationError(
+        "%(username)s does not teach %(track)s, so they cannot take a "
+        "%(level)s session.",
+        code="teacher_lacks_specialty",
+        params={
+            "username": user.username,
+            "track": level.track.name,
+            "level": level.name,
+        },
+    )
 
 
 class Availability(models.Model):
@@ -282,11 +362,199 @@ class TeacherBookingLock(models.Model):
         return f"booking lock for {self.teacher.username} (revision {self.revision})"
 
 
-class Booking(models.Model):
-    """One 1:1 session between a student and a teacher, at a UTC instant.
+class Cohort(models.Model):
+    """A group class: one teacher, one level, one start time, several students.
 
-    Rescheduling is deliberately not supported this phase: cancel and recreate.
-    That keeps ``video_room_name`` immutable, which the spec requires.
+    The single biggest throughput lever in the product (mvp-spec section 2): one
+    teacher covering four to six students at once is worth more than any amount
+    of 1:1 scheduling cleverness, which is why routing checks cohorts *first*.
+
+    A cohort holds membership; the sessions themselves are ordinary ``Booking``
+    rows with ``cohort`` set, one per student. That means a seat gets a video
+    room, can be cancelled, and will be visible to payouts later, exactly like a
+    1:1 session — at the cost of one relaxation of Phase 3's overlap rule, which
+    ``Booking.clashing_bookings()`` documents.
+
+    This phase gives a cohort a single ``schedule_start_utc`` rather than a
+    recurrence rule, because that is what its spec lists. A recurring group
+    class is a real gap, recorded in tech-debt.md rather than invented here.
+    """
+
+    teacher = models.ForeignKey(
+        # PROTECT for the same reason ``Booking.teacher`` is: a cohort is
+        # teaching history once it has run, so removing its teacher has to be a
+        # deliberate act rather than a cascade.
+        User,
+        on_delete=models.PROTECT,
+        related_name="cohorts",
+        help_text="Role 'lead' or 'sub', approved, and a specialist in the level's track.",
+    )
+    level = models.ForeignKey(
+        Level,
+        on_delete=models.PROTECT,
+        related_name="cohorts",
+        help_text="Must have group_eligible=True.",
+    )
+    max_students = models.PositiveIntegerField(
+        default=DEFAULT_MAX_STUDENTS,
+        validators=[MinValueValidator(1)],
+    )
+    schedule_start_utc = models.DateTimeField(help_text="Stored UTC, always.")
+    students = models.ManyToManyField(
+        User,
+        blank=True,
+        related_name="cohort_memberships",
+        help_text=(
+            "Capped at max_students. Use add_student(); a raw students.add() is "
+            "caught by the m2m_changed receiver in signals.py rather than "
+            "silently overfilling the class."
+        ),
+    )
+
+    class Meta:
+        ordering = ["schedule_start_utc", "pk"]
+
+    # --- Behaviour ----------------------------------------------------------
+
+    @property
+    def seats_taken(self) -> int:
+        return self.students.count()
+
+    @property
+    def seats_available(self) -> int:
+        """Never negative, even if ``max_students`` were lowered after filling."""
+        return max(0, self.max_students - self.seats_taken)
+
+    @property
+    def has_space(self) -> bool:
+        return self.seats_available > 0
+
+    @classmethod
+    def open_for_level(cls, level):
+        """Cohorts for ``level`` with at least one seat left, soonest first.
+
+        The seat count is a subquery rather than a Python loop so that the
+        "browse open cohorts" endpoint stays one query however many cohorts a
+        level has.
+        """
+        return (
+            cls.objects.filter(level=level)
+            .annotate(seats_used=models.Count("students", distinct=True))
+            .filter(seats_used__lt=F("max_students"))
+            .select_related("teacher", "level", "level__track")
+        )
+
+    @classmethod
+    def open_near(cls, level, moment, tolerance=None):
+        """Open cohorts for ``level`` starting within ``tolerance`` of ``moment``.
+
+        "Reasonably close to the requested window" is the spec's phrase; this is
+        the number behind it. Closest start first, then lowest pk, so routing is
+        deterministic rather than dependent on insertion order.
+        """
+        tolerance = COHORT_START_TOLERANCE if tolerance is None else tolerance
+        candidates = cls.open_for_level(level).filter(
+            schedule_start_utc__gte=moment - tolerance,
+            schedule_start_utc__lte=moment + tolerance,
+        )
+        return sorted(
+            candidates, key=lambda c: (abs(c.schedule_start_utc - moment), c.pk)
+        )
+
+    def seat_error(self, student):
+        """Why ``student`` cannot take a seat here, or None if they can.
+
+        Re-adding an existing member is not an error and not a seat: the M2M is a
+        set, so it would be a no-op, and refusing it would make an idempotent
+        retry look like a full class.
+        """
+        if self.students.filter(pk=student.pk).exists():
+            return None
+        if student.role != Role.STUDENT:
+            return ValidationError(
+                "Only a user with role 'student' can join a cohort (got "
+                "'%(role)s').",
+                code="invalid_student_role",
+                params={"role": student.role},
+            )
+        if not self.has_space:
+            return ValidationError(
+                "%(level)s is full: %(max)d of %(max)d seats taken.",
+                code="cohort_full",
+                params={"level": str(self.level), "max": self.max_students},
+            )
+        return None
+
+    def add_student(self, student):
+        """Seat ``student`` in this cohort, refusing to exceed ``max_students``.
+
+        The spec asks for the cap to be enforced here rather than only at the
+        serializer layer. It is enforced twice over: this method raises a clear
+        error, and the ``m2m_changed`` receiver catches a raw ``students.add()``
+        that skipped this method entirely.
+        """
+        error = self.seat_error(student)
+        if error is not None:
+            raise CohortFull(error.message % error.params)
+        self.students.add(student)
+        return self
+
+    # --- Validation ---------------------------------------------------------
+
+    def clean(self):
+        errors = {}
+
+        if self.teacher_id:
+            teacher_error = bookable_teacher_error(self.teacher)
+            if teacher_error is not None:
+                errors["teacher"] = teacher_error
+
+        if self.level_id:
+            if not self.level.group_eligible:
+                # The spec asks for this to hold against direct ORM and fixture
+                # writes, not just the admin UI — hence clean(), called by save().
+                errors["level"] = ValidationError(
+                    "%(level)s is not group-eligible, so it cannot run as a "
+                    "cohort.",
+                    code="level_not_group_eligible",
+                    params={"level": str(self.level)},
+                )
+            elif self.teacher_id and "teacher" not in errors:
+                # Not in the spec's list, but a cohort whose teacher does not
+                # teach its track can never seat anybody: every seat booking
+                # would be refused by Booking.clean(). Failing here is failing
+                # where the mistake was actually made.
+                track_error = specialty_error(self.teacher, self.level)
+                if track_error is not None:
+                    errors["teacher"] = track_error
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        # group_eligible and the specialty both read other tables, so neither can
+        # be a DB constraint; validating here makes them hold for the admin and
+        # direct ORM writes as well as the API.
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return (
+            f"{self.level} cohort with {self.teacher.username} "
+            f"{self.schedule_start_utc:%Y-%m-%d %H:%M} UTC "
+            f"({self.seats_taken}/{self.max_students})"
+        )
+
+
+class Booking(models.Model):
+    """One session between a student and a teacher, at a UTC instant.
+
+    Usually 1:1. When ``cohort`` is set the row is one student's *seat* in a
+    group class, so several of them share a teacher, a level and a start time —
+    see ``clashing_bookings()`` for the one rule that has to know the difference.
+
+    Rescheduling is deliberately not supported: cancel and recreate. That keeps
+    ``video_room_name`` immutable, which the Phase 3 spec requires.
     """
 
     student = models.ForeignKey(
@@ -305,6 +573,28 @@ class Booking(models.Model):
         help_text="Role 'lead' or 'sub', with an approved teacher profile.",
     )
     level = models.ForeignKey(Level, on_delete=models.PROTECT, related_name="bookings")
+    cohort = models.ForeignKey(
+        # PROTECT for the same reason as ``teacher``: a seat that has been taught
+        # is history, and deleting the cohort must not quietly take it with it.
+        Cohort,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="seat_bookings",
+        help_text=(
+            "Set when this booking is a seat in a group class rather than a 1:1 "
+            "session. Its teacher, level and start must match the cohort's."
+        ),
+    )
+    routed_reason = models.CharField(
+        max_length=20,
+        choices=RoutedReason.choices,
+        default=RoutedReason.STUDENT_CHOICE,
+        help_text=(
+            "How this booking's teacher was decided. Defaults to "
+            "'student_choice', which is what Phase 3's direct booking is."
+        ),
+    )
     start_time_utc = models.DateTimeField(help_text="Stored UTC, always.")
     duration_minutes = models.PositiveIntegerField(
         default=DEFAULT_DURATION_MINUTES,
@@ -371,6 +661,13 @@ class Booking(models.Model):
         backend-specific, and this project is still on SQLite (tech-debt.md).
         The query bound keeps that from meaning a full table scan, and is exact:
         no stored booking can be longer than LONGEST_POSSIBLE_BOOKING.
+
+        Seats in the *same* cohort are excluded (Phase 4). Six students in one
+        group class is one teacher teaching once, which is the entire point of a
+        cohort — counting those seats as five double-bookings would make the
+        second student in every cohort unbookable. Two seats in *different*
+        cohorts at the same time still clash, and so does a 1:1 session against
+        a cohort seat: those really are one teacher in two places.
         """
         if not self.teacher_id or self.start_time_utc is None:
             return []
@@ -382,6 +679,8 @@ class Booking(models.Model):
         )
         if self.pk:
             candidates = candidates.exclude(pk=self.pk)
+        if self.cohort_id:
+            candidates = candidates.exclude(cohort_id=self.cohort_id)
         return [
             other
             for other in candidates.only("start_time_utc", "duration_minutes")
@@ -451,6 +750,80 @@ class Booking(models.Model):
                 params={"start": self.start_time_utc.strftime("%Y-%m-%d %H:%M")},
             )
 
+    def _validate_teacher_specialty(self, errors):
+        """Phase 4 — the teacher must actually teach this level's track.
+
+        This is the tech-debt item Phase 4 closes rather than merely references:
+        ``TeacherProfile.specialties`` existed from Phase 3 and nothing read it,
+        so a parent could book a hifz teacher for an Arabic level and nothing
+        objected. It applies to routing and to direct booking alike, because it
+        lives in ``clean()``.
+
+        Attached to ``level`` rather than ``teacher``: the pair is what is wrong,
+        and every pre-existing test that asserts *why* a booking was refused
+        reads the teacher and non-field slots.
+        """
+        error = specialty_error(self.teacher, self.level)
+        if error is not None:
+            errors["level"] = error
+
+    def _validate_weekly_capacity(self, errors):
+        """Phase 4 — ``max_weekly_hours`` becomes a hard cap, not a hint.
+
+        The spec is explicit that a booking pushing a teacher over their weekly
+        cap is *rejected* rather than discouraged, for the lead and sub-teachers
+        equally. "The week" is ``utils.week_bounds`` and nothing else, so this
+        check and a future payout calculation cannot disagree.
+        """
+        cap_minutes = self.teacher.teacher_profile.max_weekly_hours * MINUTES_PER_HOUR
+        projected = weekly_committed_minutes(
+            self.teacher_id,
+            self.start_time_utc,
+            # Weighed without being saved — the cap has to be checked before the
+            # row exists. A seat in a cohort that already has one adds nothing.
+            including=(self.cohort_id, self.duration_minutes),
+            excluding_pk=self.pk,
+        )
+        if projected > cap_minutes:
+            errors.setdefault(
+                NON_FIELD_ERRORS,
+                ValidationError(
+                    "%(teacher)s would be at %(projected)d minutes this week, "
+                    "over their %(cap)d-minute limit.",
+                    code="teacher_weekly_capacity_exceeded",
+                    params={
+                        "teacher": self.teacher.username,
+                        "projected": projected,
+                        "cap": cap_minutes,
+                    },
+                ),
+            )
+
+    def _validate_matches_its_cohort(self, errors):
+        """A seat must describe the group class it is a seat in.
+
+        Without this a booking could carry a ``cohort`` while naming a different
+        teacher or time, which would both lie to the reader and quietly opt the
+        row out of the overlap rule via the same-cohort exclusion.
+        """
+        cohort = self.cohort
+        disagreements = []
+        if self.teacher_id and self.teacher_id != cohort.teacher_id:
+            disagreements.append("teacher")
+        if self.level_id and self.level_id != cohort.level_id:
+            disagreements.append("level")
+        if (
+            self.start_time_utc is not None
+            and self.start_time_utc != cohort.schedule_start_utc
+        ):
+            disagreements.append("start_time_utc")
+        if disagreements:
+            errors["cohort"] = ValidationError(
+                "A cohort seat must match its cohort; %(fields)s disagree.",
+                code="cohort_mismatch",
+                params={"fields": ", ".join(disagreements)},
+            )
+
     def clean(self):
         errors = {}
 
@@ -464,6 +837,9 @@ class Booking(models.Model):
                 teacher_ok = True
             else:
                 errors["teacher"] = teacher_error
+
+        if self.cohort_id:
+            self._validate_matches_its_cohort(errors)
 
         if not self._state.adding and self.video_room_name:
             stored = (
@@ -489,11 +865,20 @@ class Booking(models.Model):
             # a start time in the past is wrong whoever is teaching it.
             self._validate_not_already_started(errors)
 
+        if teacher_ok and self.level_id and self._state.adding:
+            # Creation only, like the availability rule below: a lead editing a
+            # teacher's specialties must not leave that teacher's existing
+            # bookings unsaveable, cancellation included (learnings.md).
+            self._validate_teacher_specialty(errors)
+
         if live and teacher_ok:
             # Creation only: a teacher later editing their hours must not make
             # an existing booking unsaveable, cancellation included.
             if self._state.adding:
                 self._validate_within_availability(errors)
+                # Same scope, same reason: lowering someone's weekly cap must
+                # not freeze the bookings they already hold.
+                self._validate_weekly_capacity(errors)
 
             if self.clashing_bookings():
                 errors.setdefault(
@@ -535,3 +920,68 @@ class Booking(models.Model):
             f"{self.student.username} with {self.teacher.username} "
             f"{self.start_time_utc:%Y-%m-%d %H:%M} UTC ({self.status})"
         )
+
+
+# --- Weekly capacity ---------------------------------------------------------
+# Defined below Booking because they query it. Both are the only supported way to
+# ask "how full is this teacher's week" — the Phase 4 spec asks for one shared
+# definition, and routing, Booking.clean() and any later payout code all read
+# these rather than assembling their own sums.
+
+
+def weekly_committed_minutes(teacher_id, moment, *, including=None, excluding_pk=None):
+    """Teaching minutes in ``teacher_id``'s week containing ``moment``.
+
+    Two rules make this more than a ``Sum``:
+
+    * Everything except a cancelled booking counts. Cancelling is what gives
+      capacity back; a session that has merely been taught must not refund the
+      teacher's weekly budget (see ``CAPACITY_CONSUMING_STATUSES``).
+    * A cohort session counts *once*, not once per seat. Six students in one
+      group class is one teacher teaching for thirty minutes, so charging the
+      teacher six times over would make cohorts — the whole throughput lever —
+      look more expensive than the 1:1 sessions they replace. Deduplication is
+      by ``cohort_id``, which is exact while a cohort has a single
+      ``schedule_start_utc``; a recurring cohort would need it per session.
+
+    ``including`` weighs a prospective ``(cohort_id, duration_minutes)`` that has
+    not been saved, which is how the cap is checked before a booking exists.
+    """
+    week_start, week_end = week_bounds(moment)
+    rows = Booking.objects.filter(
+        teacher_id=teacher_id,
+        start_time_utc__gte=week_start,
+        start_time_utc__lt=week_end,
+        status__in=CAPACITY_CONSUMING_STATUSES,
+    )
+    if excluding_pk is not None:
+        rows = rows.exclude(pk=excluding_pk)
+
+    counted = list(rows.values_list("cohort_id", "duration_minutes"))
+    if including is not None:
+        counted.append(including)
+
+    total = 0
+    cohorts_counted = set()
+    for cohort_id, minutes in counted:
+        if cohort_id is not None:
+            if cohort_id in cohorts_counted:
+                continue
+            cohorts_counted.add(cohort_id)
+        total += minutes or 0
+    return total
+
+
+def remaining_weekly_minutes(teacher, moment):
+    """How much of ``teacher``'s weekly cap is unspent in ``moment``'s week.
+
+    Routing's step 3 picks the sub-teacher with the most of this left, which is
+    the spec's "simplest correct rule" for spreading load — deliberately not a
+    weighted score, and the spec says so in as many words.
+
+    A negative result is possible (a cap lowered below an existing load) and is
+    returned as-is rather than clamped, so an over-committed teacher sorts below
+    an exactly-full one instead of tying with them.
+    """
+    cap_minutes = teacher.teacher_profile.max_weekly_hours * MINUTES_PER_HOUR
+    return cap_minutes - weekly_committed_minutes(teacher.pk, moment)

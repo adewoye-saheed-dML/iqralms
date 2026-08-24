@@ -55,6 +55,7 @@ from .factories import (
     CompletedBookingFactory,
     UnapprovedTeacherFactory,
     slot_at,
+    teaches,
 )
 
 
@@ -351,6 +352,7 @@ class BookingModelTests(TestCase):
         window = AvailabilityFactory()
         student = StudentFactory()
         level = LevelFactory()
+        teaches(window.teacher, level)
         start = slot_at(window)
 
         booking = Booking.objects.create(
@@ -719,7 +721,7 @@ class BookingOverlapTests(TestCase):
         candidate = Booking(
             student=StudentFactory(),
             teacher=self.teacher,
-            level=LevelFactory(),
+            level=self.existing.level,
             start_time_utc=slot_at(self.window, 135),
         )
         self.assertEqual(
@@ -828,13 +830,17 @@ class PastBookingRuleTests(TestCase):
     to be about past-dating.
     """
 
-    def covering_teacher(self, moment):
+    def covering_teacher(self, moment, level):
         """A bookable teacher whose declared hours cover a session at ``moment``.
 
         A full UTC day on that instant's own weekday. Availability is a weekly
         rule with no notion of a date, so a window covers last Tuesday exactly as
         much as next Tuesday — which is precisely why nothing before this phase
         objected to a booking in the past.
+
+        They also teach ``level``'s track, so Phase 4's specialty rule cannot be
+        what refuses these bookings; the assertions below check for an otherwise
+        empty error set for exactly that reason.
         """
         teacher = BookableTeacherFactory()
         Availability.objects.create(
@@ -843,14 +849,15 @@ class PastBookingRuleTests(TestCase):
             start_time_utc=time(0, 0),
             end_time_utc=time.max,
         )
-        return teacher
+        return teaches(teacher, level)
 
     def attempt(self, start):
         """Try to create a default-length booking starting at ``start``."""
+        level = LevelFactory()
         return Booking.objects.create(
             student=StudentFactory(),
-            teacher=self.covering_teacher(start),
-            level=LevelFactory(),
+            teacher=self.covering_teacher(start, level),
+            level=level,
             start_time_utc=start,
         )
 

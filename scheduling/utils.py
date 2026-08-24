@@ -29,6 +29,13 @@ UTC = ZoneInfo("UTC")
 #: 00:00 of the next one, so that ``end_time > start_time`` always holds.
 END_OF_DAY = time.max
 
+#: The academy's week starts Monday, Monday=0 as everywhere else in this app.
+#: Phase 4 turns ``max_weekly_hours`` into a hard cap, and its spec asks for one
+#: definition of "the week" shared by the routing check and any later payout
+#: calculation. ``week_bounds`` below is that definition — read the week from it
+#: rather than composing a boundary inline, or the two will disagree eventually.
+WEEK_STARTS_ON = 0
+
 
 def next_date_for_weekday(weekday: int, on_or_after=None):
     """The first date on or after ``on_or_after`` falling on ``weekday``.
@@ -38,6 +45,26 @@ def next_date_for_weekday(weekday: int, on_or_after=None):
     """
     start = on_or_after or dj_timezone.now().astimezone(UTC).date()
     return start + timedelta(days=(weekday - start.weekday()) % DAYS_IN_WEEK)
+
+
+def week_bounds(moment: datetime):
+    """The ``[start, end)`` UTC week containing ``moment``, Monday to Monday.
+
+    Monday 00:00 UTC up to but not including the following Monday 00:00 UTC.
+    Phase 4's weekly capacity cap is defined against this and nothing else: the
+    spec asks specifically that the routing check and any future payout
+    calculation not invent their own week boundaries, and the way to guarantee
+    that is for both to call this function.
+
+    ``moment`` may be in any zone; it is read in UTC, which is how every
+    datetime in this project is stored.
+    """
+    in_utc = moment.astimezone(UTC)
+    offset = (in_utc.weekday() - WEEK_STARTS_ON) % DAYS_IN_WEEK
+    start = datetime.combine(
+        in_utc.date() - timedelta(days=offset), time.min, tzinfo=UTC
+    )
+    return start, start + timedelta(days=DAYS_IN_WEEK)
 
 
 def split_utc_interval(start: datetime, end: datetime):

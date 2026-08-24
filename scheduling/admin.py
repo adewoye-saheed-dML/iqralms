@@ -17,7 +17,7 @@ A proper teacher-facing hours editor is a known gap (tech-debt.md).
 
 from django.contrib import admin
 
-from .models import Availability, Booking, Weekday
+from .models import Availability, Booking, Cohort, Weekday
 
 
 @admin.register(Availability)
@@ -42,6 +42,39 @@ class AvailabilityAdmin(admin.ModelAdmin):
         )
 
 
+@admin.register(Cohort)
+class CohortAdmin(admin.ModelAdmin):
+    """Cohorts are opened here or through the lead-only API.
+
+    ``students`` is editable here as an escape hatch, but note that seating a
+    student from this page creates *membership only* — no seat ``Booking``, so no
+    video room and nothing for the student to attend. Routing (or
+    ``Cohort.add_student`` alongside a booking) is the complete path; the seat
+    cap still holds either way, enforced by the m2m receiver in signals.py.
+    """
+
+    list_display = (
+        "level",
+        "teacher",
+        "schedule_start_utc",
+        "max_students",
+        "seats_taken",
+    )
+    list_filter = ("level__track", "teacher")
+    search_fields = ("teacher__username", "level__name")
+    autocomplete_fields = ("teacher", "level")
+    filter_horizontal = ("students",)
+    readonly_fields = ("seats_taken", "seats_available")
+
+    @admin.display(description="Seats taken")
+    def seats_taken(self, obj):
+        return obj.seats_taken if obj.pk else 0
+
+    @admin.display(description="Seats available")
+    def seats_available(self, obj):
+        return obj.seats_available if obj.pk else "—"
+
+
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):
     list_display = (
@@ -51,15 +84,16 @@ class BookingAdmin(admin.ModelAdmin):
         "start_time_utc",
         "duration_minutes",
         "status",
+        "routed_reason",
     )
-    list_filter = ("status", "teacher", "level__track")
+    list_filter = ("status", "routed_reason", "teacher", "level__track")
     search_fields = (
         "student__username",
         "student__email",
         "teacher__username",
         "video_room_name",
     )
-    autocomplete_fields = ("student", "teacher", "level")
+    autocomplete_fields = ("student", "teacher", "level", "cohort")
     # The room name is generated once and never changes (the model enforces it),
     # so it is never typed in. The join URL is derived from it.
     readonly_fields = ("video_room_name", "video_join_url")
