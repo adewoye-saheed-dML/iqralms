@@ -16,10 +16,19 @@ and committed.
 - `specs/phase-1-accounts.md` — users, roles, parent-child linking (DONE)
 - `specs/phase-2-curriculum.md` — tracks, levels, placement review (DONE)
 - `specs/phase-3-scheduling.md` — availability, direct booking, video (DONE)
-- `specs/phase-3.5-debt-cleanup.md` — booking concurrency + past-booking fix (CURRENT)
-- `specs/phase-4-routing.md` — cohorts, capacity-based auto-assignment (NEXT — do not start until 3.5 is done)
+- `specs/phase-3.5-debt-cleanup.md` — booking concurrency + past-booking fix (DONE)
+- `specs/phase-4-routing.md` — cohorts, capacity-based auto-assignment (CURRENT)
 - Later phases (pricing/waitlist, assessment, payouts) get their own spec
   file when we get there — don't write them in advance.
+
+## Note for Phase 4 specifically
+
+Phase 3.5 added `TeacherBookingLock` and `Booking.save()`'s locking
+sequence. Routing must create/assign bookings through `Booking.save()`,
+never a bulk operation — a `bulk_create` of cohort seat assignments would
+bypass both the lock and `clean()` entirely, silently reopening the race
+Phase 3.5 closed. See `learnings.md`, 2026-08-24 entries, before touching
+booking creation in this phase.
 
 ## Known pre-launch blockers (see tech-debt.md for full detail)
 
