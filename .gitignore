@@ -9,6 +9,9 @@ venv/
 # Django
 db.sqlite3
 db.sqlite3-journal
+# File-backed test database (settings.py DATABASES["default"]["TEST"]) plus the
+# -wal/-shm files SQLite leaves beside it.
+test_db.sqlite3*
 /staticfiles/
 # User uploads (placement audio samples) — local-disk MEDIA_ROOT, see tech-debt.md
 /media/
@@ -21,3 +24,4 @@ db.sqlite3-journal
 .idea/
 .vscode/
 .DS_Store
+.claude/settings.local.json

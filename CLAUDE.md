@@ -15,9 +15,11 @@ and committed.
 
 - `specs/phase-1-accounts.md` — users, roles, parent-child linking (DONE)
 - `specs/phase-2-curriculum.md` — tracks, levels, placement review (DONE)
-- `specs/phase-3-scheduling.md` — availability, direct booking, video (CURRENT)
-- Later phases (routing, assessment, payouts) get their own spec file when
-  we get there — don't write them in advance.
+- `specs/phase-3-scheduling.md` — availability, direct booking, video (DONE)
+- `specs/phase-3.5-debt-cleanup.md` — booking concurrency + past-booking fix (CURRENT)
+- `specs/phase-4-routing.md` — cohorts, capacity-based auto-assignment (NEXT — do not start until 3.5 is done)
+- Later phases (pricing/waitlist, assessment, payouts) get their own spec
+  file when we get there — don't write them in advance.
 
 ## Known pre-launch blockers (see tech-debt.md for full detail)
 

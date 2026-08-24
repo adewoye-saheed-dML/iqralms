@@ -239,3 +239,90 @@ Format:
   bookings are paid for (a student paying for two overlapping sessions is a
   refund conversation), and it belongs in `clean()` next to the teacher rule, not
   in a serializer.
+
+## 2026-08-24 — `select_for_update()` does nothing on SQLite, silently
+- **What happened:** Phase 3.5's spec offered "`select_for_update()` on the
+  teacher's `Availability`, or a dedicated per-teacher lock row" as equivalent
+  ways to close the booking race. They are not equivalent here. Django's SQLite
+  backend sets `has_select_for_update = False`, and `QuerySet.select_for_update()`
+  on a backend without it is a **no-op that raises nothing** — the query runs
+  without `FOR UPDATE` and locks nothing. It would have read like a fix in review
+  and held no lock at runtime.
+- **What we decided:** A `TeacherBookingLock` row per teacher, acquired by
+  *bumping* it (`revision = F("revision") + 1`) inside `transaction.atomic()`
+  wrapping `full_clean()` + the INSERT. A write is the one thing that takes a
+  real lock on every backend: a row lock where the engine has them, SQLite's
+  database write lock where it doesn't. `acquire()` raises if it finds itself
+  outside an atomic block, because a lock released at the end of its own
+  statement protects nothing — the exact failure the class exists to prevent.
+- **Why it matters for later phases:** Never reach for `select_for_update()`
+  while this project is on SQLite; check `connection.features` before trusting
+  any locking primitive. When Phase 4 routing writes bookings, it must go through
+  `Booking.save()` so it takes the lock — a `bulk_create` of assignments would
+  bypass both the lock and `clean()` entirely.
+
+## 2026-08-24 — SQLite's default transaction mode turns the race into a crash
+- **What happened:** The lock alone wasn't enough. SQLite defaults to
+  `BEGIN DEFERRED`, which takes no lock until the first *write*. Two bookings for
+  one slot would both BEGIN, both read (`clashing_bookings`), then both try to
+  upgrade to a write lock — and neither can wait, because each needs something
+  the other holds. SQLite breaks the tie by returning "database is locked"
+  immediately, *ignoring the busy timeout entirely*. Measured directly: the
+  read-then-write pattern under DEFERRED gives one committed row and one
+  `OperationalError`; under IMMEDIATE both transactions queue and both complete.
+- **What we decided:** `DATABASES["default"]["OPTIONS"]["transaction_mode"] =
+  "IMMEDIATE"` (Django 5.1+), so the write lock is taken at BEGIN and the second
+  booking queues instead of deadlocking, plus an explicit `timeout` for how long
+  it may queue. The loser then re-reads, sees the committed booking, and is
+  refused by the overlap rule — a 400, not a 500.
+- **Why it matters for later phases:** This setting is load-bearing, not
+  cosmetic, and `test_concurrency.py` fails without it. It is also *the* reason
+  the lock works on SQLite at all: `BEGIN IMMEDIATE` serialises writes
+  database-wide, so on this stack the lock row is really about being correct on
+  Postgres later, where locking is per row and BEGIN takes nothing. Retire both
+  together when the exclusion constraint lands.
+
+## 2026-08-24 — The concurrency tests forced the test database onto disk
+- **What happened:** The threaded tests failed with `database table is locked`
+  even with everything above in place. Django's SQLite test database is
+  in-memory, opened as `file:memorydb_default?mode=memory&cache=shared` — and
+  **shared-cache mode locks per table and raises `SQLITE_LOCKED`, which the busy
+  timeout is never consulted for.** So the loser died instantly instead of
+  queueing. That is an artefact of shared-cache mode; production is file-backed
+  and blocks properly. Confirmed by running the same two-thread probe against
+  both: shared-cache in-memory errors, a real file serialises.
+- **What we decided:** `DATABASES["default"]["TEST"]["NAME"]` points at a real
+  file, so the suite exercises the locking rules being shipped. That cost ~200ms
+  per commit in fsync (8s suite → minutes), so `config/test_runner.py` sets
+  `PRAGMA synchronous=OFF` on test connections via `connection_created`. Suite is
+  ~11s. Deliberately **not** `journal_mode=WAL`: WAL is faster still but changes
+  the locking rules (readers stop blocking writers), and the locking rules are
+  the thing under test. `synchronous` touches durability only.
+- **Why it matters for later phases:** Any future test that needs two real
+  connections (threads, `TransactionTestCase`, `LiveServerTestCase`) depends on
+  the test database being a file — don't "optimise" it back to `:memory:`. And a
+  concurrency test that passes should be distrusted until it has been seen to
+  fail: each half of this mechanism was verified by removing it and watching the
+  suite go red, which is the only reason we know the tests test anything.
+
+## 2026-08-24 — The booking factory quietly produced past-dated sessions
+- **What happened:** `BookingFactory` derives its start from
+  `slot_at(window)`, which used `next_date_for_weekday(weekday)` — and that
+  returns **today** when today already is the window's weekday. The default
+  window is Monday 09:00-17:00, so on a Monday afternoon every factory-built
+  booking was several hours in the past. Harmless for Phases 1-3, which have no
+  opinion about "now"; the moment the past-start rule landed it would have failed
+  a large part of the suite, and only on Mondays after 09:00 UTC.
+- **What we decided:** `slot_at` defaults its reference date to *tomorrow*, so
+  every derived slot is future-dated whatever the wall clock says, while a caller
+  that genuinely wants a past slot passes `on_or_after` explicitly (the API test
+  for the past rule does). Fixed in the factory rather than in
+  `utils.next_date_for_weekday`, whose "today counts" behaviour is correct for
+  the production availability conversion that uses it.
+- **Why it matters for later phases:** Test data that depends on the clock is a
+  latent, calendar-dependent failure. Anything time-sensitive added later should
+  derive from a factory helper rather than composing `datetime`s inline, and the
+  near-midnight case still can't be built at all — a 30-minute session in the
+  last half hour of the UTC day crosses midnight, which no single availability
+  window can cover, so those tests skip themselves rather than assert the wrong
+  error code.

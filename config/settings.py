@@ -84,6 +84,38 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        "OPTIONS": {
+            # Both of these exist for the booking lock (Phase 3.5). SQLite's
+            # default is BEGIN DEFERRED, which takes no lock until the first
+            # write. Two people booking one teacher's last slot would then both
+            # BEGIN, both read the slot free, and both try to upgrade to a write
+            # lock — and SQLite cannot let either wait, because each is waiting
+            # on a lock the other holds. It breaks the tie by returning "database
+            # is locked" immediately, ignoring the timeout below. The loser's
+            # request fails as a 500 rather than a clean "already booked".
+            #
+            # BEGIN IMMEDIATE takes the write lock up front, so the second
+            # booking queues at BEGIN instead of deadlocking mid-transaction,
+            # and once it runs it sees the first booking committed and refuses
+            # on the overlap rule like any other double-booking.
+            "transaction_mode": "IMMEDIATE",
+            # How long that second booking waits at BEGIN. Python's default is
+            # already 5s; set explicitly because it stops being a detail once a
+            # transaction can legitimately be made to wait.
+            "timeout": 20,
+        },
+        "TEST": {
+            # A real file, not the in-memory default. Django's in-memory test
+            # database is opened with `cache=shared`, and shared-cache SQLite
+            # locks per *table* and raises SQLITE_LOCKED ("database table is
+            # locked") for a contended write — an error the busy timeout is
+            # never consulted for, so the second booking dies instantly instead
+            # of queueing. That is an artefact of shared-cache mode and nothing
+            # to do with production, which is file-backed and blocks properly.
+            # Testing the booking lock against it would prove nothing about the
+            # thing being shipped, so the suite pays for a file instead.
+            "NAME": BASE_DIR / "test_db.sqlite3",
+        },
     }
 }
 

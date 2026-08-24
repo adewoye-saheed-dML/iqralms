@@ -18,6 +18,7 @@ from datetime import datetime, time, timedelta
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone as dj_timezone
 
 from accounts.models import Role
 from accounts.tests.factories import (
@@ -35,6 +36,8 @@ from scheduling.models import (
     Availability,
     Booking,
     BookingStatus,
+    DEFAULT_DURATION_MINUTES,
+    PAST_BOOKING_GRACE,
     VIDEO_ROOM_PREFIX,
     Weekday,
     generate_video_room_name,
@@ -63,6 +66,24 @@ def error_codes(exc, field=NON_FIELD_ERRORS):
     wrong one would otherwise pass silently.
     """
     return [error.code for error in exc.error_dict.get(field, [])]
+
+
+def age_booking(booking, age):
+    """Move an existing booking's start ``age`` into the past, bypassing ``save()``.
+
+    The criterion-4 tests need a booking that already exists and whose start time
+    has since passed — the state every session reaches once it has been taught.
+    Building it can't go through ``save()``: the past-start rule would reject the
+    very state we are trying to set up. A direct ``UPDATE`` via ``QuerySet.update``
+    writes the column without running model validation, which is exactly the
+    "already stored, now past" starting point these tests describe. Returns the
+    same instance, refreshed from the row.
+    """
+    Booking.objects.filter(pk=booking.pk).update(
+        start_time_utc=dj_timezone.now() - age
+    )
+    booking.refresh_from_db()
+    return booking
 
 
 def unapprove(teacher):
@@ -790,6 +811,188 @@ class WeeklyRuleHelperTests(TestCase):
         self.assertEqual(start.time(), time(10, 30))
         self.assertEqual(start.tzinfo, UTC)
         self.assertTrue(window.covers(start.weekday(), start.time(), time(11, 0)))
+
+
+class PastBookingRuleTests(TestCase):
+    """Phase 3.5 criteria 2-4 — a *new* booking may not start in the past.
+
+    Every booking here is built from ``dj_timezone.now()`` rather than from
+    ``slot_at``, because what is under test is the relationship between the start
+    time and the clock, and ``slot_at`` deliberately hides that by always
+    returning a future slot.
+
+    Each test gives the teacher hours that cover the attempt, so the availability
+    rule cannot be what rejects it. That is why the rejections below assert an
+    empty ``NON_FIELD_ERRORS`` as well as the expected field code: without it,
+    a booking refused for being outside declared hours would pass a test claiming
+    to be about past-dating.
+    """
+
+    def covering_teacher(self, moment):
+        """A bookable teacher whose declared hours cover a session at ``moment``.
+
+        A full UTC day on that instant's own weekday. Availability is a weekly
+        rule with no notion of a date, so a window covers last Tuesday exactly as
+        much as next Tuesday — which is precisely why nothing before this phase
+        objected to a booking in the past.
+        """
+        teacher = BookableTeacherFactory()
+        Availability.objects.create(
+            teacher=teacher,
+            weekday=moment.weekday(),
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+        return teacher
+
+    def attempt(self, start):
+        """Try to create a default-length booking starting at ``start``."""
+        return Booking.objects.create(
+            student=StudentFactory(),
+            teacher=self.covering_teacher(start),
+            level=LevelFactory(),
+            start_time_utc=start,
+        )
+
+    def skip_if_it_would_cross_utc_midnight(self, start):
+        """A session spanning midnight UTC is rejected by a different rule.
+
+        No single availability window crosses midnight, so a run happening in the
+        last half hour of the UTC day cannot build the "covered by declared
+        hours" precondition these tests need. Skipping is honest; quietly
+        asserting the wrong error code would not be.
+        """
+        session_end = start + timedelta(minutes=DEFAULT_DURATION_MINUTES)
+        if session_end.date() != start.date():
+            self.skipTest(
+                "this run is within half an hour of UTC midnight, where a "
+                "session crosses the day boundary and no window can cover it"
+            )
+
+    def assert_rejected_as_past(self, start):
+        with self.assertRaises(ValidationError) as ctx:
+            self.attempt(start)
+        self.assertEqual(
+            error_codes(ctx.exception, "start_time_utc"), ["start_time_in_past"]
+        )
+        # Nothing else objected, so the past-start rule is genuinely what fired.
+        self.assertEqual(error_codes(ctx.exception), [])
+        self.assertFalse(Booking.objects.exists())
+
+    # --- Criterion 2: the past is refused -----------------------------------
+
+    def test_a_booking_well_in_the_past_is_rejected(self):
+        """Acceptance criterion 2."""
+        start = dj_timezone.now() - timedelta(hours=1)
+        self.skip_if_it_would_cross_utc_midnight(start)
+        self.assert_rejected_as_past(start)
+
+    def test_a_booking_last_week_is_rejected(self):
+        """The slot a completed session used to occupy is not re-bookable.
+
+        This is the hole the tech-debt entry called out: the overlap rule only
+        considers *scheduled* bookings, so a past slot held by a completed
+        session reads as free. Being in the past is now what stops it.
+        """
+        start = dj_timezone.now() - timedelta(days=7)
+        self.skip_if_it_would_cross_utc_midnight(start)
+        self.assert_rejected_as_past(start)
+
+    def test_a_booking_just_beyond_the_grace_window_is_rejected(self):
+        """The far side of the boundary the next test proves the near side of."""
+        start = dj_timezone.now() - (PAST_BOOKING_GRACE + timedelta(minutes=2))
+        self.skip_if_it_would_cross_utc_midnight(start)
+        self.assert_rejected_as_past(start)
+
+    # --- Criterion 3: the grace window works --------------------------------
+
+    def test_a_booking_inside_the_grace_window_is_accepted(self):
+        """Acceptance criterion 3 — the grace period does something.
+
+        Derived from ``PAST_BOOKING_GRACE`` rather than hardcoded, so shrinking
+        the constant cannot leave this test silently asserting the old boundary.
+        A booking this far back is what a student clicking an available 09:00
+        slot at 09:00:0x actually produces.
+        """
+        start = dj_timezone.now() - (PAST_BOOKING_GRACE / 2)
+        self.skip_if_it_would_cross_utc_midnight(start)
+
+        booking = self.attempt(start)
+        self.assertEqual(booking.status, BookingStatus.SCHEDULED)
+        self.assertEqual(booking.start_time_utc, start)
+
+    def test_a_booking_starting_now_is_accepted(self):
+        """The boundary case the grace window exists for: a session starting now."""
+        start = dj_timezone.now()
+        self.skip_if_it_would_cross_utc_midnight(start)
+        self.assertEqual(self.attempt(start).status, BookingStatus.SCHEDULED)
+
+    def test_a_booking_in_the_future_is_unaffected(self):
+        """The ordinary case has to keep working, which is most of the point."""
+        start = dj_timezone.now() + timedelta(hours=1)
+        self.skip_if_it_would_cross_utc_midnight(start)
+        self.assertEqual(self.attempt(start).status, BookingStatus.SCHEDULED)
+
+    # --- Criterion 4: creation-time only ------------------------------------
+
+    def test_a_taught_session_can_still_be_marked_completed(self):
+        """Acceptance criterion 4, in the form it actually happens.
+
+        A session is future-dated when it is booked and past-dated by the time it
+        has been taught. If the rule were not creation-only, marking it completed
+        — the one write every finished session needs — would be impossible.
+        """
+        booking = age_booking(BookingFactory(), timedelta(days=1))
+        self.assertLess(
+            booking.start_time_utc,
+            dj_timezone.now() - PAST_BOOKING_GRACE,
+            "precondition: the start really is past, so the rule would fire on a "
+            "new booking with this time",
+        )
+
+        booking.status = BookingStatus.COMPLETED
+        booking.save()
+
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, BookingStatus.COMPLETED)
+
+    def test_a_still_scheduled_booking_whose_time_has_passed_stays_saveable(self):
+        """The ``_state.adding`` half of criterion 4, not the status half.
+
+        A booking that is still ``scheduled`` runs the overlap rule on every
+        save, so this one goes through the same branch a new booking does and is
+        spared only because it is not being created. Were the rule gated on
+        status alone, a session that had merely started would freeze.
+        """
+        booking = age_booking(BookingFactory(), timedelta(hours=2))
+
+        booking.save()  # must not raise
+
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, BookingStatus.SCHEDULED)
+
+    def test_a_session_that_has_already_started_can_still_be_cancelled(self):
+        """``cancel()`` goes through ``save()``, so the rule could have wedged it.
+
+        The same trap the availability check was made creation-only to avoid —
+        an unsaveable booking is an uncancellable one.
+        """
+        booking = age_booking(BookingFactory(), timedelta(minutes=45))
+
+        booking.cancel()
+
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, BookingStatus.CANCELLED)
+
+    def test_a_past_booking_can_be_recorded_as_a_no_show(self):
+        """The other end-state a past session needs to be able to reach."""
+        booking = age_booking(BookingFactory(), timedelta(days=2))
+
+        booking.status = BookingStatus.NO_SHOW
+        booking.save()
+
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, BookingStatus.NO_SHOW)
 
 
 class MigrationStateTests(TestCase):
