@@ -432,3 +432,102 @@ Format:
   last half hour of the UTC day crosses midnight, which no single availability
   window can cover, so those tests skip themselves rather than assert the wrong
   error code.
+
+## 2026-08-25 — Paying more buys no queue position (the spec's open question)
+- **What happened:** `specs/phase-5-pricing-waitlist.md` refused to decide whether
+  a `PricingAgreement` with `reason=premium_direct` should raise a student's
+  `TeacherWaitlist.priority`, and said to ask rather than default either way.
+- **What we decided:** **No.** Nothing in the code writes `priority` at all — a
+  lead raises it by hand in the admin or it stays 0. The two models are
+  neighbours in one phase, not coupled: `pricing` imports nothing from
+  `scheduling` and vice versa, and `test_waitlist.py::PricingDoesNotTouchPriorityTests`
+  asserts that creating a premium agreement leaves an existing entry's priority
+  untouched *and* that an entry created afterwards still starts at zero.
+- **Why it matters for later phases:** If this is ever reversed, the coupling has
+  to be deliberate and one-directional — priority computed when the *waitlist
+  entry* is created, reading `PricingAgreement.active_for()`, never a pricing
+  write reaching across to mutate a queue. And it needs an answer for the entries
+  that already exist at that moment, which is the part that makes it a migration
+  rather than a feature flag.
+
+## 2026-08-25 — The waitlist/hard-block line is drawn on error *codes*
+- **What happened:** The spec wants a preferred teacher who is *full or busy* to
+  produce a waitlist entry, but a hard block (unapproved profile, wrong track) to
+  "fail outright, not waitlist" — because a queue cannot fix "she does not teach
+  Hifz". Routing has no rules of its own (`_candidate()` asks `Booking.clean()`),
+  so it has nothing to branch on except the refusal it got back.
+- **What we decided:** `routing.WAITLISTABLE_CODES` is an explicit allowlist of
+  three `ValidationError` codes — `outside_availability`,
+  `teacher_weekly_capacity_exceeded`, `teacher_double_booked` — and
+  `is_waitlistable()` requires **every** code in a refusal to be in it. A teacher
+  who is both unapproved *and* full is refused outright, because a waitlist entry
+  would promise a slot that only approving them can reach.
+- **Why it matters for later phases:** This is the one place where routing
+  *interprets* `Booking.clean()` rather than merely relaying it, so the two can
+  drift after all. **Any new refusal code added to `Booking.clean()` silently
+  defaults to "fail outright, no waitlist"** — which is the safe direction, but it
+  is a decision being made by omission. Add the code to the frozenset, or
+  deliberately don't, and say which in the commit. The same set governs the
+  post-lock race path: a candidate that passes the check and then loses the slot
+  inside `save()` is re-classified through `is_waitlistable()` and waitlisted, so
+  a lost race and a slot that was already gone produce the same answer for the
+  family.
+
+## 2026-08-25 — A waitlist entry validates the teacher's role but not their approval
+- **What happened:** `TeacherWaitlist.clean()` looked like it should reuse
+  `bookable_teacher_error()`, the way `Booking`, `Availability` and `Cohort` all
+  do. Doing that would have walked straight into the frozen-row trap this file
+  already records for the booking approval gate: if a named teacher's approval is
+  later revoked, every existing entry naming them becomes unsaveable — so
+  stamping a fulfilment, or even adjusting `priority`, would raise.
+- **What we decided:** Only `is_teacher` (the role) is checked. An entry is a
+  *request*, not a session: the fuller test belongs at the moment a booking is
+  actually created, which is `promote_waitlist_entry()` → `_candidate()` →
+  `Booking.clean()`, and that is where an unapproved teacher is refused. Two
+  tests pin it — an unapproved teacher can still be asked for, and an entry stays
+  saveable after its teacher loses approval.
+- **Why it matters for later phases:** "Validate everything everywhere" is the
+  wrong instinct for any row that outlives the state it describes. The question to
+  ask of a new model is not "which rules apply" but "which rules must still hold
+  in a year, when the world has moved on" — and for a record of something somebody
+  *wanted*, that is almost always fewer rules than the thing they wanted.
+
+## 2026-08-25 — Superseding has to happen before `full_clean()`, not after
+- **What happened:** `PricingAgreement` enforces one active agreement per student
+  and level with a partial `UniqueConstraint`, and `save()` calls `full_clean()`
+  like every other model in this project. The obvious ordering — validate, save,
+  then deactivate the row this one replaces — cannot work: `full_clean()` checks
+  constraints, so creating the replacement is refused by the very rule it is
+  about to satisfy.
+- **What we decided:** `save()` calls `supersede_active()` **first**, inside the
+  same `transaction.atomic()`, then `full_clean()`, then the INSERT. So the old
+  row is already `active=False` by the time the constraint is evaluated. The
+  deactivation is a queryset `update()` rather than a `save()` per row, on purpose:
+  it flips one boolean on otherwise-untouched historical records, and routing them
+  through `full_clean()` would re-validate rows nobody is editing.
+- **Why it matters for later phases:** Any "new row supersedes the old one" model
+  with a partial unique constraint has this ordering hazard, and it fails *only*
+  on the second write — so a test that creates one agreement proves nothing. There
+  is a test that hand-writes a second active row and asserts the database refuses
+  it, which is what proves the constraint is real rather than decorative.
+
+## 2026-08-25 — Two `mine/` endpoints, two different answers about parents
+- **What happened:** Phase 5 adds `/api/scheduling/waitlist/mine/` and
+  `/api/pricing/agreements/mine/`. Both started `IsStudent`-only, copying
+  `/bookings/mine/`. But `/route/` is `IsStudentOrParent`, so a parent can put
+  their child on a teacher's waitlist and then could not read the request back —
+  a hole rather than a privacy boundary.
+- **What we decided:** Asked rather than guessed, since it is about who in a
+  family sees what. The waitlist listing was widened to `IsStudentOrParent`,
+  scoped through `ParentLink` exactly as `BookingCancelView` scopes cancellation
+  (and `.distinct()`, because a student with two linked parents joins twice).
+  Pricing stays student-only: there is no parent write path to pricing, so nothing
+  is broken by leaving it, and a parent reading a negotiated rate is the payments
+  phase's decision to make. The asymmetry is deliberate and both halves are in
+  tech-debt.md.
+- **Why it matters for later phases:** The rule worth carrying forward is
+  narrower than "parents can see their children's things": **whoever can create a
+  record through the API must be able to read it back.** Check that pairing when
+  adding any `mine/` endpoint — the permission class on the *write* path is the
+  one that tells you who the audience is.
+

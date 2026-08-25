@@ -10,7 +10,9 @@ back to the teacher's own.
 Whether a slot is *legal* is never decided here. Declared hours, overlap, an
 approved teacher, the track specialty and the weekly cap all live in
 ``Booking.clean()`` and are surfaced from there, so the API and a direct ORM
-write cannot disagree about what a valid booking is.
+write cannot disagree about what a valid booking is. Phase 5's waitlist follows
+the same split: whether an entry is coherent is ``TeacherWaitlist.clean()``'s
+business, and this layer only decides what each side gets to see of it.
 """
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -28,6 +30,7 @@ from .models import (
     Cohort,
     DEFAULT_DURATION_MINUTES,
     DEFAULT_MAX_STUDENTS,
+    TeacherWaitlist,
 )
 
 
@@ -300,7 +303,15 @@ class TimeWindowSerializer(serializers.Serializer):
 
 
 class RouteRequestSerializer(serializers.Serializer):
-    """``POST /route/`` — let the system decide who teaches this."""
+    """``POST /route/`` — let the system decide who teaches this.
+
+    ...unless ``preferred_teacher`` is given, which is Phase 5's addition: naming
+    a teacher turns off the routing order entirely and asks about that person
+    alone. It is optional and additive, so every Phase 4 client keeps working
+    unchanged — and a request that omits it is still refused a smuggled
+    ``teacher`` key, because auto-routing must never quietly honour a preference
+    it was not asked to honour.
+    """
 
     level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.all())
     requested_time_window = TimeWindowSerializer()
@@ -309,6 +320,30 @@ class RouteRequestSerializer(serializers.Serializer):
         required=False,
         help_text="Required when a parent requests; ignored when a student does.",
     )
+    preferred_teacher = serializers.PrimaryKeyRelatedField(
+        # Not filtered to teachers in the queryset: a non-teacher id should be
+        # refused as a *role* error naming the field, which is what
+        # ``validate_preferred_teacher`` below does, rather than as the generic
+        # "object does not exist" a filtered queryset produces. Those read very
+        # differently to whoever is debugging the client.
+        queryset=User.objects.all(),
+        required=False,
+        allow_null=True,
+        help_text=(
+            "Ask for one teacher by name. Skips cohort/lead/sub resolution "
+            "entirely: books that teacher if they can take it, otherwise puts "
+            "the student on that teacher's waitlist rather than assigning "
+            "anybody else. Always a 1:1 session, never a cohort seat."
+        ),
+    )
+
+    def validate_preferred_teacher(self, value):
+        if value is not None and not value.is_teacher:
+            raise serializers.ValidationError(
+                "Only a lead or sub teacher can be asked for by name (got "
+                f"'{value.role}')."
+            )
+        return value
 
     def validate(self, attrs):
         attrs["student"] = resolve_requested_student(
@@ -336,6 +371,93 @@ class NoCapacitySerializer(serializers.Serializer):
         help_text=(
             "Why each step declined, keyed by step: 'cohort', 'lead', "
             "'sub_teachers'. Present so the frontend can explain the refusal "
-            "rather than showing a bare error."
+            "rather than showing a bare error. A preferred-teacher request adds "
+            "'preferred_teacher' (the refusal for that teacher) and 'waitlist' "
+            "(the waitlist entry created, when one was) — the Phase 4 shape "
+            "extended, not replaced."
         )
+    )
+
+
+class WaitlistPartySerializer(serializers.ModelSerializer):
+    """A person in a waitlist row — no signup_code, no sprawl, same as bookings."""
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "first_name", "last_name", "role", "timezone"]
+        read_only_fields = fields
+
+
+class WaitlistEntrySerializer(serializers.ModelSerializer):
+    """Read representation of one waitlist entry, for whatever side is looking.
+
+    ``requested_end_utc`` is derived from the start and duration — convenience,
+    not another stored value. ``fulfilled_booking`` is published as the booking
+    id when set; the full booking payload is not, because the interested party
+    (the lead, the family) can read the session itself through the booking
+    endpoint.
+    """
+
+    student = WaitlistPartySerializer(read_only=True)
+    requested_teacher = WaitlistPartySerializer(read_only=True)
+    level = LevelSerializer(read_only=True)
+    track = serializers.SlugRelatedField(
+        source="level.track", slug_field="slug", read_only=True
+    )
+    requested_end_utc = serializers.DateTimeField(read_only=True)
+    requested_start_local = serializers.SerializerMethodField()
+    requested_at_local = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TeacherWaitlist
+        fields = [
+            "id",
+            "student",
+            "requested_teacher",
+            "level",
+            "track",
+            "requested_start_utc",
+            "requested_end_utc",
+            "requested_start_local",
+            "requested_duration_minutes",
+            "requested_at",
+            "requested_at_local",
+            "priority",
+            "notified",
+            "fulfilled_booking",
+            "status",
+        ]
+        read_only_fields = fields
+
+    def get_requested_at_local(self, obj) -> str | None:
+        """requested_at (stored UTC) in the requester's own zone."""
+        local = to_user_timezone(
+            obj.requested_at, viewer_timezone(self.context, obj.student)
+        )
+        return local.isoformat() if local else None
+
+    def get_requested_start_local(self, obj) -> str | None:
+        """The slot asked for, in the requesting user's zone."""
+        local = to_user_timezone(
+            obj.requested_start_utc, viewer_timezone(self.context, obj.student)
+        )
+        return local.isoformat() if local else None
+
+    def get_status(self, obj) -> str:
+        """``open`` or ``fulfilled`` — the one thing a parent asks for."""
+        return "open" if obj.is_open else "fulfilled"
+
+
+class WaitlistPromoteSerializer(serializers.Serializer):
+    """The lead promotes an entry into a session.
+
+    The slot is optional: it defaults to the one the family asked for, and
+    overrides only *when* the session runs — the entry always keeps its original
+    request on record. ``duration_minutes`` defaults the same way.
+    """
+
+    start_time_utc = serializers.DateTimeField(required=False)
+    duration_minutes = serializers.IntegerField(
+        required=False, min_value=1
     )

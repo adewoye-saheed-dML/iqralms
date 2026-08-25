@@ -1,9 +1,9 @@
 """
 Django settings for the Quran Academy platform.
 
-Phases 1-4 (accounts, curriculum, scheduling, routing). Secrets and
-environment-specific values read from the environment with development-safe
-fallbacks so a fresh clone runs immediately.
+Phases 1-5 (accounts, curriculum, scheduling, routing, pricing + waitlist).
+Secrets and environment-specific values read from the environment with
+development-safe fallbacks so a fresh clone runs immediately.
 """
 
 import os
@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "accounts",
     "curriculum",
     "scheduling",
+    "pricing",
 ]
 
 MIDDLEWARE = [
@@ -191,8 +192,10 @@ SPECTACULAR_SETTINGS = {
         "Identity layer: users, roles, parent links, teacher profiles. "
         "Curriculum: tracks, levels, placement review. "
         "Scheduling: teacher availability, direct booking, Jitsi video. "
-        "Routing: cohorts, capacity-based auto-assignment."
+        "Routing: cohorts, capacity-based auto-assignment. "
+        "Pricing: negotiated rates per student and level, lead-approved. "
+        "Waitlist: preferred-teacher requests when that teacher is full."
     ),
-    "VERSION": "0.4.0",
+    "VERSION": "0.5.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }

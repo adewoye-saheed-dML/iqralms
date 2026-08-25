@@ -32,8 +32,24 @@ class NoCapacity(Exception):
     bug to route around: booking someone outside their availability or over their
     cap just to avoid an error defeats the entire point of the phase. Carries the
     per-step reasons so the response can say *why* honestly.
+
+    Phase 5 reuses it for the preferred-teacher case, extending ``considered``
+    with the waitlist entry rather than inventing a second refusal shape — the
+    parent then sees both why their teacher could not take it *and* that they are
+    on that teacher's list.
     """
 
     def __init__(self, message, considered=None):
         super().__init__(message)
         self.considered = considered or {}
+
+
+class WaitlistEntryAlreadyFulfilled(Exception):
+    """Raised when promoting a waitlist entry that already has a session.
+
+    Promotion is a one-way transition, the same shape as reviewing a placement:
+    the entry keeps ``fulfilled_booking`` as a permanent record, so promoting it
+    again would either overwrite that history or silently create a second session
+    for a family that already has one. The view layer turns this into a 409.
+    """
+

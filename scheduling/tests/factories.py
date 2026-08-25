@@ -14,6 +14,11 @@ never build a state the model would reject:
   the teacher's specialties before saving (Phase 4 makes that a hard rule). A
   test that wants the *rejection* builds its booking directly rather than through
   the factory — see ``teaches`` below.
+* ``WaitlistEntryFactory`` (Phase 5) derives its requested slot from a window the
+  same way, so an entry built by the factory is one a promotion could actually
+  fulfil. A test that wants promotion to *fail* fills the teacher's week or
+  narrows their hours after building the entry, which is exactly the drift the
+  entry exists to survive.
 """
 
 from datetime import datetime, time, timedelta
@@ -35,6 +40,7 @@ from scheduling.models import (
     Cohort,
     DEFAULT_DURATION_MINUTES,
     DEFAULT_MAX_STUDENTS,
+    TeacherWaitlist,
     Weekday,
 )
 from scheduling.utils import UTC, next_date_for_weekday
@@ -207,6 +213,52 @@ class CohortFactory(factory.django.DjangoModelFactory):
 
 class LeadCohortFactory(CohortFactory):
     """A group class the lead teacher runs themselves."""
+
+    availability = factory.SubFactory(
+        AvailabilityFactory, teacher=factory.SubFactory(BookableLeadTeacherFactory)
+    )
+
+
+class WaitlistEntryFactory(factory.django.DjangoModelFactory):
+    """An open request for one teacher by name, for a slot they could take.
+
+    Same shape as ``BookingFactory``: pass ``availability=`` to control the
+    teacher and the window, and the requested slot is derived from it — so an
+    entry built here is one ``promote_waitlist_entry`` can actually fulfil, which
+    is what makes the *failure* tests meaningful (they take the capacity away
+    afterwards rather than never having had it).
+
+    The specialty is granted for the same reason ``BookingFactory`` grants it: a
+    promotion runs the full ``Booking.clean()``, so an entry naming a teacher who
+    does not teach the level could only ever fail.
+    """
+
+    class Meta:
+        model = TeacherWaitlist
+        exclude = ("availability",)
+
+    availability = factory.SubFactory(AvailabilityFactory)
+    student = factory.SubFactory(StudentFactory)
+    requested_teacher = factory.SelfAttribute("availability.teacher")
+    level = factory.SubFactory(LevelFactory)
+    requested_start_utc = factory.LazyAttribute(lambda o: slot_at(o.availability))
+    requested_duration_minutes = DEFAULT_DURATION_MINUTES
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        # TeacherWaitlist.clean() does not check the specialty — an entry is a
+        # request, not a session — but promoting one does, so a factory-built
+        # entry that could never be promoted would be a trap. Granted here for
+        # the same reason BookingFactory does it, and in _create rather than a
+        # post_generation hook so it is in place before save().
+        teacher, level = kwargs.get("requested_teacher"), kwargs.get("level")
+        if teacher is not None and level is not None:
+            teaches(teacher, level)
+        return super()._create(model_class, *args, **kwargs)
+
+
+class LeadWaitlistEntryFactory(WaitlistEntryFactory):
+    """A family asking for the lead teacher by name — the spec's central case."""
 
     availability = factory.SubFactory(
         AvailabilityFactory, teacher=factory.SubFactory(BookableLeadTeacherFactory)

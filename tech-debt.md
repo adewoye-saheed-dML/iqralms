@@ -222,6 +222,16 @@ Format:
   average to mean anything.
 
 ## 2026-08-24 — Routing answers only the instant it was asked about
+- **Partly addressed 2026-08-25 (Phase 5).** Of the two shapes named below, the
+  product chose **record the unmet request**: a `preferred_teacher` request that
+  is refused for capacity or availability creates a `TeacherWaitlist` entry and
+  reports it inside `NoCapacity.considered`. What is *not* addressed is the
+  auto-routing path — `route_session()` without a `preferred_teacher` still
+  raises `NoCapacity` for the one instant it was asked about, proposes no
+  alternate time and creates no waitlist entry (there is a test saying so:
+  `test_waitlist_routing.py::test_the_normal_refusal_creates_no_waitlist_entry`).
+  So the "candidate alternate slots" half of the entry below is still open, and
+  a student who asks for an hour nobody has declared still just gets a 409.
 - **What was skipped:** Any search for a *different* time. `route_session` takes one
   `start_time_utc`, tests every candidate against exactly that instant, and raises
   `NoCapacity` if none passes. It never walks forward through the teacher's declared
@@ -241,8 +251,137 @@ Format:
   (the student picks, so nothing is silent), or record the unmet request and notify
   when capacity appears. The refusal payload should extend `considered` rather than
   invent a second reporting shape — same note as in learnings.md.
-- **Revisit when:** The pricing-exceptions + waitlist phase (next up), or sooner if
-  the 409 rate shows students asking for hours nobody has declared.
+- **Revisit when:** The alternate-slots half, if the 409 rate on *auto-routed*
+  requests shows students asking for hours nobody has declared. The waitlist half
+  is done for preferred-teacher requests.
+
+## 2026-08-25 — A preferred-teacher request is always 1:1, never a cohort seat
+- **What was skipped:** Any cohort awareness on the preferred-teacher path.
+  `routing._resolve_preferred()` passes no `cohort` to `_candidate()`, so naming a
+  teacher produces a 1:1 booking even when that teacher has an open cohort for
+  that level starting at exactly the requested time. Promotion behaves the same
+  way.
+- **Why:** The Phase 5 spec asks for exactly this, and asks for it to be logged
+  here so it does not read as an oversight later: "A parent naming a specific
+  teacher wants that teacher, not a seat in a class." Folding the two together
+  silently would satisfy a preference with something adjacent to it, which is the
+  failure mode the whole phase exists to prevent.
+- **Consequence now:** A 1:1 preference against a teacher who is running a cohort
+  at that instant is *refused* — the seat bookings and the 1:1 session really do
+  clash (`test_waitlist_routing.py::test_a_one_to_one_preference_clashes_with_the_teachers_own_cohort`),
+  so the family is waitlisted for a slot the teacher is technically teaching in.
+  That is the honest answer under the current rule, but it is a confusing one.
+- **Real fix:** Decide on purpose whether "I want Ustadh" ever means "seat me in
+  Ustadh's class". If yes, it is a distinct feature: an explicit
+  `accept_cohort_seat` flag on the request, or offering the seat in the refusal
+  payload for the family to accept — not a silent widening of the current rule.
+- **Revisit when:** A real cohort runs and a family names its teacher. Likely the
+  same conversation as the recurring-cohort entry above, since a weekly beginner
+  class is when this collision stops being hypothetical.
+
+## 2026-08-25 — Cancelling a promoted session leaves the waitlist entry closed
+- **What was skipped:** Any link between cancelling a promoted `Booking` and
+  reopening the `TeacherWaitlist` entry that produced it. `is_open` reads
+  `fulfilled_booking_id is None` and nothing else, so a cancelled session leaves
+  the entry stamped and closed.
+- **Why:** Asked rather than guessed, because two models are equally defensible
+  and one of them means hooking Phase 3's already-committed `Booking.cancel()`.
+  Product owner chose **promotion is one-way**: the entry is the permanent record
+  of "asked, and was granted a session", and a cancellation afterwards is a new
+  conversation rather than a reinstatement.
+- **Consequence now:** The family drops out of the lead's queue holding no
+  session, and `/waitlist/mine/` shows them `status: "fulfilled"`. Re-asking
+  works — the partial unique constraint is scoped to *open* entries — but creates
+  a fresh row, so they lose their original `requested_at` and `priority` and
+  queue behind anyone who has been waiting since. Nobody is notified either way,
+  since notification is the entry below. There are tests
+  (`test_waitlist_routing.py::CancellingAPromotedSessionDoesNotReopenTheEntryTests`)
+  so a later phase has to change this on purpose.
+- **Real fix:** If reinstatement is wanted, the cleanest form is a `cancel()`
+  hook (or a `post_save` receiver) that clears `fulfilled_booking` and leaves
+  `requested_at`/`priority` untouched, so the family resumes their place — plus a
+  decision about whether a *lead-initiated* cancellation and a
+  *family-initiated* one should behave the same, which they probably should not.
+- **Revisit when:** The first promoted session is cancelled. It is a data-quality
+  problem before it is a fairness one, exactly like the cohort-seat entry above.
+
+## 2026-08-25 — Nothing notifies a waitlisted family when a slot opens
+- **What was skipped:** Any automatic offering. `TeacherWaitlist.notified` exists
+  and **nothing in the codebase ever writes it**; a lead reading
+  `/waitlist/for-teacher/` and calling `/promote/` by hand is the entire
+  fulfillment mechanism.
+- **Why:** The Phase 5 spec puts it explicitly out of scope, and it is not a
+  shortcut so much as a different piece of work: "tell the next person in line
+  the moment a slot frees up" needs a trigger (a cancellation, a widened
+  availability window), a background worker, and a delivery channel — none of
+  which exist yet.
+- **Consequence now:** A slot can open and stay open with a family waiting for
+  it, indefinitely, unless the lead happens to look. `notified` reading `False`
+  on every row means nothing today, which is worse than the field being absent —
+  a later reader could easily take it as "nobody has been told yet" rather than
+  "this is never set".
+- **Real fix:** A phase of its own. `Booking.cancel()` and availability edits are
+  the triggers; `TeacherWaitlist.open_for_teacher()` is already the queue in the
+  right order, so the missing pieces are the worker, the delivery (email needs
+  the backend that registration is also waiting on), and a decision about whether
+  an offer holds the slot for a while or is first-come-first-served.
+- **Revisit when:** The first waitlist entry is real. Until then the lead is the
+  scheduler and knows their own queue.
+
+## 2026-08-25 — A sub-teacher cannot see who is waiting for them
+- **What was skipped:** Any teacher-facing view of the waitlist.
+  `/waitlist/for-teacher/?teacher_id=` is `IsLeadTeacher`, so a sub-teacher
+  cannot read their own queue even though the entries name them.
+- **Why:** It is a real decision rather than boilerplate — the queue exposes
+  other families' requests, timing and `priority` to somebody who cannot act on
+  any of them, since promotion is lead-only for the same reason opening a cohort
+  is (it commits a teacher's time). Widening the read without widening the write
+  would mostly create the ability to be frustrated.
+- **Real fix:** If wanted, a teacher-scoped variant that returns only entries
+  naming the caller, and a decision about whether a sub-teacher may promote from
+  it. Note the shape of the existing view makes this cheap: the queryset is
+  already `open_for_teacher(teacher_id)`, so the change is a permission class
+  plus forcing `teacher_id` to the caller.
+- **Revisit when:** A sub-teacher who isn't us asks "who is waiting for me". Same
+  trigger as the availability-editor entry, and probably the same piece of work.
+
+## 2026-08-25 — Parents cannot read their child's pricing agreement
+- **What was skipped:** Parent access to `/api/pricing/agreements/mine/`, which
+  is `IsStudent` only (`pricing/permissions.py`).
+- **Why:** The spec's surface says "student sees their own active agreement", and
+  who in a family may see money is a decision about a family, not boilerplate. A
+  parent is usually the one paying, which argues for widening it — and is exactly
+  why it was not widened silently.
+- **Consequence now:** An asymmetry inside one phase, and a deliberate one:
+  `/api/scheduling/waitlist/mine/` **was** widened to linked parents on the same
+  day (product owner's call, 2026-08-25), because a parent can create a waitlist
+  entry through `/route/` and a requester who cannot read their own request back
+  is a hole. Pricing has no equivalent parent-write path, so nothing there is
+  broken by leaving it — it is narrow, not inconsistent.
+- **Real fix:** Widen to `IsStudentOrParent` scoped through `ParentLink`, exactly
+  as `MyWaitlistListView` and `BookingCancelView` scope theirs. The `notes` field
+  must stay absent for both (it is the lead's private reasoning), which
+  `MyPricingAgreementSerializer` already guarantees by omission rather than by
+  conditional.
+- **Revisit when:** The payments phase, which is when a parent actually needs to
+  see a rate to pay it. Deciding it earlier would be deciding it twice.
+
+## 2026-08-25 — `PricingAgreement` records no timestamp
+- **What was skipped:** Any `created_at` / `agreed_at` on `PricingAgreement`.
+  Ordering is `["-pk"]`, so "newest first" is really "highest primary key first".
+- **Why:** The spec's field list does not include one, and this phase deliberately
+  does not add fields it was not asked for beyond the two on `TeacherWaitlist`
+  that were explicitly approved. Insertion order and chronological order cannot
+  disagree on an autoincrement key, so the history reads correctly today.
+- **Consequence now:** A pricing history can say *what* was agreed and *who*
+  approved it, but not *when* — which is half of what makes a financial record
+  auditable, and the half nobody can reconstruct later. `TeacherWaitlist` has
+  `requested_at`; the agreement it might justify has nothing.
+- **Real fix:** An `auto_now_add` field plus a migration, and switch `Meta.ordering`
+  to `["-created_at", "-pk"]`. Cheap, and cheaper before there are rows worth
+  dating.
+- **Revisit when:** The payments phase reads these rows, or the first time somebody
+  asks when a rate changed. Whichever comes first.
 
 ## 2026-08-23 — No teacher-facing API for editing availability
 - **What was skipped:** Any write endpoint for `Availability`. The API is

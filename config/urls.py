@@ -2,7 +2,8 @@
 
 Auth lives under /api/auth/ (registration is ours, login/logout is
 dj-rest-auth); account resources under /api/accounts/, curriculum and placement
-under /api/curriculum/, availability and bookings under /api/scheduling/.
+under /api/curriculum/, availability, bookings and the preferred-teacher
+waitlist under /api/scheduling/, negotiated rates under /api/pricing/.
 """
 
 from dj_rest_auth.views import LoginView, LogoutView
@@ -24,6 +25,7 @@ urlpatterns = [
     path("api/accounts/", include("accounts.urls")),
     path("api/curriculum/", include("curriculum.urls")),
     path("api/scheduling/", include("scheduling.urls")),
+    path("api/pricing/", include("pricing.urls")),
     # Schema / docs
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
