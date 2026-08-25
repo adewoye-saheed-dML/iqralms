@@ -1,10 +1,10 @@
 """Scheduling: when a teacher is free, who is booked when, and who teaches it.
 
-Field sets mirror specs/phase-3-scheduling.md and specs/phase-4-routing.md
-exactly. What is deliberately *not* here: pricing, preferred-teacher waitlists,
-rubric-based ranking. Phase 4's spec names all three as out of scope and warns
-specifically against letting step 3's "most remaining capacity" rule grow into a
-weighted scoring system — that is a later phase's design decision.
+Field sets mirror specs/phase-3-scheduling.md, specs/phase-4-routing.md and
+specs/phase-5-pricing-waitlist.md exactly. What is deliberately *not* here:
+pricing (that is the ``pricing`` app — a rate is a lookup, not a schedule) and
+rubric-based ranking, which Phase 4's spec names as out of scope and warns
+specifically against letting step 3's "most remaining capacity" rule grow into.
 
 Decisions worth knowing before reading:
 
@@ -25,8 +25,9 @@ Decisions worth knowing before reading:
 * Creating a booking holds ``TeacherBookingLock`` for that teacher (Phase 3.5).
   The overlap rule is a read followed by a write, so without it two concurrent
   requests for one slot both pass a clean check and both commit. Phase 4's
-  routing writes bookings through ``Booking.save()`` for exactly this reason —
-  a ``bulk_create`` of cohort seats would bypass the lock and ``clean()`` alike.
+  routing and Phase 5's waitlist promotion both write bookings through
+  ``Booking.save()`` for exactly this reason — a ``bulk_create`` of cohort seats
+  or promoted entries would bypass the lock and ``clean()`` alike.
 * Phase 4 adds two creation-time rules that apply to *every* booking, routed or
   directly booked: the teacher must specialise in the level's track, and the
   booking must not push them past ``max_weekly_hours``. Both are creation-only,
@@ -42,7 +43,7 @@ from django.conf import settings
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone as dj_timezone
 
 from accounts.models import Role, User
@@ -985,3 +986,273 @@ def remaining_weekly_minutes(teacher, moment):
     """
     cap_minutes = teacher.teacher_profile.max_weekly_hours * MINUTES_PER_HOUR
     return cap_minutes - weekly_committed_minutes(teacher.pk, moment)
+
+
+# --- Phase 5: the preferred-teacher waitlist ---------------------------------
+# Defined below Booking because ``fulfilled_booking`` points at one.
+
+
+class TeacherWaitlist(models.Model):
+    """A family asked for one particular teacher, who could not take it.
+
+    This is the one case where routing does **not** fall through to a
+    sub-teacher (mvp-spec section 4). A parent naming a teacher has expressed a
+    preference, and quietly satisfying it with somebody else is the failure mode
+    the whole phase exists to prevent — so the request is recorded against that
+    teacher by name and the parent is told plainly.
+
+    An entry is never deleted. Promotion stamps ``fulfilled_booking`` and leaves
+    the row in place, so "who asked, for whom, when, and what came of it" stays
+    answerable — the same keep-the-history call the pricing side of this phase
+    makes.
+
+    Two fields here are **not** in the spec's list and were added with explicit
+    approval rather than silently (the Phase 1 ``signup_code`` precedent):
+    ``requested_start_utc`` and ``requested_duration_minutes``. Without them an
+    entry records who wanted a session but not when, so a lead promoting one
+    would have to ask the family or guess — and the slot they originally asked
+    for would exist nowhere but in the routing response that refused it.
+    """
+
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="waitlist_entries",
+        help_text="Role 'student'.",
+    )
+    requested_teacher = models.ForeignKey(
+        # PROTECT, like ``Booking.teacher`` and ``Cohort.teacher``: removing a
+        # teacher is a deliberate act, not a cascade, and an entry may already
+        # point at a session that was taught.
+        User,
+        on_delete=models.PROTECT,
+        related_name="waitlist_requests",
+        help_text="The teacher this family asked for by name. Role 'lead' or 'sub'.",
+    )
+    level = models.ForeignKey(Level, on_delete=models.PROTECT, related_name="waitlist_entries")
+    requested_start_utc = models.DateTimeField(
+        help_text=(
+            "The slot the family asked for, stored UTC. Not in the spec's field "
+            "list — added with explicit approval so a promotion knows what time "
+            "to offer."
+        )
+    )
+    requested_duration_minutes = models.PositiveIntegerField(
+        default=DEFAULT_DURATION_MINUTES,
+        validators=[MinValueValidator(1)],
+        help_text="Length of the session asked for. Added alongside the start.",
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    priority = models.IntegerField(
+        default=0,
+        help_text=(
+            "Set by hand, never computed. The product owner's call (2026-08-25) "
+            "on this phase's open question was that a premium_direct pricing "
+            "agreement does *not* buy queue position, so nothing in the code "
+            "writes this field — a lead raises it deliberately or not at all."
+        ),
+    )
+    notified = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether the family has been told a slot opened. Nothing in this "
+            "phase sets it: automatic notification is explicitly out of scope "
+            "(see tech-debt.md), so it is here for the phase that delivers it."
+        ),
+    )
+    fulfilled_booking = models.ForeignKey(
+        # PROTECT rather than SET_NULL: a null here means "still waiting", so a
+        # deleted booking must not silently reopen a request that was satisfied.
+        Booking,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="fulfilled_waitlist_entries",
+        help_text=(
+            "Set when this entry is promoted into a real session. The entry then "
+            "stays as a record rather than being deleted."
+        ),
+    )
+
+    class Meta:
+        # The order a lead works the list in, and the order the for-teacher
+        # endpoint publishes: highest priority first, then longest waiting. In
+        # Meta rather than only in the view so the two cannot disagree.
+        ordering = ["-priority", "requested_at", "pk"]
+        constraints = [
+            # One open request per student, teacher, level and slot. A client
+            # retrying a refused routing request must not stack duplicates in
+            # the lead's queue; ``record()`` reuses the existing row, and this
+            # is the backstop for anything that skips it. Scoped to *open*
+            # entries, so the same family can be waitlisted for the same slot
+            # again after a previous request was fulfilled.
+            models.UniqueConstraint(
+                fields=["student", "requested_teacher", "level", "requested_start_utc"],
+                condition=Q(fulfilled_booking__isnull=True),
+                name="unique_open_waitlist_request",
+                violation_error_message=(
+                    "That student is already on this teacher's waitlist for that "
+                    "slot."
+                ),
+            )
+        ]
+
+    # --- Behaviour ----------------------------------------------------------
+
+    @property
+    def is_open(self) -> bool:
+        """Whether this request is still waiting on a session.
+
+        The stamp is what closes an entry, not the stamped booking's *status*: a
+        promoted session that is later cancelled leaves this entry closed, and the
+        family asks again rather than silently reappearing in the lead's queue
+        (product owner's call, 2026-08-25 — promotion is a one-way transition, and
+        a cancellation afterwards is a new conversation). The cost that decision
+        accepts is that re-asking starts over on ``requested_at`` and ``priority``;
+        tech-debt.md records it, and
+        ``test_waitlist_routing.CancellingAPromotedSessionDoesNotReopenTheEntryTests``
+        pins it so a later phase changes it on purpose.
+        """
+        return self.fulfilled_booking_id is None
+
+    @property
+    def requested_end_utc(self):
+        """Exclusive end of the session asked for. Derived, never stored."""
+        if self.requested_start_utc is None or self.requested_duration_minutes is None:
+            return None
+        return self.requested_start_utc + timedelta(
+            minutes=self.requested_duration_minutes
+        )
+
+    @classmethod
+    def open_for_teacher(cls, teacher):
+        """Unfulfilled entries naming ``teacher``, in the order to work them.
+
+        ``Meta.ordering`` supplies the order — priority desc, then longest
+        waiting — so the endpoint and any future automatic offer read the same
+        queue rather than each defining "next in line".
+        """
+        return cls.objects.filter(
+            requested_teacher_id=getattr(teacher, "pk", teacher),
+            fulfilled_booking__isnull=True,
+        ).select_related("student", "requested_teacher", "level", "level__track")
+
+    @classmethod
+    def record(cls, *, student, requested_teacher, level, requested_start_utc, requested_duration_minutes=None):
+        """Put ``student`` on ``requested_teacher``'s list, or return the row already there.
+
+        Deliberately idempotent, for the same reason ``Cohort.seat_error``
+        tolerates re-adding an existing member: a client retrying a refused
+        routing request would otherwise stack identical rows in the lead's queue,
+        and promoting one would leave the duplicates open forever.
+
+        A reused entry keeps its original ``requested_at`` and ``priority``, so
+        asking again neither costs a family its place in the queue nor buys it a
+        better one. It also keeps its original duration — a differing
+        ``requested_duration_minutes`` for the same instant is treated as the same
+        request, and the lead can name a different length when promoting.
+        """
+        existing = cls.objects.filter(
+            student=student,
+            requested_teacher=requested_teacher,
+            level=level,
+            requested_start_utc=requested_start_utc,
+            fulfilled_booking__isnull=True,
+        ).first()
+        if existing is not None:
+            return existing
+        return cls.objects.create(
+            student=student,
+            requested_teacher=requested_teacher,
+            level=level,
+            requested_start_utc=requested_start_utc,
+            requested_duration_minutes=(
+                requested_duration_minutes or DEFAULT_DURATION_MINUTES
+            ),
+        )
+
+    def mark_fulfilled(self, booking):
+        """Record which session satisfied this request. The row stays.
+
+        Goes through ``save()``, so ``clean()`` gets to refuse a booking that
+        does not actually match what was asked for.
+        """
+        self.fulfilled_booking = booking
+        self.save()
+        return self
+
+    # --- Validation ---------------------------------------------------------
+
+    def clean(self):
+        errors = {}
+
+        if self.student_id and self.student.role != Role.STUDENT:
+            errors["student"] = ValidationError(
+                "Only a user with role 'student' can join a waitlist (got "
+                "'%(role)s').",
+                code="invalid_student_role",
+                params={"role": self.student.role},
+            )
+
+        if self.requested_teacher_id and not self.requested_teacher.is_teacher:
+            # Only the role is checked, not ``bookable_teacher_error``'s fuller
+            # test. An entry is a *request*, not a session: if the named
+            # teacher's approval is later revoked, existing entries must stay
+            # saveable — otherwise stamping a fulfilment, or any later edit,
+            # would be impossible. Same frozen-row trap learnings.md records for
+            # the booking approval gate, avoided on purpose here.
+            errors["requested_teacher"] = ValidationError(
+                "Only a lead or sub teacher can be asked for by name (got "
+                "'%(role)s').",
+                code="invalid_teacher_role",
+                params={"role": self.requested_teacher.role},
+            )
+
+        if self.fulfilled_booking_id:
+            self._validate_fulfilment(errors)
+
+        if errors:
+            raise ValidationError(errors)
+
+    def _validate_fulfilment(self, errors):
+        """A fulfilling booking must be the session this entry asked for.
+
+        Not the *time* — a lead may legitimately promote into a different slot
+        than the one originally requested, and the entry keeps the original as a
+        record of what was wanted. But a booking for a different student,
+        teacher or level does not satisfy this request at all, and letting one be
+        stamped here would make the row lie about what happened.
+        """
+        booking = self.fulfilled_booking
+        disagreements = []
+        if self.student_id and booking.student_id != self.student_id:
+            disagreements.append("student")
+        if self.requested_teacher_id and booking.teacher_id != self.requested_teacher_id:
+            disagreements.append("requested_teacher")
+        if self.level_id and booking.level_id != self.level_id:
+            disagreements.append("level")
+        if disagreements:
+            errors["fulfilled_booking"] = ValidationError(
+                "A fulfilling booking must match the request; %(fields)s "
+                "disagree.",
+                code="fulfilment_mismatch",
+                params={"fields": ", ".join(disagreements)},
+            )
+
+    def save(self, *args, **kwargs):
+        # The role rules read another table and the fulfilment check compares
+        # two rows, so neither can be a DB constraint; validating here makes
+        # both hold for the admin and direct ORM writes as well as the API.
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        state = (
+            f"fulfilled by booking {self.fulfilled_booking_id}"
+            if self.fulfilled_booking_id
+            else f"waiting (priority {self.priority})"
+        )
+        return (
+            f"{self.student.username} wants {self.requested_teacher.username} for "
+            f"{self.level} at {self.requested_start_utc:%Y-%m-%d %H:%M} UTC — {state}"
+        )

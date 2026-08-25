@@ -17,6 +17,13 @@ specs/phase-4-routing.md and mvp-spec section 2:
    Booking someone outside their hours or over their cap to avoid an error would
    defeat the point of the phase.
 
+Phase 5 adds a fifth outcome that **replaces** the sequence rather than extending
+it: when a request names a ``preferred_teacher``, steps 1-3 are skipped entirely
+and only that teacher is tested. If they cannot take it *because they are full or
+not free then*, the request becomes a ``TeacherWaitlist`` entry for that teacher
+by name — never a redirect to somebody the family did not ask for, which is the
+one thing mvp-spec section 4 insists on. See ``_route_to_preferred``.
+
 Two things this module is careful about.
 
 **It does not reimplement eligibility.** Every rule it needs — declared hours, no
@@ -24,12 +31,15 @@ clash, an approved teacher, the track specialty, the weekly cap, a start that is
 not in the past — already lives in ``Booking.clean()``. So a candidate is tested
 by building an unsaved ``Booking`` and asking the model. Routing and direct
 booking therefore cannot drift apart, and a rule added to ``clean()`` later is
-picked up here for free.
+picked up here for free. Phase 5's preferred-teacher check and its waitlist
+promotion are the same question asked about exactly one teacher, so they call the
+same ``_candidate`` rather than growing a second copy of the rules (CLAUDE.md
+asks for this specifically).
 
-**It writes through ``Booking.save()``.** CLAUDE.md calls this out for the phase:
-``save()`` is what takes ``TeacherBookingLock``, so a ``bulk_create`` of cohort
-seats would bypass both the lock Phase 3.5 added and ``clean()`` entirely,
-silently reopening the race that phase closed.
+**It writes through ``Booking.save()``.** CLAUDE.md calls this out for both
+phases: ``save()`` is what takes ``TeacherBookingLock``, so a ``bulk_create`` of
+cohort seats or of promoted waitlist entries would bypass both the lock Phase 3.5
+added and ``clean()`` entirely, silently reopening the race that phase closed.
 """
 
 from dataclasses import dataclass, field
@@ -39,13 +49,33 @@ from django.db import transaction
 
 from accounts.models import Role, User
 
-from .exceptions import CohortFull, NoCapacity
+from .exceptions import CohortFull, NoCapacity, WaitlistEntryAlreadyFulfilled
 from .models import (
     Booking,
     Cohort,
     DEFAULT_DURATION_MINUTES,
     RoutedReason,
+    TeacherWaitlist,
     remaining_weekly_minutes,
+)
+
+#: Refusal codes that mean "not now" rather than "not ever" — the only ones that
+#: turn a preferred-teacher request into a waitlist entry.
+#:
+#: The spec's line is that capacity and availability refusals waitlist, while a
+#: hard block (an unapproved profile, a specialty mismatch) "should still fail
+#: outright". These three are the capacity-and-availability half of
+#: ``Booking.clean()``: the teacher's week is full, their hours do not cover the
+#: slot, or somebody else already has it. Every other code — a past start, a
+#: track they do not teach, an unapproved or non-teacher account, a student who
+#: cannot be booked at all — describes something that waiting will not fix, so
+#: putting the family on a list for it would be a false promise.
+WAITLISTABLE_CODES = frozenset(
+    {
+        "outside_availability",
+        "teacher_weekly_capacity_exceeded",
+        "teacher_double_booked",
+    }
 )
 
 
@@ -77,6 +107,46 @@ def refusals(exc):
         ]
         for field, errors in exc.error_dict.items()
     }
+
+
+def as_validation_error(why_not):
+    """Turn a ``refusals()`` dict back into a Django ``ValidationError``.
+
+    The inverse of ``refusals``, used where routing has classified a refusal and
+    decided the honest answer is the model's own complaint — a preferred teacher
+    who does not teach the track, say. Rebuilding rather than keeping the original
+    exception around means one representation of a refusal travels through this
+    module, and codes survive the round trip so the view's 400 body reads exactly
+    like a direct booking's.
+    """
+    return ValidationError(
+        {
+            field: [
+                ValidationError(reason["message"], code=reason["code"])
+                for reason in reasons
+            ]
+            for field, reasons in why_not.items()
+        }
+    )
+
+
+def refusal_codes(why_not):
+    """Every error code in a ``refusals()`` dict, flattened."""
+    return {
+        reason["code"] for reasons in why_not.values() for reason in reasons
+    }
+
+
+def is_waitlistable(why_not) -> bool:
+    """Whether a refusal is "full or busy" rather than "never".
+
+    Every code must be waitlistable, not merely one of them: a teacher who is both
+    unapproved *and* full is refused for the first reason, and a waitlist entry
+    would promise a slot that approving them is the only way to reach. An empty
+    refusal is not waitlistable either — there is nothing to wait for.
+    """
+    codes = refusal_codes(why_not)
+    return bool(codes) and codes <= WAITLISTABLE_CODES
 
 
 def _candidate(*, student, teacher, level, start_time_utc, duration_minutes, reason, cohort=None):
@@ -138,6 +208,117 @@ def matching_sub_teachers(level):
         .distinct()
         .order_by("pk")
     )
+
+
+def _waitlist(*, student, teacher, level, start_time_utc, duration_minutes, why_not):
+    """Record the unmet request and raise the refusal that reports it.
+
+    Both halves of what the spec asks for in one place, because they must not come
+    apart: the entry is what makes the promise ("you are on this teacher's list")
+    and the ``considered`` payload is what communicates it. ``considered`` keeps
+    Phase 4's shape — a step name mapping usernames to refusals — and gains one
+    extra key rather than a new response type, per learnings.md 2026-08-24.
+    """
+    entry = TeacherWaitlist.record(
+        student=student,
+        requested_teacher=teacher,
+        level=level,
+        requested_start_utc=start_time_utc,
+        requested_duration_minutes=duration_minutes,
+    )
+    raise NoCapacity(
+        f"{teacher.username} is not free for that slot. "
+        f"{student.username} is on {teacher.username}'s waitlist for it — "
+        "nobody else has been assigned.",
+        considered={
+            "preferred_teacher": {teacher.username: why_not},
+            # The extension the spec names: the parent sees *which* list they are
+            # on, not merely that their teacher was busy.
+            "waitlist": {
+                "id": entry.pk,
+                "requested_teacher": teacher.username,
+                "priority": entry.priority,
+                "requested_at": entry.requested_at,
+            },
+        },
+    )
+
+
+def _resolve_preferred(*, student, teacher, level, start_time_utc, duration_minutes):
+    """The whole preferred-teacher path (Phase 5). Returns a ``Routed`` or raises.
+
+    The spec's four steps, in order:
+
+    1. Only this teacher is tested — the cohort → lead → sub sequence is skipped
+       entirely, and no cohort is passed, so a preferred-teacher request always
+       produces a **1:1 booking** even when the named teacher has an open cohort
+       at the requested time. A parent naming a teacher wants that teacher, not a
+       seat in a class; folding the two together is a distinct feature to design
+       on purpose (logged in tech-debt.md).
+    2. Eligible → save it, ``routed_reason=student_choice``, exactly as Phase 3
+       already defined for a teacher named by the family.
+    3. Refused for capacity or availability → a ``TeacherWaitlist`` entry, *not* a
+       fall-through to a sub-teacher. Nobody gets silently redirected to someone
+       they did not ask for, which is the whole point of the phase.
+    4. Refused for anything else → fail outright, no entry. An unapproved teacher
+       or a track they do not teach is not something waiting fixes.
+    """
+    booking, why_not = _candidate(
+        student=student,
+        teacher=teacher,
+        level=level,
+        start_time_utc=start_time_utc,
+        duration_minutes=duration_minutes,
+        reason=RoutedReason.STUDENT_CHOICE,
+        # Deliberately no cohort: a preferred-teacher request is 1:1 by rule,
+        # even against a group-eligible level this teacher runs a cohort for.
+    )
+
+    if booking is not None:
+        try:
+            booking.save()
+        except ValidationError as exc:
+            # Lost the slot between the candidate check and the write — the same
+            # race Phase 4 documents, re-classified rather than propagated. A
+            # teacher who filled up in those microseconds is exactly the case the
+            # waitlist exists for, so it would be perverse to answer it with a
+            # bare 400 when the identical refusal a moment earlier earns a place
+            # in the queue.
+            lost = refusals(exc) if hasattr(exc, "error_dict") else {}
+            if not is_waitlistable(lost):
+                raise
+            _waitlist(
+                student=student,
+                teacher=teacher,
+                level=level,
+                start_time_utc=start_time_utc,
+                duration_minutes=duration_minutes,
+                why_not=lost,
+            )
+        return Routed(
+            booking=booking,
+            reason=RoutedReason.STUDENT_CHOICE,
+            # Same key as the refusal uses, with nothing ruled out. A caller can
+            # therefore read considered["preferred_teacher"] either way rather
+            # than branching on which outcome it got.
+            considered={"preferred_teacher": {teacher.username: {}}},
+        )
+
+    if is_waitlistable(why_not):
+        _waitlist(
+            student=student,
+            teacher=teacher,
+            level=level,
+            start_time_utc=start_time_utc,
+            duration_minutes=duration_minutes,
+            why_not=why_not,
+        )
+
+    # A hard block. The model's own complaint is the honest answer, and it is the
+    # answer a direct booking for the same pairing already gives (a 400 naming
+    # the field), so it is raised in that shape rather than as a capacity
+    # refusal: "she does not teach Hifz" is not something a queue fixes.
+    raise as_validation_error(why_not)
 
 
 def _route_to_cohort(*, student, level, start_time_utc, duration_minutes):
@@ -252,12 +433,30 @@ def _route_to_sub(*, student, level, start_time_utc, duration_minutes):
     return eligible[0][2], rejected
 
 
-def route_session(*, student, level, start_time_utc, duration_minutes=None):
+def route_session(*, student, level, start_time_utc, duration_minutes=None, preferred_teacher=None):
     """Assign a teacher for ``student`` at ``start_time_utc`` and book it.
 
     Returns a ``Routed`` describing what was decided. Raises ``NoCapacity`` when
-    steps 1-3 all fail, carrying the per-step reasons — a clear failure is the
-    correct outcome here, not a bug to route around.
+    steps 1-3 all fail (or the preferred teacher cannot take it), carrying the
+    per-step reasons — a clear failure is the correct outcome here, not a bug to
+    route around.
+
+    When ``preferred_teacher`` is given the normal cohort → lead → sub sequence
+    is skipped entirely. Only that teacher is tested:
+
+    * If they are eligible the booking is created as ``student_choice``.
+    * If they cannot take it because of capacity or availability a
+      ``TeacherWaitlist`` entry is created and returned inside ``NoCapacity`` —
+      the parent is never silently redirected to someone they did not ask for
+      (mvp-spec section 4). The response extends ``NoCapacity.considered`` with
+      the waitlist entry id, per learnings.md 2026-08-24.
+    * If they have a hard block (wrong track, unapproved, past slot) the request
+      fails outright with no waitlist.
+
+    A preferred-teacher request is always 1:1. Even if the named teacher has an
+    open cohort at the requested time, they are booked directly — a parent naming
+    a teacher wants that teacher, not a seat in a group class. This scope
+    limitation is logged in tech-debt.md.
 
     The write goes through ``Booking.save()``, so it takes the teacher's lock and
     re-runs every rule under it. That matters: the candidate check above ran
@@ -274,6 +473,9 @@ def route_session(*, student, level, start_time_utc, duration_minutes=None):
         "start_time_utc": start_time_utc,
         "duration_minutes": duration_minutes,
     }
+
+    if preferred_teacher is not None:
+        return _resolve_preferred(teacher=preferred_teacher, **common)
 
     seat, considered["cohort"] = _route_to_cohort(**common)
     if seat is not None:
@@ -320,3 +522,69 @@ def route_session(*, student, level, start_time_utc, duration_minutes=None):
         "that level at that time.",
         considered=considered,
     )
+
+
+def promote_waitlist_entry(entry, *, start_time_utc=None, duration_minutes=None):
+    """Turn an open ``TeacherWaitlist`` entry into the session it was waiting for.
+
+    This is the whole fulfillment mechanism this phase ships: the lead reads
+    ``/waitlist/for-teacher/?teacher_id=``, picks an entry, and promotes it.
+    Automatic offering when a slot frees up is explicitly out of scope (spec, and
+    tech-debt.md) — it needs background jobs and notification delivery, which is a
+    phase of its own.
+
+    The slot defaults to the one the family originally asked for, and
+    ``start_time_utc`` / ``duration_minutes`` override it — a lead offering the
+    10:00 that just opened rather than the 09:00 nobody has. The entry keeps its
+    original request either way, so what was wanted stays distinguishable from
+    what was given.
+
+    Two rules CLAUDE.md names for this function specifically, both load-bearing:
+
+    * The eligibility check is ``_candidate`` — the same unsaved-``Booking``
+      mechanism routing uses, so promotion holds no copy of the rules and cannot
+      drift from them. An entry made last week against a teacher who has since
+      filled up, narrowed their hours or lost their approval is refused here.
+    * The write is ``Booking.save()``, which takes ``TeacherBookingLock`` and
+      re-runs every rule under it. No ``bulk_create``, no hand-built row: a
+      candidate that loses its slot to a concurrent write between the check and
+      the write is refused rather than forced.
+
+    Raises ``WaitlistEntryAlreadyFulfilled`` if the entry already has a booking,
+    and ``ValidationError`` if the teacher is no longer eligible — an honest
+    refusal, exactly as the routing engine gives.
+    """
+    if not entry.is_open:
+        raise WaitlistEntryAlreadyFulfilled(
+            f"This request was already fulfilled by booking "
+            f"{entry.fulfilled_booking_id}; promoting it again would either "
+            "overwrite that record or double-book the family."
+        )
+
+    booking, why_not = _candidate(
+        student=entry.student,
+        teacher=entry.requested_teacher,
+        level=entry.level,
+        start_time_utc=start_time_utc or entry.requested_start_utc,
+        duration_minutes=duration_minutes or entry.requested_duration_minutes,
+        # The family named this teacher; that is what student_choice means, and it
+        # is what the refused request would have recorded had it succeeded.
+        reason=RoutedReason.STUDENT_CHOICE,
+    )
+    if why_not is None:
+        # One transaction, so an entry is never stamped without its booking or a
+        # booking left behind by a failed stamp. Booking.save() takes the
+        # teacher's lock inside this block and holds it to the outer commit.
+        with transaction.atomic():
+            booking.save()
+            entry.mark_fulfilled(booking)
+        return Routed(
+            booking=booking,
+            reason=RoutedReason.STUDENT_CHOICE,
+            considered={"waitlist": {"id": entry.pk, "promoted": True}},
+        )
+
+    # No waitlist branch here, unlike the routing path: the family is *already* on
+    # this list. Refusing tells the lead the slot is no longer available, and the
+    # entry stays open for the next attempt.
+    raise as_validation_error(why_not)

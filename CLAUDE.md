@@ -18,33 +18,34 @@ and committed.
 - `specs/phase-3-scheduling.md` — availability, direct booking, video (DONE)
 - `specs/phase-3.5-debt-cleanup.md` — booking concurrency + past-booking fix (DONE)
 - `specs/phase-4-routing.md` — cohorts, capacity-based auto-assignment (DONE)
-- Later phases (pricing/waitlist, assessment, payouts) get their own spec
-  file when we get there — don't write them in advance. Next up is pricing
-  exceptions + the preferred-teacher waitlist, which mvp-spec sections 3 and 4
-  describe and Phase 4 deliberately left out.
+- `specs/phase-5-pricing-waitlist.md` — pricing exceptions, preferred-teacher waitlist (DONE)
+- Later phases (recurring cohorts, assessment, payouts) get their own spec
+  file when we get there — don't write them in advance.
 
-## Notes carried out of Phase 4
+## Notes carried out of Phase 5
 
-Three rules landed in `Booking.clean()` that anything creating a booking must
-now satisfy — they are creation-only, so editing a teacher's hours, specialties
-or cap never freezes bookings they already hold:
+Two apps now exist that a payments phase will read, and neither charges
+anyone: `pricing.PricingAgreement` records what a rate *should* be, and
+`Booking` still has no price field. Read a live rate through
+`PricingAgreement.active_for(student, level)` — don't assemble the
+`active=True` filter again, for the same reason capacity has one
+`weekly_committed_minutes`.
 
-- The teacher must specialise in the level's track. A teacher with **no**
-  specialties recorded therefore teaches nothing and is unbookable until their
-  tracks are set in the admin (tech-debt.md).
-- `max_weekly_hours` is a hard cap. "The week" is `utils.week_bounds` (Monday
-  00:00 UTC, Monday to Monday) and nothing else — payouts must read that and
-  `models.weekly_committed_minutes`, not assemble their own sum.
-- A cohort seat is an ordinary `Booking` with `cohort` set, and seats sharing a
-  cohort deliberately do not clash. Any future exclusion constraint needs that
-  same exemption.
+Three rules that anything touching the waitlist has to respect:
 
-Routing writes through `Booking.save()` (`scheduling/routing.py`), which is what
-takes `TeacherBookingLock` — `scheduling/tests/test_concurrency.py` has a test
-that fails specifically if a cohort seat is ever written with `bulk_create`.
-Routing also tests candidates by building an unsaved `Booking` and calling
-`full_clean()`, so it holds no copy of the eligibility rules; add rules to
-`clean()` and routing picks them up.
+- Entries are created **only** by a refused preferred-teacher request. There
+  is no create endpoint, and promotion is the only way one closes.
+- `routing.WAITLISTABLE_CODES` is where routing *interprets* `Booking.clean()`
+  rather than relaying it, so a new refusal code added to `clean()` silently
+  defaults to "fail outright, never waitlist". Decide that on purpose and say
+  which in the commit — see `learnings.md`, 2026-08-25.
+- Promotion is one-way: cancelling a promoted session leaves the entry
+  closed, and re-asking creates a fresh row that loses its place in the
+  queue. Deliberate (`tech-debt.md`, 2026-08-25), with tests pinning it.
+
+`TeacherWaitlist.notified` is written by nothing at all — automatic
+notification is a phase of its own. Don't read it as "nobody has been told
+yet".
 
 ## Known pre-launch blockers (see tech-debt.md for full detail)
 

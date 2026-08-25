@@ -8,9 +8,12 @@ from .views import (
     BookingCreateView,
     CohortCreateView,
     MyBookingListView,
+    MyWaitlistListView,
     OpenCohortListView,
     RouteView,
+    TeacherWaitlistListView,
     TeachingBookingListView,
+    WaitlistPromoteView,
 )
 
 app_name = "scheduling"
@@ -33,4 +36,16 @@ urlpatterns = [
     path("route/", RouteView.as_view(), name="route"),
     path("cohorts/", CohortCreateView.as_view(), name="cohort-create"),
     path("cohorts/open/", OpenCohortListView.as_view(), name="cohort-open"),
+    # Phase 5 — a named teacher who is full becomes a tracked promise.
+    path("waitlist/mine/", MyWaitlistListView.as_view(), name="waitlist-mine"),
+    path(
+        "waitlist/for-teacher/",
+        TeacherWaitlistListView.as_view(),
+        name="waitlist-for-teacher",
+    ),
+    path(
+        "waitlist/<int:pk>/promote/",
+        WaitlistPromoteView.as_view(),
+        name="waitlist-promote",
+    ),
 ]
