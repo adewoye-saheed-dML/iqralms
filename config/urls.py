@@ -4,11 +4,16 @@ Auth lives under /api/auth/ (registration is ours, login/logout is
 dj-rest-auth); account resources under /api/accounts/, curriculum and placement
 under /api/curriculum/, availability, bookings and the preferred-teacher
 waitlist under /api/scheduling/, negotiated rates under /api/pricing/.
+
+There is deliberately no media route here any more. Phases 2-5 mounted
+``static(settings.MEDIA_URL, ...)`` under DEBUG, which made every placement
+recording readable by anyone who knew its path. Phase 6 moved uploads to private
+storage; the only way to reach a recitation sample is a short-lived signed URL
+from /api/curriculum/placements/{id}/audio-url/. Do not add the route back — the
+storage backend's ``url()`` raises specifically so that trying to fails loudly.
 """
 
 from dj_rest_auth.views import LoginView, LogoutView
-from django.conf import settings
-from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
@@ -34,8 +39,3 @@ urlpatterns = [
         name="swagger-ui",
     ),
 ]
-
-# Placement audio is served by Django in development only; a real deployment
-# puts MEDIA_ROOT behind the web server or object storage (see tech-debt.md).
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

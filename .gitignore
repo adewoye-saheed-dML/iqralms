@@ -7,13 +7,15 @@ __pycache__/
 venv/
 
 # Django
+# Phase 6 moved the canonical database to PostgreSQL. Any db.sqlite3 left in a
+# working tree is a leftover from Phases 1-5 and is safe to delete — it was only
+# ever local development data.
 db.sqlite3
 db.sqlite3-journal
-# File-backed test database (settings.py DATABASES["default"]["TEST"]) plus the
-# -wal/-shm files SQLite leaves beside it.
-test_db.sqlite3*
 /staticfiles/
-# User uploads (placement audio samples) — local-disk MEDIA_ROOT, see tech-debt.md
+# User uploads. With DJANGO_STORAGE_BACKEND=private-local (development and tests)
+# placement audio lands here; nothing serves it, and there is no MEDIA_URL. In
+# production it goes to a private bucket instead.
 /media/
 *.log
 

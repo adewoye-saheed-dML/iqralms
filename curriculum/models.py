@@ -17,6 +17,7 @@ Nothing about bookings, cohorts or session assessment belongs here.
 """
 
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
+from django.core.files.uploadedfile import UploadedFile
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -25,6 +26,7 @@ from django.utils import timezone as dj_timezone
 from accounts.models import Role, User
 
 from .exceptions import PlacementAlreadyReviewed, TrackHasNoFirstLevel
+from .validators import validate_placement_audio
 
 #: The first level of any track. A beginner skip places the student here.
 FIRST_LEVEL_ORDER = 1
@@ -36,7 +38,13 @@ class Status(models.TextChoices):
 
 
 def placement_audio_path(instance, filename):
-    """Keep each student's placement samples together, one dir per student."""
+    """Keep each student's placement samples together, one dir per student.
+
+    Also the object key inside the private bucket from Phase 6 onward. The
+    layout is unchanged by that move: the path was never the access-control
+    mechanism, and it is not one now — the bucket is private and the key is
+    reached only through a signed URL.
+    """
     return f"placements/{instance.student_id}/{filename}"
 
 
@@ -284,6 +292,39 @@ class PlacementResult(models.Model):
 
     # --- Validation ---------------------------------------------------------
 
+    def _validate_incoming_audio(self, errors):
+        """Re-run the upload rules for a file that did not come via the API.
+
+        ``PlacementSubmitSerializer`` is where an upload is normally rejected,
+        with a proper field error. This is the backstop the Phase 6 spec asks
+        for, and it exists because the serializer is not the only HTTP path to
+        this field: the admin's change form lets the lead attach a file
+        directly, and a future view could assign ``request.FILES[...]`` to the
+        model without going through that serializer at all.
+
+        Scoped to files that arrived *over HTTP*, and the scope is the whole
+        point rather than a shortcut:
+
+        * ``UploadedFile`` is exactly Django's marker for "these bytes came from
+          a request", which is exactly CLAUDE.md's untrusted input. A
+          ``File`` handed over by a factory, a fixture or a management command is
+          trusted code writing a known file, and re-validating it would only
+          break test data and data migrations.
+        * The check reads ``_file`` rather than ``self.audio_sample.file``
+          because the public property *opens the stored file* when the value came
+          from the database — one storage round-trip, so a GET against the bucket,
+          on every single save of every placement. ``_file`` is set only when a
+          file object has been assigned in this process, which is precisely the
+          case worth validating.
+        """
+        candidate = getattr(self.audio_sample, "_file", None)
+        if not isinstance(candidate, UploadedFile):
+            return
+        try:
+            validate_placement_audio(candidate)
+        except ValidationError as exc:
+            errors["audio_sample"] = exc
+
     def clean(self):
         errors = {}
 
@@ -306,6 +347,8 @@ class PlacementResult(models.Model):
                 "Provide either an audio sample or skipped_as_beginner.",
                 code="audio_or_skip_required",
             )
+        elif has_audio:
+            self._validate_incoming_audio(errors)
 
         if self.reviewed_by_id:
             if self.skipped_as_beginner:

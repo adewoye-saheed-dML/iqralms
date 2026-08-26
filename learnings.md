@@ -531,3 +531,94 @@ Format:
   adding any `mine/` endpoint — the permission class on the *write* path is the
   one that tells you who the audience is.
 
+
+## 2026-08-26 — The Postgres move was almost entirely uneventful, and the one surprise was in the test suite
+- **What happened:** tech-debt.md had warned since Phase 1 to watch for
+  "behaviour SQLite is lax about — case-sensitive uniqueness on `username`/`email`,
+  and constraint enforcement timing". Neither materialised. All 649 pre-existing
+  tests passed on PostgreSQL, and the only two that failed were asserting on the
+  media URL the storage change removed — nothing to do with the database. The
+  reason the warnings did not bite: this codebase validates in `save()` via
+  `full_clean()`, so uniqueness and cross-table rules are enforced by Django
+  *before* the write, and the database's own enforcement timing was never what the
+  tests were exercising.
+- **What we decided:** Nothing needed changing to preserve the invariants — which
+  is the answer the phase wanted, since the goal was to preserve them, not to
+  rediscover them. What *did* change is runtime: the suite went from ~8s to ~220s,
+  and almost all of it is `TransactionTestCase`. Those tests truncate every table
+  after each test instead of rolling a transaction back, which is cheap on a local
+  SQLite file and not on PostgreSQL. The 14 concurrency tests alone account for
+  ~130s of it.
+- **Why it matters for later phases:** Don't reach for `TransactionTestCase`
+  casually now — it costs roughly ten seconds a test rather than nothing. It is
+  still the correct and only tool when threads have to see each other's committed
+  rows, which is every test in `test_concurrency.py`. If the suite becomes painful
+  the lever is `--parallel`, not converting those tests back to `TestCase`, which
+  would silently stop testing the race.
+
+## 2026-08-26 — `select_for_update()` was a no-op on SQLite, so the booking lock had to be a write
+- **What happened:** Phase 3.5 took the per-teacher lock by *bumping a counter*
+  rather than by `select_for_update()`, which reads like a workaround until you
+  know why: Django's SQLite backend sets `has_select_for_update = False`, and
+  `select_for_update()` on a backend without the feature does nothing at all. It
+  would have read as a fix and held no lock. Phase 6 could finally make it say
+  what it means.
+- **What we decided:** Keep `TeacherBookingLock` — but prove it, because the phase
+  spec said the table could stay only if tests showed it was still needed.
+  `LockIsStillRequiredOnPostgresTests` patches `acquire()` out, forces both writers
+  past the overlap check before either inserts, and gets the double booking;
+  a control test with nothing patched gets one booking and one clean refusal. Two
+  details that made those tests work: `list()` around the `select_for_update()`
+  queryset, because a lazy queryset locks nothing, and forcing the interleaving
+  with a barrier rather than racing for it, because a test whose job is to prove a
+  race exists must not depend on winning one.
+- **Why it matters for later phases:** PostgreSQL's default READ COMMITTED does
+  not make a check-then-insert safe. Any *new* rule of the form "read the
+  neighbours, then write" — a second booking writer, a cohort seat allocator, a
+  payout run — needs the lock taken the same way, or the database constraint that
+  retires it (tech-debt.md). And the general lesson: a concurrency primitive that
+  silently degrades to nothing on one backend is worse than one that raises. That is
+  why `acquire()` still refuses to run outside `transaction.atomic()`.
+
+## 2026-08-26 — Validating an upload at the model layer must not read the stored file
+- **What happened:** The obvious way to add a model-level backstop for upload
+  validation is a field validator or a `clean()` rule that inspects
+  `self.audio_sample`. Both are traps once storage is a bucket: `FieldFile.file`
+  *opens the stored object* when the value came from the database, so a rule like
+  that turns every save of every placement — a review stamp, an admin edit — into
+  an S3 GET, and would also fail an old file if the rules were later tightened.
+- **What we decided:** `PlacementResult.clean()` validates only when
+  `audio_sample._file` is an `UploadedFile`. That is precisely "bytes that arrived
+  over HTTP in this process", which is precisely CLAUDE.md's untrusted input — a
+  plain `File` from a factory, fixture or data migration is trusted code writing a
+  known file. Reading the private `_file` attribute rather than the public `.file`
+  property is deliberate and the reason is written at the call site: the public one
+  triggers the storage round-trip the check exists to avoid. Serializer validation
+  stays the primary path; this only catches the admin's upload widget and any
+  future view that assigns `request.FILES[...]` straight to the model.
+- **Why it matters for later phases:** Any model rule that touches a `FileField`
+  needs to ask "does this open the file, and on whose save?" before it ships.
+  Assessment recordings and payout exports are the next candidates.
+
+## 2026-08-26 — A signed URL is a bearer capability, so authorisation happens before minting
+- **What happened:** Making placement audio private raised a question the public
+  `MEDIA_URL` never did: the download endpoint for local development cannot require
+  authentication, because an `<audio src>` element sends no Authorization header.
+  That looks like a hole until you notice it is exactly how a presigned S3 URL
+  behaves.
+- **What we decided:** Put the authorisation in the *minting* endpoint
+  (`/audio-url/`, which is where the lead-or-owning-student rule lives) and treat
+  the token as a capability, like the presigned URL it stands in for. The download
+  view re-checks three things instead of re-authenticating: the signature and its
+  age, that the token names *this* placement (so editing the pk in the path does
+  nothing), and that the placement still holds the object the token was minted for.
+  That last check gives Phase 2's keep-only-the-current-sample rule a useful
+  property for free: re-submitting invalidates every outstanding URL immediately,
+  with no revocation list. Every failure is the same 404, so probing a token tells
+  you nothing about which part was wrong.
+- **Why it matters for later phases:** The pattern generalises to anything private
+  a browser has to fetch directly — assessment recordings, payout statements,
+  exported reports. Authorise at mint time, keep the TTL short, put the object's
+  identity inside the signature, and never widen who can mint without asking. The
+  five-minute TTL is also why a `SECRET_KEY` rotation is currently low-risk
+  (tech-debt.md): it breaks at most five minutes of in-flight playback.
