@@ -113,7 +113,10 @@ class PlacementSubmitAPITests(APITestCase):
         self.assertIsNone(response.data["reviewed_by"])
         self.assertIsNone(response.data["reviewed_at"])
         self.assertFalse(response.data["skipped_as_beginner"])
-        self.assertTrue(response.data["audio_sample"])
+        # Phase 6: presence and filename, never a URL. Fetching the audio is a
+        # separate, authorised, expiring request — see test_audio_access.py.
+        self.assertTrue(response.data["has_audio_sample"])
+        self.assertNotIn("audio_sample", response.data)
         self.assertEqual(response.data["track"], self.track.slug)
         self.assertEqual(response.data["student"]["id"], self.student.id)
 
@@ -176,7 +179,9 @@ class PlacementSubmitAPITests(APITestCase):
         self.assertEqual(second.status_code, status.HTTP_201_CREATED)
         self.assertEqual(first.data["id"], second.data["id"])
         self.assertEqual(PlacementResult.objects.count(), 1)
-        self.assertIn("second", second.data["audio_sample"])
+        # The row now points at the second recording. Asserted through the
+        # filename rather than a media URL, which Phase 6 stopped publishing.
+        self.assertIn("second", second.data["audio_filename"])
 
     def test_resubmitting_after_a_review_clears_the_review(self):
         """Acceptance criterion 6, for a track already reviewed."""

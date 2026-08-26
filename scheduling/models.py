@@ -309,18 +309,28 @@ class TeacherBookingLock(models.Model):
     and both then commit. Serialising on a row keyed by *teacher* makes that
     pair atomic without serialising bookings for different teachers.
 
-    Why a write rather than ``select_for_update()``: SQLite has no row locks and
-    Django's SQLite backend sets ``has_select_for_update = False``, which makes
-    ``select_for_update()`` there a silent no-op — it would read as a fix and
-    hold nothing. Bumping ``revision`` is a real write, so it takes the row lock
-    on any engine that has one and SQLite's database write lock where it does
-    not. That also depends on ``transaction_mode: IMMEDIATE`` in settings; the
-    comment there explains why.
+    **Still required on PostgreSQL, and proved rather than assumed.** Phase 6
+    asked whether this mechanism survives the move off SQLite. It does, because
+    PostgreSQL's default READ COMMITTED isolation does not stop the race: two
+    concurrent transactions both see the slot free at the ``clashing_bookings()``
+    read and there is no constraint to refuse the second INSERT.
+    ``test_concurrency.LockIsStillRequiredOnPostgresTests`` demonstrates exactly
+    that by bypassing ``acquire()`` and getting a double booking, which is the
+    evidence the phase spec asked for before keeping the table.
 
-    This is Phase 3.5's stopgap, correct on the current stack rather than
-    perfect at scale. tech-debt.md keeps the durable fix — a Postgres exclusion
-    constraint, which makes the rule race-proof in the database and retires this
-    table.
+    **What did change in Phase 6** is how the lock is taken. On SQLite the
+    acquisition had to be a *write* (bumping ``revision``), because SQLite has no
+    row locks and Django's SQLite backend sets ``has_select_for_update = False``,
+    which makes ``select_for_update()`` there a silent no-op — it would read as a
+    fix and hold nothing. PostgreSQL has real row locks, so acquisition is now an
+    explicit ``SELECT ... FOR UPDATE`` and says what it means. The revision bump
+    stays, and stays diagnostic.
+
+    tech-debt.md keeps the durable fix — a ``tstzrange`` generated column plus an
+    ``ExclusionConstraint``, which makes the rule race-proof in the database and
+    retires this table. That is a schema change to a Phase 3 model and carries a
+    subtlety (the constraint must exempt seats sharing a ``cohort_id``, or it
+    breaks every cohort), so it stayed out of a hardening phase on purpose.
     """
 
     teacher = models.OneToOneField(
@@ -332,8 +342,8 @@ class TeacherBookingLock(models.Model):
         default=0,
         help_text=(
             "Bumped once per acquisition. The number is only ever diagnostic — "
-            "how many booking writes have contended for this teacher — but the "
-            "write that changes it is the lock itself."
+            "how many booking writes have contended for this teacher — and since "
+            "Phase 6 it is no longer the lock itself: SELECT ... FOR UPDATE is."
         ),
     )
 
@@ -352,12 +362,21 @@ class TeacherBookingLock(models.Model):
                 "transaction.atomic(). A lock released at the end of its own "
                 "statement does not cover the check it is meant to protect."
             )
-        _, created = cls.objects.get_or_create(teacher_id=teacher_id)
-        if not created:
-            # When the row is new the INSERT above is itself the write.
-            cls.objects.filter(teacher_id=teacher_id).update(
-                revision=F("revision") + 1
-            )
+
+        # get_or_create so the first booking for a teacher creates the row it
+        # then locks. Under contention the loser's INSERT blocks on the unique
+        # index, fails, and Django's savepoint-protected retry re-reads the
+        # committed row — which is the same serialisation, one statement earlier.
+        cls.objects.get_or_create(teacher_id=teacher_id)
+
+        # The lock proper. FOR UPDATE is held until this transaction commits or
+        # rolls back, so the overlap check and the INSERT that follows are one
+        # atomic unit. list() forces the query: a lazy queryset locks nothing.
+        list(cls.objects.select_for_update().filter(teacher_id=teacher_id))
+
+        # Diagnostic only, and safe to do after the lock: the row is ours until
+        # commit, so nothing can interleave between the two statements.
+        cls.objects.filter(teacher_id=teacher_id).update(revision=F("revision") + 1)
 
     def __str__(self):
         return f"booking lock for {self.teacher.username} (revision {self.revision})"
@@ -658,10 +677,16 @@ class Booking(models.Model):
         """Scheduled bookings for this teacher whose time range overlaps ours.
 
         The range comparison happens in Python because ``duration_minutes`` is
-        an integer, not an interval — expressing ``start + duration`` in SQL is
-        backend-specific, and this project is still on SQLite (tech-debt.md).
+        an integer, not an interval, so ``start + duration`` is not a column.
         The query bound keeps that from meaning a full table scan, and is exact:
         no stored booking can be longer than LONGEST_POSSIBLE_BOOKING.
+
+        On PostgreSQL this *could* now be a ``tstzrange`` and an exclusion
+        constraint, which is the durable fix tech-debt.md still records. Phase 6
+        deliberately did not take it: it is a schema change to this model, and
+        the constraint has to carry the same-cohort exemption below or it breaks
+        every cohort the moment it is applied. Hardening the infrastructure and
+        redesigning the overlap rule are two different pieces of work.
 
         Seats in the *same* cohort are excluded (Phase 4). Six students in one
         group class is one teacher teaching once, which is the entire point of a

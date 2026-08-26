@@ -3,3 +3,15 @@ djangorestframework>=3.15
 dj-rest-auth>=7.0
 drf-spectacular>=0.28
 factory-boy>=3.3
+
+# Phase 6 — production hardening.
+# psycopg 3 is the PostgreSQL driver; [binary] ships prebuilt wheels so a fresh
+# clone needs no libpq or compiler. A deployment that prefers to build against
+# the system libpq should install plain `psycopg` instead.
+psycopg[binary]>=3.2
+# Parses DATABASE_URL. config/settings.py wraps it so a bad URL fails as
+# ImproperlyConfigured rather than as a library traceback.
+dj-database-url>=2.3
+# Private object storage for placement audio. [s3] pulls in boto3, which is what
+# generates the presigned URLs.
+django-storages[s3]>=1.14

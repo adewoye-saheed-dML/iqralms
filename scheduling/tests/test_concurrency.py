@@ -1,5 +1,6 @@
-"""Phase 3.5 acceptance criterion 1, and Phase 4 criterion 8 — the overlap rule
-under real concurrency, through both entry points.
+"""Phase 3.5 acceptance criterion 1, Phase 4 criterion 8 and Phase 6 criteria 3
+and 4 — the overlap rule under real concurrency, through both entry points, on
+PostgreSQL.
 
 Separate from test_models.py because these need ``TransactionTestCase``, not
 ``TestCase``. ``TestCase`` wraps each test in one transaction and rolls it back,
@@ -15,18 +16,27 @@ two threads have to interleave inside the window between the overlap check and
 the INSERT to double-book. Four contenders per slot and a barrier to start them
 together is what makes that window likely to be hit rather than merely possible.
 
-Phase 4 adds ``RoutingConcurrencyTests`` at the bottom. The fix landed in 3.5 and
-is not re-litigated; what is new is the *entry point* — routing writes bookings
-itself, so it needs its own proof that it goes through ``Booking.save()`` and
-therefore takes the lock. A ``bulk_create`` of cohort seats would pass every
+Phase 4 adds ``RoutingConcurrencyTests``. The fix landed in 3.5 and is not
+re-litigated; what is new is the *entry point* — routing writes bookings itself,
+so it needs its own proof that it goes through ``Booking.save()`` and therefore
+takes the lock. A ``bulk_create`` of cohort seats would pass every
 single-threaded test in this repository and fail only here.
+
+Phase 6 adds ``LockIsStillRequiredOnPostgresTests`` at the bottom, and it is the
+one file in the repository whose *unchanged* passing is the point. Everything
+above ran against SQLite until this phase and asserts the same invariants
+against PostgreSQL now, which is criterion 3. The new class answers criterion 4's
+harder half: the spec said ``TeacherBookingLock`` may be kept only if tests show
+it is still needed, so there is now a test that removes it and watches the
+double booking happen.
 """
 
 import threading
 from datetime import time
+from unittest import mock
 
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
-from django.db import connection
+from django.db import connection, transaction
 from django.test import TransactionTestCase
 
 from accounts.tests.factories import StudentFactory
@@ -87,7 +97,8 @@ class BookingConcurrencyTests(TransactionTestCase):
         Returns a list of ``(outcome, detail)`` in the students' order, where
         outcome is ``"created"``, ``"refused"`` (a ValidationError, the correct
         way to lose) or ``"crashed"`` (anything else — an IntegrityError or a
-        SQLite "database is locked" both land here, and both fail the test).
+        lock timeout both land here, and both fail the test: losing must be a
+        clean refusal, never a database error surfacing as a 500).
         """
         start_times = start_times or [self.slot] * len(students)
         barrier = threading.Barrier(len(students), timeout=THREAD_TIMEOUT)
@@ -296,7 +307,7 @@ class RoutingConcurrencyTests(TransactionTestCase):
         Returns ``(outcome, detail)`` per student: ``"routed"`` with the reason,
         ``"refused"`` for a ``ValidationError`` or ``NoCapacity`` (both correct
         ways to lose), or ``"crashed"`` for anything else — an ``IntegrityError``
-        or a SQLite "database is locked" land there, and both fail the test.
+        or a lock timeout land there, and both fail the test.
         """
         barrier = threading.Barrier(len(students), timeout=THREAD_TIMEOUT)
         results = [None] * len(students)
@@ -461,4 +472,223 @@ class RoutingConcurrencyTests(TransactionTestCase):
             TeacherBookingLock.objects.filter(teacher=lead).count(),
             1,
             "routing must acquire the per-teacher lock, exactly once per teacher",
+        )
+
+
+class LockIsStillRequiredOnPostgresTests(TransactionTestCase):
+    """Phase 6 criterion 4 — why ``TeacherBookingLock`` survived the migration.
+
+    The phase spec was explicit: the lock may be retained *only* if tests show it
+    is still required for the chosen PostgreSQL concurrency strategy, and not
+    merely because it exists today. So this class does the awkward thing and
+    demonstrates the failure the lock prevents, rather than asserting the success
+    it produces — every other test in this file already does that.
+
+    The claim being tested is about PostgreSQL's default isolation level. Under
+    READ COMMITTED, two transactions that each run the overlap check see the
+    database as it was when their own statement started, so both can find the
+    slot free; and there is no constraint on ``Booking`` to refuse the second
+    INSERT. Holding a row lock across the read and the write is what makes the
+    pair atomic, and nothing about moving off SQLite changed that.
+
+    The interleaving is *forced* rather than raced for, using a barrier placed
+    between the read and the write. That is deliberate: a probabilistic version
+    of this test would sometimes pass for the wrong reason, and a test whose
+    whole job is to prove a race exists must not depend on winning one.
+    """
+
+    def setUp(self):
+        self.window = AvailabilityFactory(
+            weekday=Weekday.MONDAY,
+            start_time_utc=DEFAULT_WINDOW_START,
+            end_time_utc=DEFAULT_WINDOW_END,
+        )
+        self.teacher = self.window.teacher
+        self.level = LevelFactory()
+        teaches(self.teacher, self.level)
+        self.slot = slot_at(self.window, 120)
+
+    def test_the_backend_provides_the_row_lock_the_mechanism_needs(self):
+        """The single fact that made the SQLite implementation different.
+
+        Django's SQLite backend sets ``has_select_for_update = False``, which
+        makes ``select_for_update()`` there a silent no-op — so Phase 3.5 had to
+        take the lock by *writing* to the row instead. On PostgreSQL the feature
+        is real, which is what lets ``acquire()`` say what it means.
+        """
+        self.assertTrue(
+            connection.features.has_select_for_update,
+            "TeacherBookingLock.acquire() relies on SELECT ... FOR UPDATE; on a "
+            "backend without it the call is a no-op that holds nothing",
+        )
+
+    def test_a_second_acquirer_waits_until_the_first_transaction_ends(self):
+        """The lock blocks, which is the property everything else rests on.
+
+        Asserted in both directions, because only one of them is interesting on
+        its own: a lock that never blocks would pass a "does it eventually get
+        through" test, and a lock that never releases would pass a "does it
+        block" test.
+        """
+        TeacherBookingLock.objects.create(teacher=self.teacher)
+        holder_has_lock = threading.Event()
+        second_acquired = threading.Event()
+        holder_may_finish = threading.Event()
+
+        def hold():
+            try:
+                with transaction.atomic():
+                    TeacherBookingLock.acquire(self.teacher.pk)
+                    holder_has_lock.set()
+                    holder_may_finish.wait(THREAD_TIMEOUT)
+            finally:
+                connection.close()
+
+        def contend():
+            try:
+                holder_has_lock.wait(THREAD_TIMEOUT)
+                with transaction.atomic():
+                    TeacherBookingLock.acquire(self.teacher.pk)
+                    second_acquired.set()
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=hold), threading.Thread(target=contend)]
+        for thread in threads:
+            thread.start()
+
+        self.assertFalse(
+            second_acquired.wait(1.0),
+            "a second acquirer got the lock while the first still held it, so "
+            "the lock is not serialising anything",
+        )
+        holder_may_finish.set()
+        self.assertTrue(
+            second_acquired.wait(THREAD_TIMEOUT),
+            "the lock was never released, which would wedge every booking for "
+            "this teacher",
+        )
+
+        for thread in threads:
+            thread.join(timeout=THREAD_TIMEOUT)
+            self.assertFalse(thread.is_alive(), "a lock thread never finished")
+
+    def test_without_the_lock_two_writers_double_book_one_slot(self):
+        """The failure the lock prevents, reproduced on PostgreSQL.
+
+        ``acquire()`` is replaced with a no-op and ``clashing_bookings()`` is
+        wrapped so that both writers have finished reading before either writes.
+        Everything else is the ordinary ``Booking.objects.create()`` path,
+        including ``clean()`` — so what this shows is that the overlap rule is
+        not self-protecting: it is a read whose answer goes stale the moment
+        another transaction writes, and only the lock stops that mattering.
+
+        This is the evidence for keeping the table. If PostgreSQL refused the
+        second write on its own, this test would fail and the lock could go.
+        """
+        both_have_read = threading.Barrier(2, timeout=THREAD_TIMEOUT)
+        real_clashing_bookings = Booking.clashing_bookings
+
+        def read_then_wait(booking_self):
+            clashes = real_clashing_bookings(booking_self)
+            # Both writers are now past the check and neither has inserted —
+            # the exact window the lock exists to close.
+            both_have_read.wait()
+            return clashes
+
+        students = [StudentFactory(), StudentFactory()]
+        outcomes = [None, None]
+
+        def attempt(index, student):
+            try:
+                Booking.objects.create(
+                    student=student,
+                    teacher=self.teacher,
+                    level=self.level,
+                    start_time_utc=self.slot,
+                )
+                outcomes[index] = "created"
+            except ValidationError:
+                outcomes[index] = "refused"
+            except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+                outcomes[index] = f"crashed: {exc!r}"
+            finally:
+                connection.close()
+
+        with (
+            mock.patch.object(TeacherBookingLock, "acquire", staticmethod(lambda _: None)),
+            mock.patch.object(Booking, "clashing_bookings", read_then_wait),
+        ):
+            threads = [
+                threading.Thread(target=attempt, args=(index, student))
+                for index, student in enumerate(students)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=THREAD_TIMEOUT)
+                self.assertFalse(thread.is_alive(), "an unlocked booking thread hung")
+
+        self.assertEqual(
+            outcomes,
+            ["created", "created"],
+            "PostgreSQL accepted both writes, as expected — if it did not, "
+            f"TeacherBookingLock would be redundant. Got: {outcomes}",
+        )
+        self.assertEqual(
+            Booking.objects.filter(
+                teacher=self.teacher,
+                start_time_utc=self.slot,
+                status=BookingStatus.SCHEDULED,
+            ).count(),
+            2,
+            "the double booking the lock prevents must be reproducible without "
+            "it, or the lock is not what is preventing it",
+        )
+
+    def test_with_the_lock_the_same_two_writers_produce_one_booking(self):
+        """The control for the test above, at the same slot and duration.
+
+        Without this pair the previous test proves only that a monkeypatched code
+        path misbehaves. Here nothing is patched, the same two students go for the
+        same slot, and exactly one of them gets it — so the difference between two
+        bookings and one is the lock and nothing else.
+        """
+        results = []
+        barrier = threading.Barrier(2, timeout=THREAD_TIMEOUT)
+
+        def attempt(student):
+            try:
+                barrier.wait()
+                Booking.objects.create(
+                    student=student,
+                    teacher=self.teacher,
+                    level=self.level,
+                    start_time_utc=self.slot,
+                )
+                results.append("created")
+            except ValidationError:
+                results.append("refused")
+            except Exception as exc:  # noqa: BLE001
+                results.append(f"crashed: {exc!r}")
+            finally:
+                connection.close()
+
+        threads = [
+            threading.Thread(target=attempt, args=(StudentFactory(),))
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=THREAD_TIMEOUT)
+
+        self.assertEqual(sorted(results), ["created", "refused"])
+        self.assertEqual(
+            Booking.objects.filter(
+                teacher=self.teacher,
+                start_time_utc=self.slot,
+                status=BookingStatus.SCHEDULED,
+            ).count(),
+            1,
         )

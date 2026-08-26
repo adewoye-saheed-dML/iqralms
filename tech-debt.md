@@ -14,6 +14,13 @@ Format:
 ---
 
 ## 2026-08-22 — SQLite instead of Postgres
+- **Resolved 2026-08-26 (Phase 6).** PostgreSQL is the canonical database, via a
+  required `DATABASE_URL`. There is deliberately no fallback: a missing or
+  non-PostgreSQL URL raises `ImproperlyConfigured` at settings import, because a
+  fallback is exactly how SQLite became canonical in the first place. The whole
+  suite runs against PostgreSQL, `docker-compose.yml` gives a fresh clone a local
+  one, and `config/tests/test_settings.py` pins the no-fallback rule. Kept here
+  for the reasoning, not as outstanding work.
 - **What was skipped:** Real database. `config/settings.py` uses SQLite.
 - **Why:** Phase 1 is the identity layer; nothing needs Postgres-specific
   behaviour yet, and SQLite keeps a fresh clone running with zero setup.
@@ -22,6 +29,11 @@ Format:
   enforcement timing.
 - **Revisit when:** Before any real user data exists, i.e. before the first
   student signs up.
+- **What the move actually cost:** less than the warnings above suggested. All
+  649 pre-existing tests passed on PostgreSQL with two one-line changes, and both
+  were about the private-storage change rather than the database. The uniqueness
+  and constraint-timing worries did not materialise — see learnings.md,
+  2026-08-26, for why, and for the one thing that did change (suite runtime).
 
 ## 2026-08-22 — `is_minor` never recomputed after signup
 - **What was skipped:** Any job or hook that flips `is_minor` to False when a
@@ -75,6 +87,15 @@ Format:
 - **Revisit when:** First user forgets their password.
 
 ## 2026-08-23 — Placement audio is stored on local disk
+- **Resolved 2026-08-26 (Phase 6).** `PlacementResult.audio_sample` goes to a
+  private S3-compatible bucket (`config.storage.PrivateS3Storage`, required in
+  production). Objects are never publicly readable: `querystring_auth` makes every
+  URL presigned, `default_acl=None` sends no ACL, and the API publishes
+  `has_audio_sample` and a bare filename instead of a path. Playing a sample means
+  asking `/api/curriculum/placements/{id}/audio-url/` for a URL that expires in
+  five minutes. Development and tests use `PrivateLocalStorage`, whose `url()`
+  *raises* — there is no `MEDIA_URL` and no media route left to fall back to.
+  Kept here for the reasoning, not as outstanding work.
 - **What was skipped:** Any real file storage. `MEDIA_ROOT` is a directory in
   the project tree, and in `DEBUG` Django itself serves it (`config/urls.py`).
 - **Why:** Phase 2 only needs the file to exist so the lead can play it back;
@@ -85,8 +106,40 @@ Format:
 - **Revisit when:** Before the first real student uploads a sample. Of the three
   audio entries here this is the only blocker; the other two are a hardening
   step and an accepted tradeoff.
+- **Who can hear a sample** was put to the product owner rather than inferred
+  from the old public URL (2026-08-26): the lead teacher, who reviews it, and the
+  student whose voice it is. Sub-teachers and a minor's linked parent are
+  refused. The parent case is the one worth knowing about — it is defensible
+  product-wise, but granting it is a *new* permission, and a hardening phase must
+  not widen who can reach student data. `test_audio_access.py` asserts the 403 so
+  changing it later has to be deliberate.
+
+## 2026-08-26 — Development files under `MEDIA_ROOT` were discarded, not migrated
+- **What was skipped:** Any migration of existing local `MEDIA_ROOT` files into
+  the private bucket during the Phase 6 storage change.
+- **Why:** There were none to migrate — no `media/` directory existed in the
+  working tree at the time of the change, the path has been gitignored since
+  Phase 2, and no deployment of this application has ever existed. Inventing a
+  production data migration for files that were never production data would be
+  ceremony, and the phase spec says so explicitly.
+- **Real fix:** None needed. If a developer has local samples from Phases 2-5,
+  they are development artefacts: delete the directory, or re-submit through the
+  API, which is now the only path that writes to storage.
+- **Revisit when:** Never for this transition. It matters again only if a *future*
+  storage change happens after real uploads exist, at which point a copy step
+  between buckets is real work with a real cutover.
 
 ## 2026-08-23 — Uploaded placement audio is not validated
+- **Resolved 2026-08-26 (Phase 6).** `curriculum/validators.py` caps size at
+  15 MiB and allowlists six formats (mp3, wav, ogg, m4a, webm, flac), checking the
+  extension, the file's own leading bytes, and the declared content type — in that
+  order, with the signature being the one that decides. `Content-Type` alone is
+  never trusted, so an executable renamed `recitation.mp3` and declared
+  `audio/mpeg` is refused. Enforced at the serializer for clean field errors and
+  again in `PlacementResult.clean()` for the admin's upload widget, which was the
+  one HTTP path that bypassed the serializer. `DATA_UPLOAD_MAX_MEMORY_SIZE` sits
+  just above the per-file cap so an oversized body is refused before our code runs.
+  Kept here for the reasoning, not as outstanding work.
 - **What was skipped:** Any check on the uploaded file's type, size or
   duration. `PlacementResult.audio_sample` is a bare `FileField` and
   `PlacementSubmitSerializer.audio_sample` a bare `FileField`, so a student can
@@ -101,6 +154,11 @@ Format:
 - **Revisit when:** The upload endpoint is reachable by anyone who isn't us —
   it is unauthenticated-adjacent (any student account can hit it), so this is
   the cheapest real abuse vector in the codebase so far.
+- **Still not checked: duration.** The size cap bounds it loosely and nothing in
+  the product reads a sample's length, so it stayed out. A real duration check
+  needs to decode the container (ffprobe, or a pure-Python parser per format),
+  which is a dependency and a decode-untrusted-input surface — worth it only if
+  "the sample must be 30-120 seconds" becomes a product rule rather than a guess.
 
 ## 2026-08-23 — A placement keeps no record of superseded samples
 - **What was skipped:** Any history of recitation samples. A placement holds
@@ -424,7 +482,10 @@ Format:
   `start + duration` is backend-specific — and the project is still on SQLite
   (see the entry above), which has neither range types nor exclusion
   constraints. `Booking.clashing_bookings()` therefore filters to a bounded
-  candidate set in SQL and compares ends in Python.
+  candidate set in SQL and compares ends in Python. *(The SQLite half of that
+  reasoning expired on 2026-08-26; the rest still holds — the comparison is still
+  in Python, because moving it is the fix below rather than a side effect of
+  changing database.)*
 - **Real fix:** On Postgres, a `tstzrange` generated column plus an
   `ExclusionConstraint` on `(teacher, range)` where `status='scheduled'` — which
   makes the rule race-proof *in the database*, rather than by agreement between
@@ -433,18 +494,34 @@ Format:
   carry the same exemption `clashing_bookings()` now has — seats sharing a
   `cohort_id` do not clash, because a group class is one teacher teaching once. A
   constraint without it breaks every cohort the moment it is applied.
-- **Revisit when:** The Postgres move. No longer urgent — the race it describes
-  is mitigated (below), so this is now about deleting a workaround, not about
-  correctness. The candidate query is bounded by `LONGEST_POSSIBLE_BOOKING`, so
-  this was never a performance issue.
-- **Mitigation now (Phase 3.5):** Creating a booking holds a per-teacher
-  `TeacherBookingLock` row inside `transaction.atomic()`, so the overlap check
-  and the INSERT are one atomic unit and a second request for the same slot is
-  refused by `clean()` instead of committing. This leans on
-  `DATABASES["default"]["OPTIONS"]["transaction_mode"] = "IMMEDIATE"`; without
-  it SQLite takes its write lock too late and the pair deadlocks into
-  "database is locked" rather than queueing. Both halves have tests
-  (`scheduling/tests/test_concurrency.py`) that fail if either is removed.
+- **Revisit when:** ~~The Postgres move.~~ **The Postgres move happened
+  (2026-08-26, Phase 6) and this entry deliberately survived it.** The phase spec
+  asked whether `TeacherBookingLock` was still required, and the answer is yes,
+  with a test rather than an opinion:
+  `test_concurrency.LockIsStillRequiredOnPostgresTests` forces the interleaving
+  with the lock patched out and reproduces the double booking, because READ
+  COMMITTED does not stop a check-then-insert race and there is no constraint on
+  `Booking` to refuse the second write. A control test at the same slot, with
+  nothing patched, produces one booking — so the difference is the lock and
+  nothing else. Applying the exclusion constraint is a schema change to a Phase 3
+  model plus the cohort exemption above, which is a piece of work in its own right
+  and not a hardening step. Next revisit: when write contention on one teacher
+  becomes a measured problem, or when someone adds a new booking writer and
+  forgets to take the lock — the weakness below that the constraint removes.
+- **Mitigation now (Phase 3.5, updated Phase 6):** Creating a booking holds a
+  per-teacher `TeacherBookingLock` row inside `transaction.atomic()`, so the
+  overlap check and the INSERT are one atomic unit and a second request for the
+  same slot is refused by `clean()` instead of committing. **What changed in Phase
+  6 is how the row is held.** On SQLite it had to be a *write* — bumping
+  `revision` — because SQLite has no row locks and Django's SQLite backend sets
+  `has_select_for_update = False`, making `select_for_update()` there a silent
+  no-op that reads as a fix and holds nothing. That also depended on
+  `transaction_mode: IMMEDIATE`, without which SQLite took its write lock too late
+  and the pair deadlocked into "database is locked". On PostgreSQL acquisition is
+  an explicit `SELECT ... FOR UPDATE`, the `transaction_mode` option is gone, and
+  `revision` is now purely diagnostic. Tests
+  (`scheduling/tests/test_concurrency.py`) fail if the lock stops blocking, stops
+  releasing, or stops being taken by either writer.
   Two things it does *not* do: it only guards creation, since no supported
   operation moves an existing booking onto a new slot (reschedule is
   cancel-and-rebook), and it serialises through a row rather than the database,
@@ -453,9 +530,40 @@ Format:
 
 
 ## 2026-08-22 — `SECRET_KEY` and `DEBUG` are hardcoded
+- **Resolved 2026-08-26 (Phase 6).** `DEBUG` now defaults to **False** — the
+  inversion is the point, since development opting in is safe and production
+  remembering to opt out is not. `DJANGO_PRODUCTION=1` is an explicit flag that
+  both requires a real configuration (a non-development `DJANGO_SECRET_KEY` of at
+  least 50 characters, explicit `DJANGO_ALLOWED_HOSTS` with no wildcard default,
+  and `DJANGO_STORAGE_BACKEND=s3`) and switches on the HTTPS settings: HSTS with
+  subdomains and preload, secure and httponly cookies, `SECURE_SSL_REDIRECT`, the
+  proxy SSL header, nosniff, a referrer policy, and `X_FRAME_OPTIONS=DENY`.
+  `check --deploy --fail-level WARNING` passes with no warnings and no documented
+  exceptions. Kept here for the reasoning, not as outstanding work.
 - **What was skipped:** Forcing these to be set from the environment.
 - **Why:** Keeps a fresh clone runnable with no setup.
 - **Real fix:** Raise on a missing `DJANGO_SECRET_KEY` when `DEBUG` is False,
   and add the standard production security settings (HSTS, secure cookies,
   `SECURE_SSL_REDIRECT`).
 - **Revisit when:** First deploy to anything reachable from the internet.
+- **One deliberate difference from the "real fix" above:** the gate is
+  `DJANGO_PRODUCTION`, not `not DEBUG`. Tying HTTPS redirects to `DEBUG=False`
+  would switch them on for the test suite and every local management command,
+  against a server with no TLS. A staging box behind TLS gets the same settings
+  without having to pretend to be production in any other respect.
+
+## 2026-08-26 — Secret rotation is manual and unversioned
+- **What was skipped:** Any support for rotating `SECRET_KEY` without
+  invalidating things signed with the old one.
+- **Why:** Nothing needed it before Phase 6. Now two things are signed with it:
+  session cookies (Django's own, and this is an API — clients hold DRF tokens,
+  which are database rows and survive a rotation) and the placement-audio access
+  tokens added this phase.
+- **Real fix:** `SECRET_KEY_FALLBACKS`, which Django checks when verifying but
+  never uses to sign. A rotation then means: new key in `SECRET_KEY`, old key in
+  `SECRET_KEY_FALLBACKS`, and drop it once the longest-lived signature has expired.
+- **Revisit when:** The first rotation is actually needed. The blast radius today
+  is small and self-healing — an audio URL is valid for five minutes, so a
+  rotation breaks at most five minutes of in-flight playback and nothing durable.
+  Worth wiring before a rotation is done under pressure, i.e. before a suspected
+  key compromise rather than after one.
