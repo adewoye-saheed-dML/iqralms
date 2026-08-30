@@ -567,3 +567,67 @@ Format:
   rotation breaks at most five minutes of in-flight playback and nothing durable.
   Worth wiring before a rotation is done under pressure, i.e. before a suspected
   key compromise rather than after one.
+
+## 2026-08-30 — A wrong finalized payout has no correction path
+- **What was skipped:** Any way to reverse, amend or credit a payout once it is
+  finalized. `TeacherPayout.clean()` refuses every write to a finalized row, the
+  admin declines to offer the form, and there is no `reversed` state.
+- **Why:** The Phase 8 spec names corrections as an explicit later phase, and the
+  alternative was worse: an editable financial record is one where "what did we
+  pay in August" has no single answer. Refusing the edit keeps the question
+  answerable while the correction workflow is still undesigned.
+- **Real fix:** A correcting entry rather than an edit — a second payout row
+  linked to the first with a reason, so the history reads as "paid 5000, then
+  adjusted by -500" instead of silently becoming 4500. That needs a product
+  decision about who may issue one and whether a teacher sees the adjustment
+  separately.
+- **Revisit when:** The first real payout is wrong. Until money has actually moved
+  the practical fix is to delete the *generated* draft and regenerate, which is
+  supported.
+
+## 2026-08-30 — One hardcoded currency
+- **What was skipped:** Multi-currency support. `payouts.models.PAYOUT_CURRENCY`
+  is the constant `"NGN"`, stamped onto every record.
+- **Why:** Currency conversion is explicitly out of scope for Phase 8, and a
+  per-teacher currency field with no conversion rule would be a way to produce
+  statements that cannot legitimately be totalled.
+- **Real fix:** The code is already shaped for it — the currency is *stored* on
+  each payout rather than assumed at read time, so historical rows keep their
+  meaning. Adding a second currency means deciding where the rate comes from,
+  whether statements may mix currencies (probably not: one statement per currency),
+  and what `Statement.total_amount` means if they do.
+- **Revisit when:** A teacher is paid in anything other than naira.
+
+## 2026-08-30 — Cohort payout deduplication inherits the single-session assumption
+- **What was skipped:** Any per-session identity for a cohort. "One payout per
+  cohort session" is enforced as a partial unique constraint on `cohort_id`, which
+  is exact only because a `Cohort` has a single `schedule_start_utc`.
+- **Why:** It is the same assumption `scheduling.weekly_committed_minutes` already
+  makes for capacity, and Phase 8 was explicitly told not to invent a new
+  attendance or session model. Two deduplication rules with two different ideas of
+  "a session" would be worse than one shared assumption.
+- **Real fix:** Whatever gives a recurring cohort its per-occurrence identity —
+  most likely a `CohortSession` row that seats point at. Both the capacity
+  calculation and this constraint then key on that instead of on `cohort_id`.
+- **Revisit when:** Recurring group classes are implemented (the existing
+  recurrence gap in this file). Doing it before then would be building the
+  identity model this phase was told not to invent.
+
+## 2026-08-30 — Payout listings are unpaginated, and generation is not serialized
+- **What was skipped:** Two things a busier academy will want. `GET
+  /api/payouts/lead/` returns every matching record in one response (the project
+  has no `DEFAULT_PAGINATION_CLASS` at all, so this matches every other listing).
+  And concurrent generation of the same period is *prevented* rather than
+  *serialized*: the second run loses on the unique constraint, its whole
+  transaction rolls back, and the API answers 409 telling the caller to repeat it.
+- **Why:** Generation is a lead-only action that runs once a period, so the
+  realistic race is a double-clicked button — for which "nothing was created,
+  try again" is a correct and cheap answer. A `TeacherBookingLock`-style advisory
+  lock would be the heavier fix and buys nothing until two people run payroll at
+  once.
+- **Real fix:** Pagination as a project-wide setting rather than per endpoint; and
+  for generation, a period-scoped advisory lock following the
+  `TeacherBookingLock` pattern, so the second run waits and then correctly finds
+  nothing to do.
+- **Revisit when:** A period covers enough sessions that the listing response is
+  unwieldy, or payroll stops being one person's job.

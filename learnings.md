@@ -648,3 +648,68 @@ Format:
   and its seats, a payout run and its lines — needs the same wrapper, and a model
   whose `save()` retires a previous row (this one, `PricingAgreement`) makes the
   partial write actively destructive rather than merely untidy.
+
+## 2026-08-30 — Phase 8's four financial conventions were decided, not inferred
+- **What happened:** The Phase 8 spec's "stop and ask" list turned out to be
+  load-bearing. Four things it names were genuinely undecided in the repository,
+  and each had a plausible wrong answer: the repository had **no currency and no
+  monetary rounding convention** anywhere (`pricing` stores bare decimals);
+  `TeacherProfile.hourly_payout_rate` is **null for the lead**, who nonetheless
+  teaches bookings; and a cohort session is stored as **one `Booking` row per
+  seat**, so the spec's "one payout per booking" shape would have paid a teacher
+  six times for teaching one group class once.
+- **What we decided (product owner, 2026-08-30):**
+  * The rate source is the existing `hourly_payout_rate`. No second rate model.
+  * Currency is `NGN`, snapshotted onto every record; amounts quantize to `0.01`
+    with `ROUND_HALF_UP`, **once**, at the end of `payouts.models.payout_amount`.
+    `assessment` already rounds `ROUND_HALF_UP`, so this follows it.
+  * A cohort session is paid **once**, not once per seat — the same reasoning
+    `scheduling.weekly_committed_minutes` already applies to capacity. The payout
+    attaches to the earliest seat and denormalizes `cohort` so the database can
+    hold "one payout per cohort session" as a partial unique constraint.
+  * A teacher with **no rate is not payout-eligible**. The lead's own sessions
+    produce no record and generation reports them as `no_payout_rate` rather than
+    failing the run or writing an amount of zero.
+- **Why it matters for later phases:** These are now conventions, not choices. A
+  payments phase that introduces a second currency has to decide what the
+  existing `NGN` rows mean; a performance-pay phase has to say explicitly that it
+  is overriding `Family pricing ≠ Teacher payout`; and a recurring-cohort feature
+  has to revisit the `cohort_id` deduplication in both this app and capacity
+  accounting (tech-debt.md).
+
+## 2026-08-30 — A statement is computed, so it has no id to fetch
+- **What happened:** The spec suggests `GET /api/payouts/statements/mine/{id}/`
+  while also saying a statement is "a reporting view over payout records, not a
+  replacement for those records" and "do not duplicate financial facts". Those
+  two pull in opposite directions: an addressable statement implies a stored row,
+  and a stored total is a second copy of money that can drift from the records it
+  summarises.
+- **What we decided:** No `TeacherStatement` model. `services.statement_for`
+  aggregates the payout rows for `[period_start, period_end)` on every request, so
+  the total is arithmetically the sum of the rows returned beside it. The period
+  *is* the identifier: `GET /api/payouts/statements/mine/?start=&end=`, with both
+  bounds required. `StatementStatus` distinguishes `empty` (nothing generated for
+  this period) from a real zero, the same way assessment distinguishes a missing
+  assessment from a score of zero.
+- **Why it matters for later phases:** If a payment run ever needs to reference
+  "the statement we paid against", that is when a stored statement earns its
+  place — and it should store the payout ids it covered rather than a recomputed
+  total, so the two can still be checked against each other.
+
+## 2026-08-30 — Three "status" choice sets need three names
+- **What happened:** Adding `PayoutStatus` and `StatementStatus` made
+  `drf-spectacular` emit three enum-collision warnings, because `Booking.status`
+  had been the only choice set called `status` in the schema. This project's
+  definition of done includes `check --deploy --fail-level WARNING`, and the
+  schema had zero warnings before the phase, so a resolvable-but-unnamed enum is
+  a regression rather than a cosmetic nit.
+- **What we decided:** Name all three in `SPECTACULAR_SETTINGS.ENUM_NAME_OVERRIDES`
+  (`BookingStatusEnum`, `PayoutStatusEnum`, `StatementStatusEnum`), the same way
+  `RoleEnum` was handled in Phase 1. Also worth knowing: a `SlugRelatedField` on a
+  plain `Serializer` (a computed dataclass, no `Meta.model`) warns for a different
+  reason — there is no model for it to resolve against, so a `CharField` over
+  `source="teacher.username"` is the correct shape there.
+- **Why it matters for later phases:** Any phase adding a `status`, `reason` or
+  `role` field to a serializer should expect to add a name for it, and should
+  regenerate the schema (`manage.py spectacular --validate`) before calling the
+  phase done. The check is cheap and the warning is invisible until someone looks.

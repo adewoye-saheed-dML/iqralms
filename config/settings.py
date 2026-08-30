@@ -134,6 +134,7 @@ INSTALLED_APPS = [
     "scheduling",
     "pricing",
     "assessment",
+    "payouts",
 ]
 
 MIDDLEWARE = [
@@ -448,7 +449,9 @@ SPECTACULAR_SETTINGS = {
         "Scheduling: teacher availability, direct booking, Jitsi video. "
         "Routing: cohorts, capacity-based auto-assignment. "
         "Pricing: negotiated rates per student and level, lead-approved. "
-        "Waitlist: preferred-teacher requests when that teacher is full."
+        "Waitlist: preferred-teacher requests when that teacher is full. "
+        "Assessment: per-session rubric scoring, lead review, family progress. "
+        "Payouts: teacher payout records and period statements, lead-generated."
     ),
     "VERSION": "0.6.0",
     "SERVE_INCLUDE_SCHEMA": False,
@@ -459,9 +462,14 @@ SPECTACULAR_SETTINGS = {
     # about it — and `check --deploy --fail-level WARNING` is part of this
     # project's definition of done, so an unnamed enum is a failing check rather
     # than a cosmetic nit.
+    # Phase 8 adds two more "status" choice sets on top of the booking one, so
+    # all three need names of their own for the same reason.
     "ENUM_NAME_OVERRIDES": {
         "RoleEnum": "accounts.models.Role.choices",
         "SelfRegisterableRoleEnum": "accounts.serializers.SELF_REGISTERABLE_ROLES",
+        "BookingStatusEnum": "scheduling.models.BookingStatus.choices",
+        "PayoutStatusEnum": "payouts.models.PayoutStatus.choices",
+        "StatementStatusEnum": "payouts.models.StatementStatus.choices",
     },
 }
 

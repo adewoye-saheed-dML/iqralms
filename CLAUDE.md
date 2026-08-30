@@ -1,223 +1,306 @@
 # Quran Academy Platform
 
-Django REST backend for a Quran/Arabic teaching academy. Solves one problem:
-lead teacher's time is the bottleneck; students span timezones and levels;
-sub-teachers need routing + quality control without manual triage.
+Django REST backend for a Quran/Arabic teaching academy. The overall product intent is in `docs/quran-academy-mvp-spec.md`. Detailed requirements for each development stage live in `specs/`.
 
-Full product context: see `docs/quran-academy-mvp-spec.md`. This file is a router
-only — don't duplicate detailed phase content here, point to the active spec.
+## Phase status
 
-## Current phase
+- Phase 1 Accounts — DONE
+- Phase 2 Curriculum & placement — DONE
+- Phase 3 Scheduling — DONE
+- Phase 3.5 Booking debt cleanup — DONE
+- Phase 4 Routing — DONE
+- Phase 5 Pricing & preferred-teacher waitlist — DONE
+- Phase 6 Production hardening — DONE
+- Phase 7 Assessment & progress — IMPLEMENTED; manual acceptance pending
+- Phase 8 Payouts & statements — IMPLEMENTED; manual acceptance pending
 
-Check `specs/` for the active phase file. Work one phase at a time. Do not start
-Phase N+1 until Phase N's acceptance criteria are met and committed.
+A phase is not complete merely because code exists. Do not start the next phase until the current phase's acceptance criteria are verified and the completed work is committed.
 
-- `specs/phase-1-accounts.md` — DONE
-- `specs/phase-2-curriculum.md` — DONE
-- `specs/phase-3-scheduling.md` — DONE
-- `specs/phase-3.5-debt-cleanup.md` — DONE
-- `specs/phase-4-routing.md` — DONE
-- `specs/phase-5-pricing-waitlist.md` — DONE
-- `specs/phase-6-production-hardening.md` — DONE
-- `specs/phase-7-assessment-progress.md` — ACTIVE
-- Later product phases get their own spec when they are reached. Do not write
-  them in advance.
+## Token-efficient development method
 
-## Product-state rules carried forward
+This repository is intentionally developed in small, inspectable increments. AI assistance must stay scoped to the smallest useful unit.
+
+### Before changing code
+
+1. Read only the active phase specification.
+2. Choose one acceptance criterion or one clearly bounded task.
+3. Check `git status`.
+4. Inspect only the files needed for that task.
+5. Prefer the current diff and existing repository patterns over rereading finished code.
+6. Do not inspect the whole repository unless the task genuinely crosses module boundaries.
+
+### During implementation
+
+- Make one focused change at a time.
+- Do not refactor unrelated code.
+- Do not add speculative future fields, endpoints, abstractions, or infrastructure.
+- Reuse existing repository conventions.
+- Preserve behaviour outside the current task.
+- Keep product decisions out of implementation guesses.
+- When a requirement is ambiguous, stop and ask instead of inventing behaviour.
+
+### One task per AI session
+
+A normal coding request should look like:
+
+> Implement Phase 8 task 8.1 only. Read the Phase 8 spec and inspect only the files required for that task. Do not modify unrelated apps. Do not write broad tests. Return changed files, why they changed, and the manual commands I should run.
+
+Do not ask AI to implement an entire phase in one response.
+
+## Manual testing is the default feedback loop
+
+Routine testing is performed locally by the developer to reduce context and iteration cost.
+
+After a focused change, normally run:
+
+```bash
+python manage.py check
+python manage.py makemigrations --check
+python manage.py test <targeted_app_or_test>
+```
+
+Then manually exercise the changed API through `/api/docs/` or the normal client.
+
+The full regression suite should be run at the end of a phase or after a shared invariant changes.
+
+AI should not repeatedly rerun broad suites when the developer can run them locally.
+
+### When reporting a failure to AI
+
+Send only:
+
+- exact error or traceback;
+- endpoint, command, or action;
+- expected result;
+- actual result;
+- relevant file section or `git diff`.
+
+Do not paste the entire repository or entire files unless the smaller context cannot explain the problem.
+
+Good example:
+
+```text
+Endpoint: POST /api/payouts/generate/
+
+Expected: one payout record for the eligible completed sessions.
+
+Actual: IntegrityError on unique constraint.
+
+Error:
+<exact traceback>
+
+Relevant diff:
+git diff -- payouts/
+```
+
+## Prefer Git diffs as AI context
+
+Use:
+
+```bash
+git status
+git diff --stat
+git diff -- <changed-file>
+```
+
+For previous work:
+
+```bash
+git show --stat <commit>
+git show <commit> -- <file>
+```
+
+Small commits are checkpoints. Commit completed tasks frequently so every future session starts from a stable state.
+
+## Source-of-truth rules
+
+- `CLAUDE.md` — working rules and high-level phase status.
+- `specs/` — detailed requirements for each phase.
+- `docs/quran-academy-mvp-spec.md` — overall product intent.
+- `learnings.md` — decisions, discoveries, and surprising edge cases.
+- `tech-debt.md` — deliberate shortcuts and deferred work.
+- `README.md` — environment and deployment workflow.
+
+Do not create competing requirement documents.
+
+## Product invariants carried forward
 
 ### Scheduling
 
-`Booking.clean()` remains the source of booking eligibility. Routing must not
-duplicate its business rules.
+`Booking.clean()` is the source of booking eligibility.
 
-`TeacherBookingLock` is still required on PostgreSQL. New booking writers must
-use the normal `Booking.save()` path and must not bypass the lock with
-`bulk_create()`.
+New booking writers must use the normal `Booking.save()` path and must not bypass validation with `bulk_create()`.
+
+`TeacherBookingLock` remains part of the PostgreSQL booking-creation race protection. Do not weaken or remove it without a phase-specific decision and proof.
 
 ### Pricing
 
-`pricing.PricingAgreement.active_for(student, level)` is the canonical lookup
-for the active family rate. Do not reconstruct the active filter independently.
+`pricing.PricingAgreement.active_for(student, level)` is the canonical lookup for the active family pricing agreement.
 
-Pricing does not charge anyone and is independent of teacher payout.
+Family pricing is separate from teacher payout.
+
+A discount or premium negotiated with a family must not silently change the teacher's payout rate unless the active payout rules explicitly say so.
 
 ### Waitlist
 
-A `TeacherWaitlist` is created only by a refused preferred-teacher request.
-Promotion is lead-controlled and must go through normal booking validation.
+A `TeacherWaitlist` exists only for a refused preferred-teacher request.
 
-`TeacherWaitlist.notified` is not an automatic notification state yet.
+Promotion is lead-controlled and must go through normal booking validation.
 
 ### Placement audio
 
-Placement recordings are private. Use the existing audio-access mechanism for
-short-lived access; never restore `MEDIA_URL` or public media serving.
+Placement recordings remain private.
 
-Upload limits and content validation remain in the curriculum validation layer.
-Uploaded files are untrusted input.
+Never restore `MEDIA_URL` or public media serving.
 
-## Phase 7 assessment boundary
+Uploaded files are untrusted input and must use the existing validation and private-storage mechanism.
 
-Assessment is the quality-control layer between teaching and future routing
-decisions.
+### Assessment
 
-Phase 7 owns:
+Assessment is historical quality-control evidence.
 
-- track-specific rubric configuration;
-- per-completed-booking assessment;
-- 1–5 criterion scoring;
-- teacher summaries;
-- optional lead-review flags;
-- separate lead review annotations;
-- lead-only teacher quality reporting;
-- student/parent progress views;
-- explicit historical progress snapshots.
-
-Phase 7 does **not** change routing. In particular:
-
-- do not rank teachers using assessment scores;
-- do not make `routing.py` consume rubric averages;
-- do not automatically change `recommended_level`;
-- do not automatically suspend, promote, or demote teachers.
-
-Assessment data is evidence for a future product decision, not that decision.
-
-## Assessment invariants
-
-Every assessment must preserve these rules:
+Preserve these invariants:
 
 - one assessment per booking;
-- only the assigned booking teacher may assess;
+- only the assigned approved teacher may assess;
 - only completed bookings may be assessed;
-- students and parents cannot assess;
-- every active rubric criterion is scored exactly once;
-- score values are 1 through 5;
-- historical criterion names/order used by an assessment remain readable after
-  live rubric edits;
-- teacher scores are immutable after submission in this phase;
-- lead review annotations are separate from teacher scores;
-- lead review never rewrites historical teacher data.
+- every active criterion is scored exactly once;
+- scores are 1–5;
+- historical rubric snapshots remain readable after live rubric edits;
+- teacher scores are immutable after submission;
+- lead review is a separate annotation;
+- family progress is server-side scoped;
+- missing assessments are missing data, never zero.
 
-Do not weaken these rules for convenience.
+Do not use assessment scores to change routing, teacher status, placement, or payout calculations unless a later phase explicitly defines that behaviour.
 
-## Historical-data rule
+## Phase 8 boundary — Payouts & Statements
 
-Rubric configuration is live data; assessments are historical records.
+Phase 8 turns completed teaching activity into internal payout records and teacher statements.
 
-Changing a rubric or criterion affects future assessments only. Every assessment
-must preserve enough snapshot information to explain what the teacher was scoring
-at submission time.
+It owns:
 
-Do not build general-purpose rubric version graphs in this phase unless snapshots
-prove insufficient. Stop and ask rather than silently adding another versioning
-model.
+- teacher payout rates;
+- payout eligibility from completed sessions;
+- payout calculation;
+- immutable payout records;
+- statement periods;
+- lead-only payout generation/management;
+- teacher access to their own payout statements/history.
 
-## Reporting rules
+It does not own:
 
-Use one score definition everywhere:
+- family payment collection;
+- payment gateways;
+- bank transfers;
+- invoices;
+- tax accounting;
+- currency conversion;
+- automated payout execution;
+- assessment-based pay changes;
+- routing changes;
+- pricing changes;
+- notifications;
+- automatic background statement jobs.
 
-`sum(all criterion scores) / number of criterion scores`
+The core business separation is:
 
-Missing assessments are missing data, never zero.
+```text
+Family pricing
+     ≠
+Teacher payout
+```
 
-Per-criterion averages use only scores for that criterion.
+The amount a family paid or negotiated must not become the teacher's payout unless the explicit payout rule says so.
 
-Do not create teacher leaderboards or automated rankings in this phase.
+## Payout security and historical-data rules
 
-Progress endpoints must enforce family scoping server-side. Serializer omission
-alone is not a permission boundary.
+- A teacher may see only their own payout records and statements.
+- A lead may manage payout records for the academy.
+- Students and parents cannot access teacher payout data.
+- Sub-teachers cannot access another teacher's payout data.
+- Payout records represent historical financial decisions and must be treated as immutable once finalized.
+- Changing a teacher's current payout rate affects future payout generation only.
+- A previously finalized payout must not silently recalculate because a later rate changes.
+- Cancelled and `no_show` bookings do not earn a teaching payout unless a later written rule explicitly changes this.
+- Assessment scores do not alter payout amounts in Phase 8.
+- Pricing agreements do not alter payout amounts in Phase 8.
+- Never expose private financial data through broad or unscoped querysets.
 
 ## Stack & conventions
 
-- Django + Django REST Framework, dj-rest-auth for token auth, drf-spectacular
-  for API docs.
-- PostgreSQL is canonical. No SQLite fallback.
-- Placement object storage is private and accessed through short-lived signed
-  URLs.
+- Django + Django REST Framework.
+- `dj-rest-auth` for token authentication.
+- `drf-spectacular` for API documentation.
+- PostgreSQL only; no SQLite fallback.
+- One Django app per coherent module.
+- Do not create a new app merely for one helper file.
 - Models live in `<app_name>/models.py`.
-- Phase 7 introduces the `assessment/` Django app.
-- One Django app per module (`accounts/`, `curriculum/`, `scheduling/`,
-  `assessment/`, `pricing/`).
-- Store all datetimes in UTC. Convert at serializer/view layer using the
-  requesting user's stored `timezone`. Never store local time.
-- Every model gets a factory in `tests/factories.py` before tests are written
-  against it.
-- Keep domain invariants in model/service code and permissions at the API layer.
-- Educational-performance data is sensitive. Scope every queryset to the
-  authenticated user's permitted teacher/student/family context.
-- Never commit secrets, credentials, or private infrastructure identifiers.
+- New models get factories before automated tests use them.
+- Domain invariants belong in model/service code.
+- API permissions belong at the API layer.
+- Store datetimes in UTC.
+- Convert datetime presentation at the serializer/view boundary using the user's stored timezone when needed.
+- Reuse canonical domain helpers rather than duplicating business rules.
 
-## Testing requirements
+## Testing policy
 
-For every Phase 7 model:
+Manual testing is the primary feedback loop during feature development.
 
-- test creation;
-- test its key invariants;
-- test historical-data behaviour where applicable.
+Automated tests are still required for durable, high-risk financial invariants. Do not generate large suites for routine CRUD.
 
-For every Phase 7 endpoint:
+For Phase 8, high-value automated coverage should focus on:
 
-- test the happy path;
-- test at least one authorization failure;
-- test an important domain failure.
+- only completed eligible bookings contribute to payout;
+- cancelled/no-show bookings do not contribute;
+- payout rate is correctly applied;
+- duplicate payout generation is prevented;
+- payout records are immutable after finalization;
+- later rate changes do not rewrite historical payouts;
+- teacher scoping is enforced;
+- lead-only management is enforced;
+- family pricing does not silently change teacher payout;
+- assessment data does not silently change payout;
+- date/period boundaries are correct;
+- aggregation is correct for multiple bookings.
 
-Assessment tests must include:
-
-- completed versus non-completed bookings;
-- wrong-teacher attempts;
-- duplicate assessment prevention;
-- missing/duplicate criterion scores;
-- score range validation;
-- rubric edits after an assessment exists;
-- flag/review lifecycle;
-- teacher report aggregation;
-- student/parent progress scoping;
-- snapshot immutability and duplicate-period protection.
-
-Run the full PostgreSQL suite before considering the phase done.
+Manual testing should cover the complete lead and teacher journeys before the phase is marked done.
 
 ## Definition of done
 
-- migrations run clean with `python manage.py migrate`;
+A phase is done when:
+
+- its acceptance criteria are implemented;
 - `python manage.py check` passes;
 - `python manage.py makemigrations --check` passes;
-- full Phase 1–7 suite passes against PostgreSQL;
-- API schema generation/checks pass;
-- every Phase 7 acceptance criterion has a passing test;
-- no Phase 7 implementation changes routing behaviour;
-- a concise `learnings.md` note records important assessment decisions;
-- the phase is committed before Phase 8 begins.
+- targeted automated tests for changed invariants pass;
+- the developer manually verifies the complete user journey;
+- previous-phase behaviour remains intact;
+- important decisions are recorded in `learnings.md`;
+- intentional shortcuts are recorded in `tech-debt.md`;
+- the phase is committed before the next phase begins.
 
-"Looks right" is not done. Point to tests that prove the behaviour.
+## Stop and ask instead of guessing
 
-## When to stop and ask instead of guessing
+Stop when:
 
-Stop and ask when:
+- a product choice is ambiguous;
+- a previous-phase invariant must change;
+- payout eligibility is unclear;
+- rate changes and historical payouts could be interpreted in more than one reasonable way;
+- someone proposes using family payment data as teacher payout without an explicit rule;
+- someone proposes allowing a teacher to edit a finalized financial record;
+- a proposal widens access to financial, student, parent, teacher, or assessment data;
+- a change would alter the meaning of an existing historical record;
+- automated scheduling, payment execution, or accounting infrastructure would be needed without an explicit phase decision.
 
-- two reasonable rubric/versioning models would both work;
-- a change alters a Phase 1–6 model or invariant;
-- a request could expose private assessment data;
-- someone proposes letting a parent/student edit an assessment;
-- someone proposes using assessment scores to change routing in this phase;
-- a rule about retention, deletion, or historical-assessment correction is
-  ambiguous.
-
-Routine serializers, factories, admin wiring, and straightforward CRUD may be
-implemented without another decision.
+Routine CRUD, serializers, factories, admin wiring, and explicit payout-calculation plumbing may proceed when the active spec is unambiguous.
 
 ## Session hygiene
 
-- One phase, or one clearly-scoped task inside a phase, per chat session.
-- Before ending a session: tests passing, migrations committed, and a concise
-  `learnings.md` note added for anything surprising.
-- Never carry unfinished Phase 7 decisions into a later phase silently.
-
-## Reference files
-
-- `docs/quran-academy-mvp-spec.md` — overall product intent
-- `specs/` — active and completed phase specifications
-- `README.md` — environment/setup/pre-deploy workflow
-- `.env.example` — environment variable contract
-- `docker-compose.yml` — local PostgreSQL and private object storage
-- `tech-debt.md` — deliberate shortcuts and later revisit points
-- `learnings.md` — decisions and edge cases discovered during implementation
+- One phase, or one clearly bounded task, per chat session.
+- Keep work small enough to manually verify.
+- Commit completed tasks frequently.
+- End each session at a clear checkpoint.
+- Never carry unresolved product decisions into a later phase.
+- Prefer the smallest next task that can be implemented and manually verified.

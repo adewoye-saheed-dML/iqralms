@@ -5,7 +5,7 @@ dj-rest-auth); account resources under /api/accounts/, curriculum and placement
 under /api/curriculum/, availability, bookings and the preferred-teacher
 waitlist under /api/scheduling/, negotiated rates under /api/pricing/, session
 assessment, teacher-quality reporting and family progress under
-/api/assessment/.
+/api/assessment/, and teacher payout records and statements under /api/payouts/.
 
 There is deliberately no media route here any more. Phases 2-5 mounted
 ``static(settings.MEDIA_URL, ...)`` under DEBUG, which made every placement
@@ -34,6 +34,7 @@ urlpatterns = [
     path("api/scheduling/", include("scheduling.urls")),
     path("api/pricing/", include("pricing.urls")),
     path("api/assessment/", include("assessment.urls")),
+    path("api/payouts/", include("payouts.urls")),
     # Schema / docs
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
