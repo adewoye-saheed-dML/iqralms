@@ -133,6 +133,7 @@ INSTALLED_APPS = [
     "curriculum",
     "scheduling",
     "pricing",
+    "assessment",
 ]
 
 MIDDLEWARE = [

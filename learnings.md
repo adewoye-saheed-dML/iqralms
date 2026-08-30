@@ -622,3 +622,29 @@ Format:
   identity inside the signature, and never widen who can mint without asking. The
   five-minute TTL is also why a `SECRET_KEY` rotation is currently low-risk
   (tech-debt.md): it breaks at most five minutes of in-flight playback.
+
+## 2026-08-30 — A rubric PATCH could be refused with half of it already written
+- **What happened:** Writing the Phase 7 API tests turned up a gap the model
+  tests could not see. `AssessmentRubricUpdateSerializer.update()` saved the
+  rubric first and then applied each criterion, so a single PATCH that renamed
+  the sheet *and* touched a criterion illegally answered **400** with the rename
+  already committed. Both reachable failure modes did it, and they fail in
+  different layers: a criterion id belonging to another rubric is refused by the
+  serializer, and a criterion moved onto an occupied `order` is refused by the
+  model's `full_clean()`. `AssessmentRubricCreateSerializer.create()` had the
+  worse version of the same shape — a criterion failing mid-loop would have left
+  the track's previous rubric *superseded* by a half-built replacement, because
+  `AssessmentRubric.save()` deactivates the old row before the criteria are
+  written.
+- **What we decided:** One `transaction.atomic()` around each of the two write
+  paths, so a 400 leaves the configuration exactly as the lead left it. The DRF
+  `ValidationError` raised inside the block propagates out of it, which is what
+  rolls the savepoint back — the conversion of the model's `ValidationError`
+  stays outside, where it was. Two API tests pin it (`RubricEditAPITests`), and
+  they were confirmed to fail without the fix rather than merely to pass with it.
+- **Why it matters for later phases:** Django validates per `save()`, so
+  "several rows, validated individually" is only atomic if something makes it
+  atomic. Any serializer that writes a parent row and then children — a cohort
+  and its seats, a payout run and its lines — needs the same wrapper, and a model
+  whose `save()` retires a previous row (this one, `PricingAgreement`) makes the
+  partial write actively destructive rather than merely untidy.
