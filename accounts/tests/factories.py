@@ -3,6 +3,13 @@
 Per CLAUDE.md every model gets a factory here before tests are written against
 it. Factories deliberately derive ``is_minor`` and ``is_lead`` rather than
 hardcoding them, so a factory can never assert a state the model would reject.
+
+``OrganizationTeacherConfigurationFactory`` takes its ``membership`` rather than
+building one. That is not laziness: ``organizations.tests.factories`` imports this
+module, so a ``SubFactory`` pointing back at it would be a circular import — the
+same reason ``accounts.tenancy`` is a module of its own rather than part of
+``accounts.models``. It also suits the tests, which are about *which* academy-and-
+teacher pair is being configured, so naming the membership is the point.
 """
 
 from datetime import timedelta
@@ -11,7 +18,13 @@ from decimal import Decimal
 import factory
 from django.utils import timezone as dj_timezone
 
-from accounts.models import ParentLink, Role, TeacherProfile, User
+from accounts.models import (
+    OrganizationTeacherConfiguration,
+    ParentLink,
+    Role,
+    TeacherProfile,
+    User,
+)
 
 #: Shared password for factory-built users, so tests can log them in.
 DEFAULT_PASSWORD = "Tilawah-Test-Pass-42"
@@ -98,3 +111,19 @@ class LeadTeacherProfileFactory(TeacherProfileFactory):
     user = factory.SubFactory(LeadTeacherFactory)
     hourly_payout_rate = None
     approved = True
+
+
+class OrganizationTeacherConfigurationFactory(factory.django.DjangoModelFactory):
+    """One academy's terms for one teacher. ``membership`` is required — see above.
+
+    Defaults differ from ``TeacherProfileFactory``'s on purpose, so a test that
+    asserts an academy's own configuration cannot pass by accidentally reading the
+    global profile.
+    """
+
+    class Meta:
+        model = OrganizationTeacherConfiguration
+
+    max_weekly_hours = 8
+    hourly_payout_rate = Decimal("30.00")
+    approved = False

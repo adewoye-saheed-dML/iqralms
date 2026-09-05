@@ -3,6 +3,11 @@
 Acceptance criteria from specs/phase-1-accounts.md covered here: 2 (roles
 stick), 3 (minor without parent link is not fully active), 5 (parent cannot
 hold a TeacherProfile).
+
+``OrganizationTeacherConfigurationModelTests`` covers the SaaS Phase 2 addition:
+the same "only a lead or sub teaches" rule as ``TeacherProfile``, applied to an
+academy's own terms for a teacher. Whether those terms stay isolated between
+academies is ``test_tenant_isolation.py``'s subject, not this file's.
 """
 
 from datetime import date, timedelta
@@ -12,12 +17,21 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone as dj_timezone
 
-from accounts.models import ParentLink, Role, TeacherProfile, User
+from accounts.models import (
+    OrganizationTeacherConfiguration,
+    ParentLink,
+    Role,
+    TeacherProfile,
+    User,
+)
+from organizations.models import OrganizationRole
+from organizations.tests.factories import OrganizationMembershipFactory, academy
 
 from .factories import (
     LeadTeacherFactory,
     LeadTeacherProfileFactory,
     MinorStudentFactory,
+    OrganizationTeacherConfigurationFactory,
     ParentFactory,
     ParentLinkFactory,
     StudentFactory,
@@ -201,3 +215,88 @@ class TeacherProfileModelTests(TestCase):
         with self.assertRaises(ValidationError) as ctx:
             TeacherProfile.objects.create(user=SubTeacherFactory(), max_weekly_hours=0)
         self.assertIn("max_weekly_hours", ctx.exception.message_dict)
+
+
+class OrganizationTeacherConfigurationModelTests(TestCase):
+    """An academy's own terms for a teacher, and who may be given them."""
+
+    def teacher_membership(self, user=None, role=OrganizationRole.TEACHER):
+        return OrganizationMembershipFactory(
+            user=user or SubTeacherFactory(), role=role
+        )
+
+    def test_configuration_defaults_to_unapproved(self):
+        configuration = OrganizationTeacherConfigurationFactory(
+            membership=self.teacher_membership()
+        )
+        configuration.refresh_from_db()
+        self.assertFalse(configuration.approved)
+        self.assertEqual(configuration.max_weekly_hours, 8)
+        self.assertEqual(configuration.hourly_payout_rate, Decimal("30.00"))
+
+    def test_it_reaches_its_teacher_and_academy_through_the_membership(self):
+        membership = self.teacher_membership()
+        configuration = OrganizationTeacherConfigurationFactory(membership=membership)
+        self.assertEqual(configuration.user, membership.user)
+        self.assertEqual(configuration.organization, membership.organization)
+
+    def test_a_parent_membership_cannot_be_configured_to_teach(self):
+        """The account model decides who can teach — an academy cannot override it."""
+        membership = self.teacher_membership(user=ParentFactory())
+        with self.assertRaises(ValidationError) as ctx:
+            OrganizationTeacherConfiguration.objects.create(
+                membership=membership, max_weekly_hours=10
+            )
+        self.assertIn("membership", ctx.exception.message_dict)
+        self.assertFalse(OrganizationTeacherConfiguration.objects.exists())
+
+    def test_a_student_membership_cannot_be_configured_to_teach(self):
+        membership = self.teacher_membership(user=StudentFactory())
+        with self.assertRaises(ValidationError) as ctx:
+            OrganizationTeacherConfiguration.objects.create(
+                membership=membership, max_weekly_hours=10
+            )
+        self.assertIn("membership", ctx.exception.message_dict)
+
+    def test_the_owner_of_an_academy_may_teach_in_it(self):
+        """A lead teacher who founded their academy holds the 'owner' row, not 'teacher'."""
+        founder = LeadTeacherFactory()
+        organization = academy(owner=founder)
+        configuration = OrganizationTeacherConfigurationFactory(
+            membership=organization.owner_membership, approved=True
+        )
+        self.assertEqual(configuration.user, founder)
+        self.assertEqual(
+            configuration.membership.role, OrganizationRole.OWNER
+        )
+
+    def test_a_configuration_needs_no_payout_rate(self):
+        configuration = OrganizationTeacherConfigurationFactory(
+            membership=self.teacher_membership(user=LeadTeacherFactory()),
+            hourly_payout_rate=None,
+        )
+        self.assertIsNone(configuration.hourly_payout_rate)
+
+    def test_max_weekly_hours_must_be_positive(self):
+        with self.assertRaises(ValidationError) as ctx:
+            OrganizationTeacherConfiguration.objects.create(
+                membership=self.teacher_membership(), max_weekly_hours=0
+            )
+        self.assertIn("max_weekly_hours", ctx.exception.message_dict)
+
+    def test_one_membership_holds_at_most_one_configuration(self):
+        membership = self.teacher_membership()
+        OrganizationTeacherConfigurationFactory(membership=membership)
+        with self.assertRaises(ValidationError):
+            OrganizationTeacherConfiguration.objects.create(
+                membership=membership, max_weekly_hours=5
+            )
+        self.assertEqual(OrganizationTeacherConfiguration.objects.count(), 1)
+
+    def test_a_configuration_does_not_require_a_global_teacher_profile(self):
+        """The two models are independent rows; neither creates the other."""
+        membership = self.teacher_membership()
+        OrganizationTeacherConfigurationFactory(membership=membership)
+        self.assertFalse(
+            TeacherProfile.objects.filter(user=membership.user).exists()
+        )
