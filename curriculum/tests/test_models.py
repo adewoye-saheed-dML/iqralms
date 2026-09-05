@@ -5,12 +5,17 @@ the model layer: 4 (a beginner skip is auto-placed and self-reviewed), 5 (audio
 and skip are mutually exclusive) and 6 (re-submitting updates the existing row).
 The same three are covered again through HTTP in test_api.py — the rules live in
 ``save()`` precisely so they hold for direct ORM writes too.
+
+SaaS Phase 3 added the tenant invariants, and they are tested here rather than
+only at the API because that is where they live: a data migration, the admin and a
+direct ORM write all go through ``save()`` and none of them goes through a view.
+The API-level proof that one academy cannot reach another's rows is
+``test_tenant_isolation.py``.
 """
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
-from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone as dj_timezone
 
@@ -21,7 +26,12 @@ from accounts.tests.factories import (
     SubTeacherFactory,
 )
 from curriculum.exceptions import PlacementAlreadyReviewed, TrackHasNoFirstLevel
-from curriculum.models import Level, PlacementResult, Status, Track
+from curriculum.models import Level, PlacementResult, Status, TeacherTrack, Track
+from organizations.models import MembershipStatus, OrganizationRole
+from organizations.tests.factories import (
+    OrganizationFactory,
+    OrganizationMembershipFactory,
+)
 
 from .factories import (
     AUDIO_BYTES,
@@ -29,8 +39,10 @@ from .factories import (
     LevelFactory,
     PlacementResultFactory,
     ReviewedPlacementFactory,
+    TeacherTrackFactory,
     TrackFactory,
     TrackWithLevelsFactory,
+    admit,
 )
 
 
@@ -40,21 +52,63 @@ def audio_upload(name="recitation.mp3"):
 
 class TrackModelTests(TestCase):
     def test_track_can_be_created(self):
-        track = Track.objects.create(name="Tajweed", slug="tajweed")
+        organization = OrganizationFactory()
+        track = Track.objects.create(
+            organization=organization, name="Tajweed", slug="tajweed"
+        )
         track.refresh_from_db()
+        self.assertEqual(track.organization, organization)
         self.assertEqual(track.name, "Tajweed")
         self.assertEqual(track.slug, "tajweed")
         self.assertEqual(str(track), "Tajweed")
 
-    def test_slug_is_unique(self):
-        """IntegrityError, not ValidationError.
+    def test_a_track_needs_an_owning_academy(self):
+        """Tenant ownership is not optional — the whole point of the phase."""
+        with self.assertRaises(ValidationError) as ctx:
+            Track.objects.create(name="Ownerless", slug="ownerless")
+        self.assertIn("organization", ctx.exception.message_dict)
 
-        Track has no cross-table rules, so unlike Level and PlacementResult it
-        does not call full_clean() in save() — plain DB uniqueness is enough.
+    def test_slug_is_unique_within_one_academy(self):
+        """ValidationError now, where Phase 2 documented an IntegrityError.
+
+        Track gained a cross-row rule in SaaS Phase 3 (ownership is immutable), so
+        it validates inside save() the way Level and PlacementResult always have.
         """
-        TrackFactory(slug="hifz")
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            Track.objects.create(name="Hifz Again", slug="hifz")
+        track = TrackFactory(slug="hifz")
+        with self.assertRaises(ValidationError) as ctx:
+            Track.objects.create(
+                organization=track.organization, name="Hifz Again", slug="hifz"
+            )
+        self.assertIn("__all__", ctx.exception.message_dict)
+        self.assertEqual(Track.objects.filter(slug="hifz").count(), 1)
+
+    def test_two_academies_may_both_teach_the_same_slug(self):
+        """The rule the old global unique index made impossible."""
+        here, there = OrganizationFactory(), OrganizationFactory()
+        first = Track.objects.create(
+            organization=here, name="Tajweed", slug="tajweed"
+        )
+        second = Track.objects.create(
+            organization=there, name="Tajweed", slug="tajweed"
+        )
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(Track.objects.filter(slug="tajweed").count(), 2)
+
+    def test_a_tracks_academy_cannot_be_changed(self):
+        track = TrackFactory()
+        track.organization = OrganizationFactory()
+        with self.assertRaises(ValidationError) as ctx:
+            track.save()
+        self.assertIn("organization", ctx.exception.message_dict)
+
+    def test_renaming_a_track_leaves_its_academy_alone(self):
+        track = TrackFactory(name="Tajweed")
+        owner = track.organization
+        track.name = "Advanced Tajweed"
+        track.save()  # must not trip the ownership-immutability check
+        track.refresh_from_db()
+        self.assertEqual(track.name, "Advanced Tajweed")
+        self.assertEqual(track.organization, owner)
 
     def test_tracks_are_ordered_by_name(self):
         TrackFactory(name="Tajweed", slug="tajweed")
@@ -259,6 +313,9 @@ class ReviewTests(TestCase):
         self.lead = LeadTeacherFactory()
         self.track = TrackWithLevelsFactory()
         self.placement = PlacementResultFactory(track=self.track)
+        # SaaS Phase 3: a reviewer must be an active member of the academy that
+        # owns the track. "A lead teacher somewhere" is not authority here.
+        admit(self.lead, self.track.organization)
 
     def test_review_stamps_the_level_reviewer_and_timestamp(self):
         level = self.track.levels.get(order=2)
@@ -308,6 +365,9 @@ class SubmitTests(TestCase):
     def setUp(self):
         self.student = StudentFactory()
         self.track = TrackWithLevelsFactory()
+        # A student account is a global identity; being a student *of this
+        # academy* is the membership, and submit() validates it.
+        admit(self.student, self.track.organization)
 
     def test_submit_creates_a_pending_placement(self):
         placement = PlacementResult.submit(
@@ -359,6 +419,225 @@ class SubmitTests(TestCase):
     def test_submitting_neither_is_refused(self):
         with self.assertRaises(ValidationError):
             PlacementResult.submit(student=self.student, track=self.track)
+
+
+class AcademyOwnershipTests(TestCase):
+    """The derived academy: one stored column, everything else reads through it."""
+
+    def test_a_levels_academy_is_its_tracks(self):
+        level = LevelFactory()
+        self.assertEqual(level.organization, level.track.organization)
+
+    def test_a_placements_academy_is_its_tracks(self):
+        placement = PlacementResultFactory()
+        self.assertEqual(placement.organization, placement.track.organization)
+
+    def test_a_teacher_assignments_academy_is_its_memberships(self):
+        track = TrackFactory()
+        membership = admit(LeadTeacherFactory(), track.organization)
+        assignment = TeacherTrackFactory(membership=membership, track=track)
+        self.assertEqual(assignment.organization, track.organization)
+        self.assertEqual(assignment.user, membership.user)
+
+
+class PlacementTenancyTests(TestCase):
+    """"Student is active here" and "reviewer is active here", at the model layer."""
+
+    def test_a_student_outside_the_academy_cannot_be_placed(self):
+        track = TrackFactory()
+        outsider = StudentFactory()  # a student account, and a stranger here
+        with self.assertRaises(ValidationError) as ctx:
+            PlacementResult.objects.create(
+                student=outsider, track=track, audio_sample=audio_upload()
+            )
+        self.assertIn("student", ctx.exception.message_dict)
+        self.assertFalse(PlacementResult.objects.exists())
+
+    def test_membership_in_another_academy_does_not_count(self):
+        track = TrackFactory()
+        student = StudentFactory()
+        admit(student, OrganizationFactory())  # a member, but not here
+        with self.assertRaises(ValidationError) as ctx:
+            PlacementResult.objects.create(
+                student=student, track=track, audio_sample=audio_upload()
+            )
+        self.assertIn("student", ctx.exception.message_dict)
+
+    def test_a_suspended_membership_is_not_access(self):
+        track = TrackFactory()
+        student = StudentFactory()
+        OrganizationMembershipFactory(
+            organization=track.organization,
+            user=student,
+            role=OrganizationRole.STAFF,
+            status=MembershipStatus.SUSPENDED,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            PlacementResult.objects.create(
+                student=student, track=track, audio_sample=audio_upload()
+            )
+        self.assertIn("student", ctx.exception.message_dict)
+
+    def test_a_lead_outside_the_academy_cannot_be_the_reviewer(self):
+        placement = PlacementResultFactory(track=TrackWithLevelsFactory())
+        stranger = LeadTeacherFactory()
+        with self.assertRaises(ValidationError) as ctx:
+            placement.review(
+                recommended_level=placement.track.levels.first(),
+                reviewed_by=stranger,
+            )
+        self.assertIn("reviewed_by", ctx.exception.message_dict)
+        placement.refresh_from_db()
+        self.assertEqual(placement.status, Status.PENDING)
+
+    def test_a_suspended_lead_cannot_review(self):
+        placement = PlacementResultFactory(track=TrackWithLevelsFactory())
+        lead = LeadTeacherFactory()
+        OrganizationMembershipFactory(
+            organization=placement.track.organization,
+            user=lead,
+            role=OrganizationRole.TEACHER,
+            status=MembershipStatus.SUSPENDED,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            placement.review(
+                recommended_level=placement.track.levels.first(), reviewed_by=lead
+            )
+        self.assertIn("reviewed_by", ctx.exception.message_dict)
+
+    def test_a_recommended_level_from_another_academy_is_refused(self):
+        """The spec's named cross-academy combination, at the model layer."""
+        placement = PlacementResultFactory(track=TrackWithLevelsFactory())
+        lead = LeadTeacherFactory()
+        admit(lead, placement.track.organization)
+        elsewhere = LevelFactory()  # its own academy, its own track
+        with self.assertRaises(ValidationError) as ctx:
+            placement.review(recommended_level=elsewhere, reviewed_by=lead)
+        self.assertIn("recommended_level", ctx.exception.message_dict)
+
+    def test_one_student_holds_independent_placements_in_two_academies(self):
+        student = StudentFactory()
+        here, there = TrackFactory(slug="tajweed"), TrackFactory(slug="tajweed")
+        mine = PlacementResultFactory(student=student, track=here)
+        theirs = PlacementResultFactory(student=student, track=there)
+
+        self.assertNotEqual(mine.pk, theirs.pk)
+        self.assertEqual(
+            list(
+                PlacementResult.objects.in_organization(here.organization).values_list(
+                    "pk", flat=True
+                )
+            ),
+            [mine.pk],
+        )
+        self.assertEqual(
+            list(
+                PlacementResult.objects.in_organization(
+                    there.organization
+                ).values_list("pk", flat=True)
+            ),
+            [theirs.pk],
+        )
+
+    def test_suspending_a_student_removes_their_placement_from_the_academy(self):
+        """The queryset's second half, which the track filter alone would miss."""
+        placement = PlacementResultFactory()
+        organization = placement.track.organization
+        self.assertTrue(
+            PlacementResult.objects.in_organization(organization).exists()
+        )
+
+        membership = placement.student.organization_memberships.get(
+            organization=organization
+        )
+        membership.status = MembershipStatus.SUSPENDED
+        membership.save()
+
+        self.assertFalse(
+            PlacementResult.objects.in_organization(organization).exists()
+        )
+
+
+class TeacherTrackModelTests(TestCase):
+    def test_a_teacher_can_be_assigned_a_track_in_their_academy(self):
+        track = TrackFactory(slug="tajweed")
+        membership = admit(LeadTeacherFactory(), track.organization)
+        assignment = TeacherTrackFactory(membership=membership, track=track)
+        assignment.refresh_from_db()
+        self.assertTrue(assignment.active)
+        self.assertIn("tajweed", str(assignment))
+
+    def test_a_track_from_another_academy_is_refused(self):
+        """``membership.organization == track.organization``, the model's reason to exist."""
+        membership = admit(LeadTeacherFactory(), OrganizationFactory())
+        with self.assertRaises(ValidationError) as ctx:
+            TeacherTrackFactory(membership=membership, track=TrackFactory())
+        self.assertIn("track", ctx.exception.message_dict)
+        self.assertFalse(TeacherTrack.objects.exists())
+
+    def test_only_a_teaching_account_can_be_assigned_a_track(self):
+        for user in (StudentFactory(), ParentFactory()):
+            with self.subTest(role=user.role):
+                track = TrackFactory()
+                membership = admit(user, track.organization)
+                with self.assertRaises(ValidationError) as ctx:
+                    TeacherTrackFactory(membership=membership, track=track)
+                self.assertIn("membership", ctx.exception.message_dict)
+
+    def test_a_sub_teacher_may_hold_tracks(self):
+        """Eligibility is not the lead-only review rule — subs teach."""
+        track = TrackFactory()
+        membership = admit(SubTeacherFactory(), track.organization)
+        self.assertTrue(TeacherTrackFactory(membership=membership, track=track).pk)
+
+    def test_the_same_track_cannot_be_assigned_twice(self):
+        track = TrackFactory()
+        membership = admit(LeadTeacherFactory(), track.organization)
+        TeacherTrackFactory(membership=membership, track=track)
+        with self.assertRaises(ValidationError):
+            TeacherTrackFactory(membership=membership, track=track)
+        self.assertEqual(TeacherTrack.objects.count(), 1)
+
+    def test_one_teacher_teaches_different_tracks_in_different_academies(self):
+        """The phase's headline requirement, at the model layer."""
+        teacher = SubTeacherFactory()
+        tajweed = TrackFactory(slug="tajweed")
+        arabic = TrackFactory(slug="arabic")
+        here = TeacherTrackFactory(
+            membership=admit(teacher, tajweed.organization), track=tajweed
+        )
+        there = TeacherTrackFactory(
+            membership=admit(teacher, arabic.organization), track=arabic
+        )
+
+        self.assertEqual(teacher.organization_memberships.count(), 2)
+        self.assertEqual(
+            list(
+                TeacherTrack.objects.in_organization(
+                    tajweed.organization
+                ).values_list("pk", flat=True)
+            ),
+            [here.pk],
+        )
+        self.assertEqual(
+            list(
+                TeacherTrack.objects.in_organization(arabic.organization).values_list(
+                    "pk", flat=True
+                )
+            ),
+            [there.pk],
+        )
+
+    def test_withdrawing_eligibility_keeps_the_row(self):
+        track = TrackFactory()
+        assignment = TeacherTrackFactory(
+            membership=admit(LeadTeacherFactory(), track.organization), track=track
+        )
+        assignment.active = False
+        assignment.save()
+
+        self.assertEqual(TeacherTrack.objects.count(), 1)
+        self.assertFalse(TeacherTrack.objects.active().exists())
 
 
 class MigrationStateTests(TestCase):

@@ -792,3 +792,111 @@ Format:
   it actually describes — a teaching seniority — or disappears.
 - **Revisit when:** The domains become tenant-scoped. Each phase should convert its own
   permission module rather than leaving a final sweep to do all five at once.
+- **Partly addressed 2026-09-05 (SaaS Phase 3), for `curriculum` only.** `Role.LEAD` is
+  still what `IsLeadTeacher` reads, but it is no longer used alone: every privileged
+  curriculum endpoint pairs it with `IsOrganizationMember` and an academy-scoped
+  queryset, so "a lead teacher somewhere" now authorizes nothing. Curriculum authoring
+  moved off `User.role` entirely and onto `OrganizationMembership.role`
+  (`CURRICULUM_MANAGER_ROLES`). The other four modules are untouched.
+
+## 2026-09-05 — Teacher eligibility lives in two relations and only the old one is enforced
+- **What was skipped:** Retiring `TeacherProfile.specialties`. SaaS Phase 3 added
+  `curriculum.TeacherTrack` — academy-scoped, keyed on `OrganizationMembership` — and
+  left the global many-to-many in place beside it. Nothing reads the new one yet:
+  `scheduling.models.specialty_error`, `Booking.clean()`, `Cohort.clean()` and
+  `scheduling.routing.matching_sub_teachers` all still filter on
+  `teacher_profile__specialties`.
+- **Why:** The spec forbids it in as many words — "do not remove it until SaaS Phase 4
+  has a safe migration path" — and the reason is sound: the readers are the routing and
+  capacity logic Phase 3 is explicitly told not to rewrite. Swapping the relation under
+  them while also introducing curriculum tenancy would make both changes unreviewable.
+- **Consequence now:** a teacher's *bookable* tracks are still global, so a teacher
+  recorded against Academy A's `tajweed` can be booked for Academy B's level in the same
+  track. That is not a new leak — scheduling has no tenant boundary at all yet, which is
+  what Phase 4 is for — but it is the one place where the two relations visibly disagree,
+  and the new one is the correct answer.
+- **Real fix:** SaaS Phase 4 points the scheduling readers at
+  `TeacherTrack.objects.in_organization(...).active()`, resolving the teacher's
+  membership from the booking's academy, then drops `specialties` in a migration that
+  asserts every remaining row has an equivalent.
+- **Revisit when:** SaaS Phase 4 (scheduling tenancy) starts. It is the first thing that
+  phase should do, before touching booking rules, because the two relations diverge
+  further with every academy that configures its own teachers.
+
+## 2026-09-05 — Legacy participants are admitted as `staff` because there is no student role
+- **What was skipped:** Giving `OrganizationRole` a value that means "a student of this
+  academy". The Phase 3 backfill admits the users who already hold legacy curriculum
+  data, and a student or parent lands on `staff` — the same stand-in Phase 2's tests
+  settled on and the same gap already recorded above ("`OrganizationRole` has no
+  `student` or `parent` value").
+- **Why:** Inventing the role value is a Phase 1 model change with its own permission
+  consequences in five apps, and the alternative — not admitting legacy students at all —
+  would have made their existing placements unreadable, which the spec forbids.
+  `staff` carries no authority over memberships, curriculum or teaching terms today, so
+  the choice is harmless *now*.
+- **Consequence now:** production data will contain `staff` memberships that actually
+  describe students and parents, so any future rule that grants `staff` something a
+  student should not have would silently grant it to them.
+- **Real fix:** add `student` and `parent` to `OrganizationRole`, then a data migration
+  that re-roles memberships from `User.role` — which is exactly the migration the
+  existing `OrganizationRole` entry describes. Anything that widens `staff` before then
+  must check `User.role` as well.
+- **Revisit when:** Before any phase grants `staff` a new capability, and at the latest
+  in the tenant security audit (SaaS Phase 11).
+
+## 2026-09-05 — Deleting an academy would cascade away its curriculum and placement history
+- **What was skipped:** Deciding what happens to an academy's curriculum when the
+  academy is deleted. `Track.organization` is `CASCADE`, matching
+  `OrganizationMembership.organization`, and `Level` and `PlacementResult` already
+  cascade from `Track` — so removing an `Organization` row would take its syllabus, its
+  students' placements and their recorded levels with it.
+- **Why:** There is no organization-deletion workflow anywhere in the product — Phase 1
+  named it an explicit later decision and nothing has been built since — so the
+  cascade is a statement about ownership rather than a live code path. `PROTECT` would
+  have been the other defensible choice, but it would have been a Phase 1 decision
+  reversed by a Phase 3 field.
+- **Consequence now:** nothing, until someone deletes an organization from the admin or
+  a shell. There is no endpoint that can.
+- **Real fix:** whatever phase builds academy closure decides between soft-deletion
+  (`Organization.is_active`, which is stored and read by nothing — see its own entry)
+  and an explicit export-then-purge, and changes these `on_delete` policies
+  deliberately rather than discovering them.
+- **Revisit when:** Academy onboarding (SaaS Phase 8) or settings (SaaS Phase 9) puts a
+  destructive action anywhere near an `Organization` row.
+
+## 2026-09-05 — Assessment, pricing and scheduling still resolve curriculum globally
+- **What was skipped:** Narrowing the curriculum lookups those apps make.
+  `scheduling/serializers.py` and `pricing/serializers.py` accept
+  `Level.objects.all()`, and `assessment/serializers.py` and `assessment/views.py`
+  accept `Track.objects.all()` — so a caller who knows an id can name another academy's
+  level or track in a booking, an agreement, a rubric or a progress query.
+- **Why:** The spec confines Phase 3 to curriculum and forbids tenant-migrating those
+  domains, and each of them needs its own academy resolved from its own route before a
+  narrowed queryset means anything. Adding a filter with no organization to filter on
+  would have been a change that looks like a fix and is not one.
+- **Consequence now:** the same cross-academy reachability those apps already have —
+  they have no tenant boundary yet — but with academy-owned curriculum on the other end
+  of it, so the mismatch is now visible in a way it was not before.
+- **Real fix:** each domain's tenancy phase adds the `organizations/{id}/` route
+  prefix, resolves the membership, and narrows its curriculum fields to
+  `Track.objects.filter(organization=...)` / `Level.objects.filter(track__organization=...)`
+  — the two helpers `curriculum/serializers.py` already exposes as `tracks_in()` and
+  `levels_in()`.
+- **Revisit when:** SaaS Phase 4 (scheduling), 5 (pricing) and 6 (assessment). The
+  tenant security audit should confirm none were missed.
+
+## 2026-09-05 — Curriculum authoring is owner/admin only, which may be too narrow
+- **What was skipped:** Letting a `teacher` membership create or edit tracks and levels.
+  The spec's permission table marks it "policy-dependent"; the product owner chose owner
+  and admin (2026-09-05).
+- **Why:** It is the narrower default, and a rule that can be widened later without a
+  migration or a security review — which the reverse is not. Phase 1 made the same call
+  for the membership directory.
+- **Consequence now:** in an academy whose lead teacher is not also its owner or an
+  admin, the person who actually designs the syllabus cannot enter it, and an
+  administrator has to. Small academies will feel this first.
+- **Real fix:** either widen `CURRICULUM_MANAGER_ROLES` to include
+  `OrganizationRole.TEACHER`, or add a per-academy setting once academy settings exist
+  (SaaS Phase 9) so each academy chooses. The tests assert the current answer, so
+  widening it has to be deliberate.
+- **Revisit when:** The first academy onboards a lead teacher who is not its owner.

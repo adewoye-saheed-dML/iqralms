@@ -15,6 +15,18 @@ a test, so widening it later has to be deliberate.
 Both storage backends are exercised. The production one is an S3-compatible
 bucket, and its presigned URLs are pure HMAC signing with no network call, so it
 can be tested for real with fake credentials rather than mocked into agreeing.
+
+**SaaS Phase 3 added one condition in front of all of it and changed nothing
+else.** Minting a URL now requires an active membership in the academy that owns
+the placement, so every caller here is admitted to that academy first — and the
+answers below are otherwise exactly Phase 6's. The sub-teacher and the parent are
+still refused, which is the point of testing them: a tenancy phase must not become
+the phase that quietly widened who can hear a minor's voice. That a *foreign*
+academy's lead cannot mint anything is ``test_tenant_isolation.py``'s subject.
+
+The token-gated download route is deliberately still global — the token is a
+bearer capability minted only after the academy check — so the round-trip tests
+below reach it without a tenant in the path.
 """
 
 from urllib.parse import parse_qs, urlparse
@@ -46,18 +58,44 @@ from .factories import (
     BeginnerSkipPlacementFactory,
     PlacementResultFactory,
     TrackWithLevelsFactory,
+    admit,
+)
+from .test_api import (
+    pending_url,
+    placements_url,
+    my_placements_url,
+    review_url,
 )
 from .test_models import audio_upload
 
 
-def audio_url_endpoint(placement_or_pk):
+def academy_of(placement):
+    """The academy that owns a placement — its track's, never a stored copy."""
+    return placement.track.organization
+
+
+def audio_url_endpoint(placement_or_pk, organization=None):
+    """The academy-scoped mint endpoint, addressed through the placement's academy."""
     pk = getattr(placement_or_pk, "pk", placement_or_pk)
-    return reverse("curriculum:placement-audio-url", args=[pk])
+    if organization is None:
+        organization = academy_of(placement_or_pk)
+    return reverse(
+        "curriculum:academy-placement-audio-url",
+        kwargs={
+            "organization_pk": getattr(organization, "pk", organization),
+            "pk": pk,
+        },
+    )
 
 
 def download_endpoint(placement_or_pk):
     pk = getattr(placement_or_pk, "pk", placement_or_pk)
     return reverse("curriculum:placement-audio-download", args=[pk])
+
+
+def lead_of(placement):
+    """A lead teacher who is an active member of that placement's academy."""
+    return admit(LeadTeacherFactory(), academy_of(placement)).user
 
 
 class WhoMayHearASampleTests(APITestCase):
@@ -69,7 +107,7 @@ class WhoMayHearASampleTests(APITestCase):
 
     def test_the_lead_teacher_gets_a_short_lived_url(self):
         """Criterion 6."""
-        self.client.force_authenticate(user=LeadTeacherFactory())
+        self.client.force_authenticate(user=lead_of(self.placement))
         response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -86,15 +124,29 @@ class WhoMayHearASampleTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data["url"])
 
-    def test_another_student_cannot_reach_it(self):
+    def test_another_student_of_the_same_academy_cannot_reach_it(self):
         """Criterion 7. A 404, not a 403 — a 403 would confirm the row exists."""
-        self.client.force_authenticate(user=StudentFactory())
+        classmate = admit(StudentFactory(), academy_of(self.placement)).user
+        self.client.force_authenticate(user=classmate)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_a_student_who_is_not_a_member_is_refused_before_that(self):
+        """SaaS Phase 3's condition, which fails earlier and louder.
+
+        A stranger to the academy is refused by the membership gate rather than by
+        the queryset, so this one is a 403. That is not a leak: it says the caller
+        is outside this academy, which they already know, and it says nothing about
+        whether the placement exists.
+        """
+        self.client.force_authenticate(user=StudentFactory())
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_a_sub_teacher_is_forbidden(self):
         """Not in the access rule. Recorded so that adding them is deliberate."""
-        self.client.force_authenticate(user=SubTeacherFactory())
+        sub = admit(SubTeacherFactory(), academy_of(self.placement)).user
+        self.client.force_authenticate(user=sub)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
@@ -103,11 +155,14 @@ class WhoMayHearASampleTests(APITestCase):
 
         A guardian hearing their child's recording is a defensible product
         decision — but it is a *new* permission, and Phase 6 hardens what exists
-        rather than widening who can reach student data.
+        rather than widening who can reach student data. SaaS Phase 3 gives a
+        parent a *read* of their child's placement (see the children endpoint) and
+        still not the recording.
         """
         minor = MinorStudentFactory()
         link = ParentLinkFactory(student=minor)
         placement = PlacementResultFactory(student=minor)
+        admit(link.parent, academy_of(placement))
 
         self.client.force_authenticate(user=link.parent)
         response = self.client.get(audio_url_endpoint(placement))
@@ -120,13 +175,15 @@ class WhoMayHearASampleTests(APITestCase):
     def test_a_beginner_skip_has_nothing_to_hand_out(self):
         """No recording is a legitimate state, so a 404 and not a 500."""
         skipped = BeginnerSkipPlacementFactory()
-        self.client.force_authenticate(user=LeadTeacherFactory())
+        self.client.force_authenticate(user=lead_of(skipped))
         response = self.client.get(audio_url_endpoint(skipped))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_an_unknown_placement_is_a_404(self):
-        self.client.force_authenticate(user=LeadTeacherFactory())
-        response = self.client.get(audio_url_endpoint(9999))
+        self.client.force_authenticate(user=lead_of(self.placement))
+        response = self.client.get(
+            audio_url_endpoint(9999, organization=academy_of(self.placement))
+        )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
@@ -143,6 +200,8 @@ class NoPermanentPublicURLTests(APITestCase):
         self.student = StudentFactory()
         self.track = TrackWithLevelsFactory()
         self.placement = PlacementResultFactory(student=self.student, track=self.track)
+        self.organization = self.track.organization
+        self.lead = lead_of(self.placement)
 
     def assert_no_object_url(self, payload):
         """No value in the payload may be a path into stored media."""
@@ -153,21 +212,22 @@ class NoPermanentPublicURLTests(APITestCase):
 
     def test_the_students_own_list_carries_no_object_url(self):
         self.client.force_authenticate(user=self.student)
-        response = self.client.get(reverse("curriculum:placement-mine"))
+        response = self.client.get(my_placements_url(self.organization))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data[0]["has_audio_sample"])
         self.assert_no_object_url(response.data)
 
     def test_the_leads_review_queue_carries_no_object_url(self):
-        self.client.force_authenticate(user=LeadTeacherFactory())
-        response = self.client.get(reverse("curriculum:placement-pending"))
+        self.client.force_authenticate(user=self.lead)
+        response = self.client.get(pending_url(self.organization))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assert_no_object_url(response.data)
 
     def test_the_submit_response_carries_no_object_url(self):
-        self.client.force_authenticate(user=StudentFactory())
+        fresh = admit(StudentFactory(), self.organization).user
+        self.client.force_authenticate(user=fresh)
         response = self.client.post(
-            reverse("curriculum:placement-create"),
+            placements_url(self.organization),
             {"track": self.track.id, "audio_sample": audio_upload("fresh.mp3")},
             format="multipart",
         )
@@ -176,10 +236,9 @@ class NoPermanentPublicURLTests(APITestCase):
         self.assertNotIn("placements/", str(response.data))
 
     def test_the_review_response_carries_no_object_url(self):
-        lead = LeadTeacherFactory()
-        self.client.force_authenticate(user=lead)
+        self.client.force_authenticate(user=self.lead)
         response = self.client.post(
-            reverse("curriculum:placement-review", args=[self.placement.pk]),
+            review_url(self.organization, self.placement),
             {"recommended_level": self.track.levels.get(order=1).id},
             format="json",
         )
@@ -188,9 +247,11 @@ class NoPermanentPublicURLTests(APITestCase):
 
     def test_the_filename_is_published_without_its_storage_path(self):
         """A client needs a label; it does not need the bucket layout."""
-        placement = PlacementResultFactory(audio_sample=audio_upload("surah-fatiha.mp3"))
+        placement = PlacementResultFactory(
+            audio_sample=audio_upload("surah-fatiha.mp3")
+        )
         self.client.force_authenticate(user=placement.student)
-        response = self.client.get(reverse("curriculum:placement-mine"))
+        response = self.client.get(my_placements_url(academy_of(placement)))
 
         filename = response.data[0]["audio_filename"]
         self.assertIn("surah-fatiha", filename)
@@ -293,7 +354,7 @@ class SignedURLRoundTripTests(APITestCase):
         self.student = StudentFactory()
         self.track = TrackWithLevelsFactory()
         self.placement = PlacementResultFactory(student=self.student, track=self.track)
-        self.lead = LeadTeacherFactory()
+        self.lead = lead_of(self.placement)
 
     def mint(self, placement=None, user=None):
         """Ask the endpoint for a URL, as the lead unless told otherwise."""

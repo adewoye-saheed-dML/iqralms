@@ -900,3 +900,132 @@ Format:
   tenancy will need to filter on. The residual looseness — a `teacher` membership on
   an account that cannot teach is accepted and means authority only — is recorded as
   debt rather than left implicit.
+
+## 2026-09-05 — `Track.organization` is the only tenant column, and everything else derives
+- **What happened:** The obvious way to make curriculum academy-aware is to put an
+  `organization` foreign key on every model in it — `Track`, `Level`,
+  `PlacementResult` — so every queryset can filter on one column. The spec says not
+  to for `Level` "unless a concrete integrity/performance requirement proves it
+  necessary", and it turned out to be the right instruction for `PlacementResult`
+  too.
+- **What we decided:** One stored column, `Track.organization`. `Level.organization`
+  and `PlacementResult.organization` are read-only properties that go through the
+  track, and every queryset joins (`track__organization`) rather than reading a local
+  copy. `TeacherTrack` derives its academy from `membership.organization` and
+  validates that it equals `track.organization`.
+- **Why it matters for later phases:** A second copy of the owning academy is a second
+  thing that can disagree with the first, and "a curriculum object has exactly one
+  unambiguous owning academy" is the invariant the whole tenant boundary rests on. A
+  `Level` whose stored organization differed from its track's would be a row with two
+  owners and no way to say which is right. Scheduling and pricing point at `Level`,
+  so when they become tenant-scoped they should derive from `level.track.organization`
+  rather than add their own column.
+
+## 2026-09-05 — Slug uniqueness moving to `(organization, slug)` changed the exception type
+- **What happened:** Phase 2 recorded that a duplicate `Track.slug` raises
+  `IntegrityError` rather than `ValidationError`, because `Track` had no cross-table
+  rules and therefore did not call `full_clean()` in `save()`. SaaS Phase 3 gave it
+  one — ownership is immutable after creation, which has to be checked against the
+  stored row — so it now validates like `Level` and `PlacementResult` do.
+- **What we decided:** `Track.save()` calls `full_clean()`, and a duplicate slug within
+  one academy is a `ValidationError` on `__all__` from the `UniqueConstraint`. The old
+  global unique index is gone rather than kept: leaving it would have made the first
+  academy to claim `tajweed` the owner of that word platform-wide.
+- **Why it matters for later phases:** The per-model exception-type trap Phase 2
+  documented is now resolved in one direction — every model in `curriculum` validates
+  inside `save()`. Check before writing `assertRaises`; the answer has changed once
+  already.
+
+## 2026-09-05 — The placement membership rule had to go in the model, and it moved the factories
+- **What happened:** "The student is an active member of the academy that owns this
+  track" is a rule spanning three tables, and the spec asks for it in model/service
+  code rather than only in serializers. Adding it to `PlacementResult.clean()` broke
+  ten existing tests immediately — every one of which built a placement without a
+  membership, because before this phase there was nothing to be a member of.
+- **What we decided:** Keep the rule in `clean()`, and make the factories provision
+  what the model now requires. `PlacementResultFactory._create()` admits the student —
+  and the reviewer, when there is one — into the track's academy *before* the row is
+  saved, because a `post_generation` hook runs after `save()` and would be too late.
+  The `admit()` helper is idempotent, so a test that wants a suspended membership
+  builds it first and keeps it.
+- **Why it matters for later phases:** Every tenancy phase after this one will hit the
+  same wall: an invariant that spans the membership table invalidates fixtures written
+  when memberships did not exist. Putting the fix in `_create()` rather than relaxing
+  the invariant is what keeps the rule true for the admin, for data migrations and for
+  direct ORM writes — and the ten failures were all legitimate, which is the signal
+  that the rule was worth having.
+
+## 2026-09-05 — The pre-SaaS curriculum had no determinable academy, so the migration refuses
+- **What happened:** The development database held two tracks, two levels, two
+  placements and one recorded teacher specialty — and zero organizations. The spec's
+  "stop and ask" list names exactly this case, so it was put to the product owner
+  rather than guessed at.
+- **What we decided (product owner, 2026-09-05):** name the academy explicitly. The
+  data migration resolves the owner or refuses: no unowned tracks is a no-op, exactly
+  one organization is unambiguous, `SAAS_LEGACY_CURRICULUM_ORGANIZATION=<pk|slug>`
+  settles anything else, and every remaining case raises with instructions. No academy
+  is ever created by the migration — an academy is a business with an owner, and a
+  migration cannot decide who that is.
+- **What the backfill does create:** memberships, for the users who *already hold*
+  curriculum data in the named academy — the students with placements, the leads who
+  reviewed them, the teachers with recorded specialties. It has to: a placement is
+  only readable in an academy when its student is an active member there, so leaving
+  legacy students outside would make their existing placements invisible. Nobody else
+  is admitted, and no existing membership is touched — a suspended member stays
+  suspended, because a migration silently restoring revoked access is worse than a
+  migration that does too little.
+- **Why it matters for later phases:** the resolution logic lives in
+  `curriculum/legacy.py` rather than inside the migration, so it is unit-tested;
+  and `curriculum/tests/test_legacy_migration.py` runs the real migrations against a
+  database rolled back to the nullable state. Scheduling, pricing, assessment and
+  payout tenancy each face the same question, and the same shape — resolve, or refuse
+  with instructions — should be reused rather than reinvented.
+
+## 2026-09-05 — Retiring the public track list was cheaper than narrowing it
+- **What happened:** `GET /api/curriculum/tracks/` was public and returned
+  `Track.objects.all()`. Once tracks are academy-owned that endpoint lists every
+  tenant's curriculum, which §19 of the spec forbids outright.
+- **What we decided (product owner, 2026-09-05):** retire it. There is no frontend
+  yet and no external client — only curriculum's own tests referenced it — so the
+  coverage moved to `/api/curriculum/organizations/{id}/tracks/` and the route is
+  gone. The alternative, keeping it authenticated and narrowed to "every academy you
+  belong to", would have added a cross-academy read shape the spec does not ask for.
+- **Why it matters for later phases:** the same judgement applies to the global
+  placement routes, which went with it. Two ways into the same data means one of them
+  is eventually forgotten, and the forgotten one is the one that stops being checked.
+  The only global route left in the app is the token-gated audio download, and it is
+  global because the token — not the path — is what authorises it.
+
+## 2026-09-05 — Teacher curriculum eligibility hangs off the membership, not the profile
+- **What happened:** `TeacherProfile.specialties` is a global many-to-many to `Track`.
+  With tracks academy-owned, that relation lets one academy's roster decide what a
+  teacher may teach in another — and it cannot express the thing the phase exists for,
+  a teacher who teaches Tajweed at Academy A and Arabic at Academy B.
+- **What we decided:** a new `curriculum.TeacherTrack`, keyed on
+  `OrganizationMembership` and `Track`, validated so the two agree about the academy.
+  The membership already means "this user in this academy", already carries the
+  uniqueness rule for that pair, and already knows whether the relationship is live —
+  the same reasoning `accounts.OrganizationTeacherConfiguration` follows. The legacy
+  relation is untouched: `Booking.clean()`, `Cohort.clean()` and `routing` still read
+  it, and Phase 3 is forbidden from rewriting either.
+- **Why it matters for later phases:** SaaS Phase 4 is what switches those readers
+  over, and it now has somewhere to read *from*. Until it does, the two relations
+  overlap and only the old one is enforced — a stated interim state, recorded in
+  tech-debt.md rather than left to be discovered.
+
+## 2026-09-05 — A serializer that narrows a queryset per tenant has to fail closed
+- **What happened:** The write serializers narrow their `track` and
+  `recommended_level` querysets to `self.context["organization"]` in `get_fields()`,
+  which is the security boundary — a foreign id is *absent* rather than forbidden, so
+  it comes back as "object does not exist" without confirming the row exists
+  elsewhere. Reading the context with `[...]` made schema generation fail: drf-spectacular
+  instantiates serializers bare, with no context at all.
+- **What we decided:** declare every scoped field with `Model.objects.none()` and
+  narrow it only when the context supplies an organization. Outside a request the
+  empty queryset is left alone, which is right for a schema — and if a view ever
+  forgot to put the organization in its context, the endpoint would reject every id
+  rather than accept any.
+- **Why it matters for later phases:** the failure mode of a tenant-scoped field must
+  be "nothing matches", never "everything matches". `queryset=Model.objects.all()` as
+  a declared default would have looked identical in every test and been a
+  platform-wide lookup the first time a view was written without the context.

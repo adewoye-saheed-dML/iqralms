@@ -25,7 +25,6 @@ old one.
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
-from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -37,7 +36,8 @@ from curriculum.validators import (
     validate_placement_audio,
 )
 
-from .factories import PlacementResultFactory, TrackWithLevelsFactory
+from .factories import PlacementResultFactory, TrackWithLevelsFactory, admit
+from .test_api import placements_url
 
 #: Real leading bytes for each accepted format, so the signature check is
 #: exercised against the thing it claims to recognise rather than against a
@@ -209,13 +209,18 @@ class ValidatorUnitTests(TestCase):
 
 
 class PlacementUploadAPITests(APITestCase):
-    """The same rules through the endpoint a student actually posts to."""
+    """The same rules through the endpoint a student actually posts to.
 
-    url = reverse("curriculum:placement-create")
+    The URL is academy-scoped from SaaS Phase 3, and the student is admitted to
+    the track's academy in ``setUp`` — the upload rules themselves are untouched
+    by that, which is what these tests still assert.
+    """
 
     def setUp(self):
         self.student = StudentFactory()
         self.track = TrackWithLevelsFactory()
+        admit(self.student, self.track.organization)
+        self.url = placements_url(self.track.organization)
         self.client.force_authenticate(user=self.student)
 
     def submit(self, **data):
@@ -338,6 +343,7 @@ class ModelBackstopTests(TestCase):
     def setUp(self):
         self.student = StudentFactory()
         self.track = TrackWithLevelsFactory()
+        admit(self.student, self.track.organization)
 
     def test_an_http_upload_assigned_straight_to_the_model_is_validated(self):
         with self.assertRaises(ValidationError) as caught:

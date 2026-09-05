@@ -21,6 +21,7 @@ from .factories import (
     PlacementResultFactory,
     ReviewedPlacementFactory,
     TrackWithLevelsFactory,
+    admit,
 )
 from .test_models import audio_upload
 
@@ -29,6 +30,9 @@ class PlacementAudioCleanupTests(TestCase):
     def setUp(self):
         self.student = StudentFactory()
         self.track = TrackWithLevelsFactory()
+        # SaaS Phase 3: submitting requires an active membership in the academy
+        # that owns the track. Nothing about retention changed with it.
+        admit(self.student, self.track.organization)
 
     def submit(self, **kwargs):
         """Submit inside a committing block so cleanup callbacks actually run."""
@@ -66,7 +70,7 @@ class PlacementAudioCleanupTests(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             placement.review(
                 recommended_level=self.track.levels.first(),
-                reviewed_by=LeadTeacherFactory(),
+                reviewed_by=admit(LeadTeacherFactory(), self.track.organization).user,
             )
 
         self.assertTrue(default_storage.exists(name))
