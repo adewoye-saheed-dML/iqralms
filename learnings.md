@@ -713,3 +713,77 @@ Format:
   `role` field to a serializer should expect to add a name for it, and should
   regenerate the schema (`manage.py spectacular --validate`) before calling the
   phase done. The check is cheap and the warning is invisible until someone looks.
+
+## 2026-09-05 — Organization is the tenant; membership is the relationship
+- **What happened:** SaaS Phase 1 had to introduce multi-tenancy into a backend
+  built for one academy, where `User.role` (`lead`/`sub`/`student`/`parent`)
+  already drives booking, pricing, assessment and payout behaviour. The tempting
+  shortcuts were both wrong: reusing `User.role` as the organization role, or
+  putting an `organization` foreign key on `User`. The first conflates "what is
+  this person to the teaching business" with "what authority do they have inside
+  this academy"; the second hard-codes one user, one academy.
+- **What we decided:** `Organization` is the tenant, and `OrganizationMembership`
+  is the only link between a user and one. A user may hold memberships in several
+  academies with a different `OrganizationRole` (`owner`/`admin`/`staff`/`teacher`)
+  in each, and `organization + user` is unique so there is exactly one row per
+  pair — no membership history, no invitation states, and reactivation flips
+  `status` rather than adding a row. `User.role` is neither read nor written by
+  the `organizations` app: a student who founds an academy is its owner and is
+  still a student. Ownership is likewise *only* a membership whose role is
+  `owner` — there is deliberately no `Organization.owner` field, because two
+  representations of ownership is one too many.
+- **Why it matters for later phases:** SaaS Phase 3 (accounts tenancy) is where
+  the two role systems finally have to meet, and it inherits a clean question
+  rather than a merged field: does `OrganizationMembership.role == teacher`
+  eventually subsume `User.role in (lead, sub)`, or do they stay orthogonal? Any
+  phase that adds tenant scoping to an existing domain reads membership to answer
+  "who may", never `User.role`.
+
+## 2026-09-05 — Tenant access is an *active* membership, and that decided three shapes
+- **What happened:** The phase spec states the boundary as
+  `organization access == active OrganizationMembership`, which sounds like one
+  rule but forces three separate API decisions: what `GET /organizations/{id}/`
+  says to a non-member, what `/mine/` shows a suspended member, and what
+  `Organization.is_active` does.
+- **What we decided:** One function, `organizations.models.active_membership()`,
+  answers the boundary for every endpoint, and it returns `None` for an outsider,
+  a suspended member and an anonymous caller alike — the endpoint cannot
+  distinguish them, so it cannot leak which organization ids exist (an unknown id
+  and someone else's academy both answer 403). `/mine/` lists active memberships
+  only: a suspended member reading their academy's name and timezone through it
+  would be the one hole in the rule. Inside a tenant the 404/403 split follows the
+  repository's existing precedent — a membership id belonging to *another*
+  organization is a 404 from the scoped queryset, because a 403 would confirm the
+  row exists. `Organization.is_active` is stored and read by nothing: disabling an
+  academy is a workflow with consequences for the people inside it, and inventing
+  it here would have been a product decision the spec assigns to a later phase.
+- **Why it matters for later phases:** Every domain that becomes tenant-scoped
+  should route its "may this caller reach this tenant" through
+  `active_membership()` rather than re-deriving it, so widening access is one edit
+  in one place. And the academy-settings phase owns the decision of what
+  `is_active=False` actually does — until then, nothing behaves as though it means
+  anything.
+
+## 2026-09-05 — One owner, enforced three times, and no way to transfer it
+- **What happened:** "Exactly one initial owner, created by organization creation,
+  and no public API creates a second" is the invariant the whole ownership model
+  rests on, and there are three ways to break it: a request body asking for
+  `role: owner`, a PATCH promoting an existing member, and a write that bypasses
+  the API altogether.
+- **What we decided:** Three layers, one per attack. The serializers offer
+  `ASSIGNABLE_ORGANIZATION_ROLES` (`admin`/`staff`/`teacher`), so no membership
+  request can name `owner` at all. `permissions.OwnerMembershipIsProtected`
+  refuses every write to the owner's existing row — to an admin *and* to the
+  owner, because suspending or demoting it is an ownership transfer rather than a
+  role edit. And a partial `UniqueConstraint` on `organization` where
+  `role = owner` is the database's backstop, which also holds for the Django admin
+  and a hand-written INSERT. Creation itself is one `transaction.atomic()` block:
+  an organization whose owner membership is refused does not remain committed.
+- **Why it matters for later phases:** Ownership transfer is now a deliberate
+  piece of work rather than something that can happen by accident — it has to
+  demote and promote inside one transaction and reckon with that constraint
+  explicitly, which is the intent. The phase spec's endpoint list also omits any
+  way to change a membership while its rules require owner and admin to suspend,
+  reactivate and re-role members, so `PATCH /api/organizations/{id}/memberships/{id}/`
+  was added to make those rules performable; `PUT` deliberately is not, because
+  `organization` and `user` are not editable fields.

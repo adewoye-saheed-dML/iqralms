@@ -631,3 +631,44 @@ Format:
   nothing to do.
 - **Revisit when:** A period covers enough sessions that the listing response is
   unwieldy, or payroll stops being one person's job.
+
+## 2026-09-05 — A suspended member is told nothing, and can suspend themselves
+- **What was skipped:** Any signal to someone whose organization membership was
+  suspended. `GET /api/organizations/mine/` returns `[]` for them and the academy
+  answers 403, so from the client's side a suspension is indistinguishable from
+  never having been a member. Relatedly, nothing stops an admin from suspending
+  *their own* membership through `PATCH .../memberships/{id}/` and losing their
+  own management access; only the owner's row is protected.
+- **Why:** Phase 1's rule is that an active membership is the only thing that
+  grants tenant access, and the alternative — showing a suspended member their
+  academy's name, slug and timezone — would have been the single hole in it.
+  Telling them *why* needs somewhere to say it (notification, onboarding copy),
+  and both are explicitly later phases. Self-suspension is a footgun rather than a
+  security hole: an academy can never be fully locked out, because the owner's
+  membership cannot be suspended by anyone.
+- **Real fix:** A narrow "my access" endpoint that reports the caller's own
+  membership rows including suspended ones, with no organization detail beyond the
+  name — the same distinction `accounts` already draws between a user's own `/me/`
+  and what other users may see. Refusing a self-directed suspension is a two-line
+  object-level check whenever the product decides that is the desired behaviour.
+- **Revisit when:** The onboarding phase gives the platform anywhere to explain an
+  access change, or the first real academy suspends someone.
+
+## 2026-09-05 — `Organization.is_active` is stored and read by nothing
+- **What was skipped:** Any behaviour behind the field. The phase spec lists
+  `is_active` among the organization's fields and says an inactive organization
+  should not be deleted merely to disable access, but the tenant rule it also
+  states is `organization access == active OrganizationMembership`, with nothing
+  about the organization's own flag. So the column exists, defaults `True`, is
+  read-only through the API, and no permission or queryset consults it.
+- **Why:** Deciding that `is_active=False` revokes access for everyone inside an
+  academy — owner included, who would then be unable to read the tenant they are
+  supposed to be reactivating — is a product decision with a workflow attached, and
+  organization deletion and settings are named later phases. Implementing it here
+  would have meant inventing the workflow to go with it.
+- **Real fix:** Either the academy-settings phase gives the flag meaning (most
+  likely: non-owner access refused, owner retains read plus a reactivate action,
+  enforced inside `active_membership()` so every domain inherits it at once), or
+  the field is dropped in favour of whatever suspension model billing needs.
+- **Revisit when:** Academy onboarding or settings lands — and before any later
+  phase writes code that *assumes* the flag already gates access.

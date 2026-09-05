@@ -135,6 +135,7 @@ INSTALLED_APPS = [
     "pricing",
     "assessment",
     "payouts",
+    "organizations",
 ]
 
 MIDDLEWARE = [
@@ -451,7 +452,9 @@ SPECTACULAR_SETTINGS = {
         "Pricing: negotiated rates per student and level, lead-approved. "
         "Waitlist: preferred-teacher requests when that teacher is full. "
         "Assessment: per-session rubric scoring, lead review, family progress. "
-        "Payouts: teacher payout records and period statements, lead-generated."
+        "Payouts: teacher payout records and period statements, lead-generated. "
+        "Organizations: the multi-tenant foundation — academies and the "
+        "memberships that grant access to one."
     ),
     "VERSION": "0.6.0",
     "SERVE_INCLUDE_SCHEMA": False,
@@ -470,6 +473,14 @@ SPECTACULAR_SETTINGS = {
         "BookingStatusEnum": "scheduling.models.BookingStatus.choices",
         "PayoutStatusEnum": "payouts.models.PayoutStatus.choices",
         "StatementStatusEnum": "payouts.models.StatementStatus.choices",
+        # SaaS Phase 1 adds a second "role" concept and a third "status" one, both
+        # deliberately independent of the account roles and booking statuses above
+        # — so both need names, for the same failing-check reason.
+        "OrganizationRoleEnum": "organizations.models.OrganizationRole.choices",
+        "AssignableOrganizationRoleEnum": (
+            "organizations.serializers.ASSIGNABLE_ORGANIZATION_ROLES"
+        ),
+        "MembershipStatusEnum": "organizations.models.MembershipStatus.choices",
     },
 }
 
