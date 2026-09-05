@@ -787,3 +787,116 @@ Format:
   reactivate and re-role members, so `PATCH /api/organizations/{id}/memberships/{id}/`
   was added to make those rules performable; `PUT` deliberately is not, because
   `organization` and `user` are not editable fields.
+
+## 2026-09-05 — `TeacherProfile` has eleven readers, so Phase 2 built beside it
+- **What happened:** The obvious way to make teacher configuration tenant-aware is to
+  move `approved`, `max_weekly_hours` and `hourly_payout_rate` off the global
+  `OneToOneField(User)` profile. The audit found eleven production consumers of that
+  row first: `bookable_teacher_error` and `specialty_error`, the weekly cap in
+  `Booking.clean()` and in `route_session`, `lead_teacher()` and
+  `matching_sub_teachers()` (both of which filter on it *in SQL*),
+  `payouts.services.applicable_rate`, `/me/`'s serializer, the admin, and the
+  `select_related` in two of them. Phase 2 is explicitly forbidden from rewriting
+  scheduling or payout behaviour, so moving the fields would have meant rewriting
+  both in the same change that introduced the model.
+- **What we decided:** Leave `TeacherProfile` byte-identical and add
+  `accounts.OrganizationTeacherConfiguration` beside it, hanging off
+  `OrganizationMembership` rather than off a `(user, organization)` pair — the
+  membership already *is* "this user in this academy", with the uniqueness rule and
+  the status field to match. The new table is written by its own API and read by
+  nothing else: each later tenancy phase flips one consumer at a time and can
+  backfill from the global profile. The field classification was explicit rather than
+  assumed: `approved`, `max_weekly_hours` and `hourly_payout_rate` are per-academy;
+  `bio` describes the person and stayed global; `specialties` stayed untouched because
+  it points at the still-global `curriculum.Track`; and `is_lead` was deliberately
+  *not* copied, because academy leadership is already `OrganizationMembership.role`
+  and a third representation after `User.role` and `TeacherProfile.is_lead` would be
+  one more pair to keep in step. Migration `0003` is one `CREATE TABLE` — no `ALTER`,
+  no backfill, nothing deleted, zero existing rows touched.
+- **Why it matters for later phases:** Scheduling tenancy and payout tenancy each
+  inherit a storage boundary that already exists and is already tested, so neither
+  has to invent one while also rewriting booking or payroll. The cost is a stated
+  interim overlap: three fields live in two places and only the old one is
+  authoritative (see tech-debt.md).
+
+## 2026-09-05 — Membership is belonging; the organization role is only authority
+- **What happened:** Phase 2's rules are all of the form "is this person an active
+  *parent* / *student* / *teacher* of this academy", and there are two fields that
+  could answer: `User.role` and `OrganizationMembership.role`. Reading the wrong one
+  produces two opposite bugs — treat the organization role as a teaching identity and
+  a parent account becomes a teacher; require it and a lead teacher who founded their
+  own academy stops being able to teach in it, because their row says `owner`.
+- **What we decided:** Belonging is `status == active`, full stop, and it is always
+  read through `organizations.active_membership()`. The *account* role supplies the
+  rest of the answer. So `accounts.tenancy`'s helpers are the conjunction of the two
+  and never look at the organization role at all, which is why a founder's `owner`
+  membership can carry teaching terms and a `teacher` membership on a parent account
+  cannot. Nothing in the accounts app re-derives what "active" means; a second status
+  check that drifted out of step with the first is the whole failure this arrangement
+  avoids.
+- **Why it matters for later phases:** Every domain that becomes tenant-scoped should
+  key belonging off `active_membership()` and keep asking `User.role` its own
+  questions, rather than reaching for the organization role because it is nearer. It
+  also leaves the owner/lead migration free to happen later without Phase 2 having
+  pre-committed to an answer.
+
+## 2026-09-05 — A `ParentLink` is a family fact, so the tenant question is a different endpoint
+- **What happened:** The phase spec offers an organization-scoped parent-link route
+  and simultaneously forbids two competing parent-link APIs, so the decision had to be
+  made rather than deferred. `POST /api/accounts/parent-links/` had no clients beyond
+  its tests — the frontend does not exist yet — so backwards compatibility was a
+  choice, not a constraint.
+- **What we decided:** Creation stays global and account-level. A parent registers,
+  then links to their child with the child's signup code, before any academy is
+  involved; making creation organization-scoped would have required an academy to
+  admit both parties *first*, which inverts the real onboarding order and would have
+  been a new product rule Phase 2 was told not to invent. `/my-children/` also stays
+  global, which the spec permits because it returns only global account fields — no
+  academy owns them. What became organization-scoped is the *read* that academies
+  actually need: `GET /api/accounts/organizations/{id}/children/`, which answers with
+  the linked children who are active members *there*. So one global relationship gives
+  a parent in two academies two different answers, and Academy A can never surface a
+  student it has not admitted.
+- **Why it matters for later phases:** The rule lives in exactly one place,
+  `tenancy.children_in_organization()`, so scheduling and assessment tenancy can adopt
+  it instead of each re-deriving "may this parent act for this child here". Their
+  current `ParentLink` authorization checks are still global and are recorded as debt.
+
+## 2026-09-05 — Organization-scoped routes live in the domain, not in `organizations/urls.py`
+- **What happened:** The spec's suggested address for the new endpoints was
+  `/api/organizations/{id}/parent-links/`, which would have put an accounts-domain
+  view into the organization app's URL module — and would have had curriculum,
+  scheduling, pricing, assessment and payout tenancy all editing that one file in
+  turn.
+- **What we decided:** `/api/<domain>/organizations/<organization_id>/<resource>/`.
+  The tenant is still in the URL, which is what matters — one mixin
+  (`organizations.views.OrganizationScopedMixin`) resolves it to the caller's verified
+  membership, and the organization app's own permission classes decide access, so
+  there is no second membership or permission implementation. Each domain keeps its
+  own routes.
+- **Why it matters for later phases:** Phases 3 to 7 each add their organization-scoped
+  surface under their own prefix without touching another app, and every one of them
+  inherits the same URL-to-membership-to-queryset shape. A cross-tenant id is a 404
+  from the scoped queryset rather than a 403, following the precedent Phase 1 set.
+
+## 2026-09-05 — The "who can teach" rule sits where teaching is configured, not on the membership
+- **What happened:** The spec asks the system to refuse an impossible teaching
+  identity — a `parent` account holding `OrganizationMembership.role = teacher` — but
+  also says the policy must preserve existing behaviour, and Phase 1 deliberately kept
+  the organization app from reading `User.role` at all. Enforcing it on the membership
+  would have broken `OrganizationMembershipFactory`'s default and a set of shipped
+  Phase 1 tests, which is a strong signal it is a behaviour change to a finished
+  phase rather than a Phase 2 fix.
+- **What we decided:** `OrganizationMembership` keeps its meaning untouched — a
+  `teacher` row is authority inside the academy, the least-privileged role, and it
+  claims nothing about teaching. The account rule is enforced one step further in,
+  where teaching is actually configured: `OrganizationTeacherConfiguration.clean()`
+  refuses any membership whose user is not `lead` or `sub`, which is the same
+  `TEACHER_ROLES` rule `TeacherProfile` has always applied. The API repeats it so the
+  400 lands on the field the client sent, and the model backstops the admin and direct
+  ORM writes.
+- **Why it matters for later phases:** "This person teaches at this academy" is now a
+  row that exists, not a role value to be interpreted, which is what scheduling
+  tenancy will need to filter on. The residual looseness — a `teacher` membership on
+  an account that cannot teach is accepted and means authority only — is recorded as
+  debt rather than left implicit.

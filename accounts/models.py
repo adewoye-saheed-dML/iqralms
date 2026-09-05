@@ -1,11 +1,22 @@
 """Identity layer for the academy: users, parent links, teacher profiles.
 
-Field sets here mirror specs/phase-1-accounts.md, plus two additions that were
+Field sets here mirror specs/phase-1-accounts.md, plus three additions that were
 each agreed explicitly rather than added silently:
 
 * ``User.signup_code``, the parent-link mechanism (see learnings.md).
 * ``TeacherProfile.specialties``, added by Phase 3 so booking can eventually
   know which tracks a teacher may teach. Nothing enforces it yet.
+* ``OrganizationTeacherConfiguration``, added by SaaS Phase 2 so the same teacher
+  can work for two academies on different terms.
+
+**What stays global, and what became per-academy.** ``User`` is one identity for
+one person, and it gains no ``organization`` foreign key — a field like that would
+hard-code "one user, one academy" into the model the whole platform points at.
+``ParentLink`` likewise stays a global family relationship. What is
+*organization-specific* is how a teacher operates inside a given academy — their
+approval, capacity and rate — and that is the new model rather than a change to
+the old one, because ``TeacherProfile`` is still what scheduling and payouts read
+(see its docstring).
 
 Nothing about curriculum, booking or payment behaviour lives here.
 """
@@ -159,7 +170,22 @@ class ParentLink(models.Model):
 
 
 class TeacherProfile(models.Model):
-    """Teaching-side attributes. Only for role 'lead' or 'sub'."""
+    """Teaching-side attributes. Only for role 'lead' or 'sub'.
+
+    **Still the global profile, and still authoritative.** SaaS Phase 2 added
+    ``OrganizationTeacherConfiguration`` beside this model rather than moving
+    fields out of it, because every existing consumer reads *this* one:
+    ``scheduling.models.bookable_teacher_error`` and ``specialty_error``,
+    ``scheduling.routing.lead_teacher`` and ``matching_sub_teachers``, the weekly
+    capacity cap in ``Booking``/``route_session``, and
+    ``payouts.services.applicable_rate``. Phase 2 is explicitly forbidden from
+    rewriting scheduling or payout behaviour, so this stays the row they read and
+    the new model is written but not yet consulted by them.
+
+    The two therefore overlap on ``approved``, ``max_weekly_hours`` and
+    ``hourly_payout_rate`` for as long as the migration takes. That is a stated
+    interim state, not an oversight — see tech-debt.md.
+    """
 
     user = models.OneToOneField(
         User,
@@ -225,3 +251,129 @@ class TeacherProfile(models.Model):
 
     def __str__(self):
         return f"TeacherProfile({self.user.username})"
+
+
+class OrganizationTeacherConfiguration(models.Model):
+    """How one teacher operates inside one academy: approved, capacity, rate.
+
+    The model SaaS Phase 2 exists to establish. A teacher is one ``User`` and may
+    work for several academies on entirely different terms:
+
+    .. code-block:: text
+
+        Teacher T
+            Academy A  ->  approved, 10 h/week, 10.00/hour
+            Academy B  ->  not approved, 20 h/week, 15.00/hour
+
+    A ``OneToOneField(User)`` cannot represent that, and duplicating the ``User``
+    to make it fit would break the one thing the identity model guarantees. So the
+    configuration hangs off the *membership* — which already means "this user in
+    this academy", already carries the uniqueness rule for that pair, and already
+    knows whether the relationship is active. A ``(user, organization)`` pair here
+    would have been a second, weaker copy of ``OrganizationMembership``.
+
+    **Which fields are per-academy, and which are not.** Approval, weekly capacity
+    and payout rate describe how a teacher works *for one academy*, so they are
+    here. ``bio`` describes the person and stays on ``TeacherProfile``.
+    ``is_lead`` is deliberately *not* copied: academy leadership is already
+    ``OrganizationMembership.role``, and a third representation of it — after
+    ``User.role`` and ``TeacherProfile.is_lead``, which are validated to agree —
+    would be one more thing to keep in step. ``specialties`` is untouched, because
+    it points at ``curriculum.Track``, which is still global until curriculum
+    tenancy (see learnings.md).
+
+    **Nothing reads this yet.** Scheduling and payouts still read
+    ``TeacherProfile``; their own tenancy phases move them across. This model is
+    the storage boundary being put in place first, so those phases have somewhere
+    to read *from* rather than having to invent it while also rewriting booking or
+    payroll.
+
+    A suspended membership keeps its configuration. The row is a record of the
+    terms this academy set; whether it grants access is
+    ``organizations.active_membership()``'s answer, not this model's.
+    """
+
+    membership = models.OneToOneField(
+        # String reference rather than an import: ``organizations.models`` imports
+        # this module, so a real import would be circular. The same pattern
+        # ``TeacherProfile.specialties`` uses for ``curriculum.Track``.
+        "organizations.OrganizationMembership",
+        # The configuration is meaningless without the relationship it configures.
+        # Nothing in the API deletes a membership — suspension keeps the row — so
+        # this cascade only fires when an organization itself is removed.
+        on_delete=models.CASCADE,
+        related_name="teacher_configuration",
+        help_text="The academy-and-teacher relationship these terms apply to.",
+    )
+    max_weekly_hours = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)],
+        help_text=(
+            "Capacity dial for this academy only. Scheduling still enforces "
+            "TeacherProfile.max_weekly_hours until scheduling tenancy lands."
+        ),
+    )
+    hourly_payout_rate = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=(
+            "What this academy pays per hour. Null means no per-hour rate, as on "
+            "TeacherProfile. Payout calculation still reads that one."
+        ),
+    )
+    approved = models.BooleanField(
+        default=False,
+        help_text=(
+            "Approved to teach *here*. An academy approves its own teachers, so a "
+            "teacher may be approved by one and not another."
+        ),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["membership_id"]
+
+    @property
+    def user(self):
+        """The teacher these terms are for. Reached through the membership."""
+        return self.membership.user
+
+    @property
+    def organization(self):
+        """The academy that set these terms."""
+        return self.membership.organization
+
+    def clean(self):
+        # The same rule TeacherProfile enforces, and deliberately the same rule:
+        # only a 'lead' or 'sub' account can be configured to teach. Phase 2 was
+        # asked to preserve existing product behaviour rather than let an
+        # organization invent a teaching identity the account model does not
+        # support, so a parent or student membership is refused here even when the
+        # organization is happy to call them a teacher.
+        #
+        # Note what is *not* checked: OrganizationMembership.role. That field is
+        # authority inside the academy, and requiring 'teacher' would lock out the
+        # lead teacher who founded their own academy and therefore holds the
+        # 'owner' row (see accounts/tenancy.py).
+        if self.membership_id and not self.membership.user.is_teacher:
+            raise ValidationError(
+                {
+                    "membership": ValidationError(
+                        "Only a member whose account role is 'lead' or 'sub' can "
+                        "be configured to teach (got '%(role)s').",
+                        code="invalid_role_for_teacher_configuration",
+                        params={"role": self.membership.user.role},
+                    )
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        # The repository convention: validate in save() so the API, the admin and a
+        # direct ORM write cannot disagree about what a valid row is.
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.membership.user.username} @ {self.membership.organization.slug}"
