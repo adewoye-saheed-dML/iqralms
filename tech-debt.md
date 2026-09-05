@@ -672,3 +672,123 @@ Format:
   the field is dropped in favour of whatever suspension model billing needs.
 - **Revisit when:** Academy onboarding or settings lands — and before any later
   phase writes code that *assumes* the flag already gates access.
+
+## 2026-09-05 — `OrganizationRole` has no `student` or `parent` value
+- **What was skipped:** Any way to say "this person is a student of this academy" or
+  "a parent of one". Phase 1's vocabulary is `owner`/`admin`/`staff`/`teacher`, and
+  the assignable subset is `admin`/`staff`/`teacher`, so admitting a student today
+  means giving them an authority role that overstates them. Phase 2's rules do not
+  depend on which one — belonging is `status == active` and the account role supplies
+  the rest — but the row still reads wrong, and the tests say so out loud with a
+  `BELONGS` constant rather than hiding it.
+- **Why:** Adding two choices to a shipped Phase 1 model is a change to the
+  organization role vocabulary, which the phase spec never asks for and CLAUDE.md
+  tells this phase not to redesign. It is also entangled with the question the
+  onboarding phase owns anyway: *how* a student or parent enters an academy at all,
+  which needs invitations, bulk import and a registration-with-organization-context
+  decision that Phase 2 is explicitly forbidden from making.
+- **Real fix:** Most likely `STUDENT` and `PARENT` added to `OrganizationRole` and to
+  `ASSIGNABLE_ORGANIZATION_ROLES`, staying outside `MEMBERSHIP_MANAGER_ROLES` so they
+  carry the least authority — an additive migration with no data change. Alternatively
+  the role field narrows to *staff* authority only and participation moves to a
+  separate field, which is a larger change and needs the onboarding phase's shape
+  first.
+- **Revisit when:** Academy onboarding lands, or the first real academy admits a
+  student — whichever comes first. Do it before curriculum or scheduling tenancy
+  writes code that filters on the organization role.
+
+## 2026-09-05 — Teacher terms live in two tables and only the old one is read
+- **What was skipped:** Any consolidation. `approved`, `max_weekly_hours` and
+  `hourly_payout_rate` now exist on both `TeacherProfile` (global) and
+  `OrganizationTeacherConfiguration` (per-academy), and every consumer still reads the
+  global one: `bookable_teacher_error`, `specialty_error`, the `Booking` and
+  `route_session` weekly caps, `lead_teacher`, `matching_sub_teachers` and
+  `applicable_rate`. So an academy can approve a teacher through the new API and
+  scheduling will still refuse to book them, and it can set a rate that payroll will
+  not pay.
+- **Why:** Deliberate, and the reason the migration is safe. Phase 2 may not rewrite
+  scheduling or payout behaviour, so the new table had to be introduced without any
+  domain switching over in the same change. The alternative — moving the fields — would
+  have meant rewriting booking eligibility, routing, capacity and payroll at the same
+  moment the model appeared.
+- **Real fix:** Scheduling tenancy reads `approved`, `max_weekly_hours` and the
+  specialty rule per organization once bookings know their academy; payout tenancy does
+  the same for the rate. Each can backfill from the global profile in its own data
+  migration. `TeacherProfile` then keeps `bio` and whatever remains genuinely global,
+  or disappears into `User`.
+- **Revisit when:** SaaS scheduling tenancy starts. Until then, treat the new table as
+  storage: nothing operational depends on it, and the API documents that in its
+  `help_text`.
+
+## 2026-09-05 — A `teacher` membership does not require an account that can teach
+- **What was skipped:** Validation on `OrganizationMembership` itself. A student or
+  parent account can hold `role = teacher` in an academy; it grants the
+  least-privileged authority there and nothing else, and the refusal happens only when
+  someone tries to give that membership teaching terms.
+- **Why:** Phase 1 kept the organization app from reading `User.role` at all, and
+  enforcing the rule on the membership would have broken
+  `OrganizationMembershipFactory`'s default plus a set of shipped Phase 1 tests —
+  which makes it a change to a finished phase rather than a Phase 2 fix. The teaching
+  identity itself *is* guarded, at `OrganizationTeacherConfiguration.clean()`, so the
+  invariant the spec cares about holds.
+- **Real fix:** Either the membership validates the pairing (a `clean()` that reads
+  `TEACHER_ROLES`, plus a factory and test sweep), or the role vocabulary is reworked
+  along with the `student`/`parent` gap above so the two decisions are made together.
+  The second is probably better — they are the same decision.
+- **Revisit when:** The `student`/`parent` role gap is resolved, or a real academy
+  files a confusing membership.
+
+## 2026-09-05 — A teacher cannot see what their academy pays them
+- **What was skipped:** Any teacher-facing read of
+  `/api/accounts/organizations/{id}/teacher-configurations/`. Owner and admin manage
+  it; staff and teacher members get 403 on the whole surface, list included — so a
+  teacher has no way to see their own approval, weekly cap or hourly rate for an
+  academy.
+- **Why:** The same narrower default Phase 1 chose for the membership directory: what
+  an academy pays its teachers is not something an ordinary member reads by default,
+  and a narrow rule can be widened safely later while the reverse leaks. Adding a
+  self-read also needs a decision about *which* fields a teacher sees, which is a
+  product question rather than a permission one.
+- **Real fix:** A narrow route returning only the caller's own terms for one academy —
+  the distinction `accounts` already draws between `/me/` and what other users may see.
+  A filtered queryset plus one permission class, once the product decides whether a
+  teacher sees their rate before payroll does.
+- **Revisit when:** A teacher-facing client exists, or payout tenancy gives teachers a
+  reason to check their rate.
+
+## 2026-09-05 — Parent authorization in scheduling and assessment is still global
+- **What was skipped:** Tenant-scoping the three places another domain checks a
+  `ParentLink` to decide whether a parent may act for a child:
+  `scheduling/serializers.py:63` (booking on a child's behalf),
+  `scheduling/views.py:200` and `:444` (booking and waitlist visibility), and
+  `assessment/views.py:143` (family progress). All four ask only "is this a real
+  parent-child link", with no organization in the question.
+- **Why:** Correct for now — those domains are not tenant-scoped at all yet, so there
+  is no academy in scope to check against, and Phase 2 is forbidden from changing
+  scheduling or assessment behaviour. The accounts side of the rule exists and is
+  tested (`tenancy.children_in_organization()`), waiting for them.
+- **Real fix:** When `Booking`, `Cohort` and `SessionAssessment` gain an organization,
+  each of those checks becomes "linked *and* both active members here", reusing
+  `children_in_organization()` or the membership helpers rather than re-deriving the
+  rule.
+- **Revisit when:** SaaS scheduling tenancy and assessment tenancy respectively — and
+  before either ships, because a booking that knows its academy while its parent check
+  does not is the exact shape of a cross-tenant leak.
+
+## 2026-09-05 — Five permission modules still equate `User.role == lead` with academy authority
+- **What was skipped:** The owner/lead migration. `curriculum/permissions.py`,
+  `scheduling/permissions.py`, `pricing/permissions.py`, `assessment/permissions.py`
+  and `payouts/permissions.py` each gate their privileged actions on
+  `user.role == Role.LEAD`, which in a multi-tenant world means "any lead teacher
+  anywhere", not "this academy's authority". `TeacherProfile.is_lead` mirrors the same
+  field, and `routing.lead_teacher()` filters on both.
+- **Why:** It is the single largest single-academy assumption in the repository and the
+  spec names it as out of scope for Phase 2 — deliberately, because replacing it means
+  deciding what `owner`, `admin` and `lead teacher` each authorize in every domain, and
+  doing that at the same time as introducing account tenancy would make both
+  unreviewable. `User.role` was left exactly as it was.
+- **Real fix:** Each domain's privileged checks move to `active_membership()` plus
+  `OrganizationMembership.role`, one phase at a time, and `Role.LEAD` narrows to what
+  it actually describes — a teaching seniority — or disappears.
+- **Revisit when:** The domains become tenant-scoped. Each phase should convert its own
+  permission module rather than leaving a final sweep to do all five at once.

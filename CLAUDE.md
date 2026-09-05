@@ -27,7 +27,8 @@ The original single-academy product phases established the existing domain behav
 ## SaaS expansion
 
 - SaaS Phase 1 Organization foundation — IMPLEMENTED; manual acceptance pending
-- SaaS Phase 2 Accounts tenancy — NEXT
+- SaaS Phase 2 Accounts tenancy — IMPLEMENTED; the spec's section-38 journey verified end to end over the API, human `/api/docs/` acceptance pending
+- SaaS Phase 3 Curriculum tenancy — NEXT
 
 The first SaaS phase already introduced:
 
@@ -41,7 +42,15 @@ The first SaaS phase already introduced:
 - organization membership permissions;
 - cross-tenant organization access protection.
 
-Do not recreate or redesign those features in SaaS Phase 2.
+The second SaaS phase then introduced:
+
+- `accounts.tenancy` — the organization-aware account helpers;
+- `OrganizationTeacherConfiguration` — one academy's terms for one teacher;
+- organization-scoped account endpoints under `/api/accounts/organizations/{id}/`;
+- the parent/student organization-isolation rule;
+- the account tenant-isolation suite.
+
+Do not recreate or redesign either phase's features in a later one.
 
 A phase is not complete merely because code exists. Do not start the next phase until the current phase's acceptance criteria are verified and the completed work is committed.
 
@@ -167,7 +176,7 @@ what authority does this account have inside this academy?
 
 The two are allowed to coexist during the migration.
 
-Do not change `User.role` during SaaS Phase 2 unless the active phase specification explicitly requires it.
+Do not change `User.role` during a tenancy phase unless that phase's specification explicitly requires it. SaaS Phase 2 did not, and the owner/lead migration that eventually will is a named later decision (see `tech-debt.md`).
 
 ---
 
@@ -261,23 +270,31 @@ Ownership is represented by the owner membership.
 
 ---
 
-# SaaS Phase 2 — Accounts tenancy
+# SaaS Phase 2 — Accounts tenancy (done)
 
-SaaS Phase 2 is responsible for making the **accounts domain aware of organization membership**.
+SaaS Phase 2 made the **accounts domain aware of organization membership**, and left
+every other domain alone. What it settled, so a later phase does not re-litigate it:
 
-The goal is not yet to make every domain tenant-aware.
+- `User` stays one global identity, with no `organization` foreign key.
+- Belonging to an academy is `OrganizationMembership.status == active`, always read
+  through `organizations.active_membership()`. The organization role is authority
+  only; the account role answers what kind of account this is. Both halves are
+  required, and `accounts.tenancy` holds the four helpers that combine them.
+- `ParentLink` stays a global family relationship. Creation stays account-level; the
+  organization-scoped question is a *different* endpoint,
+  `GET /api/accounts/organizations/{id}/children/`, which requires both parent and
+  student to be active members there.
+- `TeacherProfile` was not changed. `OrganizationTeacherConfiguration` was added beside
+  it, hanging off the membership, holding `approved`, `max_weekly_hours` and
+  `hourly_payout_rate` per academy. Nothing outside its own API reads it yet.
+- Organization-scoped routes live in the domain that owns them, addressed
+  `/api/<domain>/organizations/<organization_id>/<resource>/`.
+- Authentication was not touched. Registration still creates a `User` and no
+  membership.
 
-The phase focuses on:
-
-- student membership;
-- parent membership;
-- teacher membership;
-- parent/student relationships;
-- organization-specific teacher configuration;
-- account queries that need organization context;
-- organization-aware account permissions.
-
-The phase must preserve the existing account authentication model.
+The decisions behind each of those are in `learnings.md`; the boundaries deliberately
+left open are in `tech-debt.md`, and the `student`/`parent` gap in `OrganizationRole` is
+the one worth reading before Phase 3.
 
 ---
 
@@ -313,7 +330,7 @@ specialties
 
 These models were originally designed for one academy.
 
-SaaS Phase 2 must identify which of these attributes are global identity information and which are academy-specific.
+SaaS Phase 2 classified these. Global: everything on `User`, plus `TeacherProfile.bio` and `is_lead`. Academy-specific: `approved`, `max_weekly_hours` and `hourly_payout_rate`, which now also exist per academy on `OrganizationTeacherConfiguration`. `specialties` stayed coupled to the still-global `curriculum.Track` — that is Phase 3's to resolve.
 
 ---
 
@@ -371,21 +388,20 @@ is_lead
 specialties
 ```
 
-The active Phase 2 specification defines the migration boundary.
-
-A likely long-term model is:
+Phase 2 resolved this. `TeacherProfile` is unchanged and still authoritative — all
+eleven consumers above read it — and per-academy terms live in a new model:
 
 ```text
 User
    |
    +-- OrganizationMembership
              |
-             +-- Organization-specific teacher profile
+             +-- OrganizationTeacherConfiguration
 ```
 
-But do not introduce the final name or structure merely because it seems convenient.
-
-Choose the smallest migration that preserves existing behaviour and prepares the next phase.
+The two overlap on `approved`, `max_weekly_hours` and `hourly_payout_rate` until
+scheduling and payout tenancy switch their reads across, one domain at a time. Do not
+"tidy up" that overlap ahead of them; it is what keeps the migration non-breaking.
 
 ---
 
@@ -413,15 +429,17 @@ S ∈ Academy B
 
 an Academy A operation must not automatically gain access to S's Academy B records.
 
-Phase 2 must therefore define and test the relationship between:
+Phase 2 settled this. `ParentLink` stayed global, and the tenant rule is enforced
+where an academy asks the question:
 
 ```text
-ParentLink
-+
-OrganizationMembership
+parent active in organization  AND  student active in organization
 ```
 
-before curriculum and scheduling become tenant-scoped.
+`accounts.tenancy.children_in_organization()` is the one implementation. Reuse it
+rather than re-deriving the rule — and note that the `ParentLink` checks in
+`scheduling` and `assessment` are still global, which is recorded in `tech-debt.md`
+and is each of those phases' work to convert.
 
 Do not expose a student's academy-specific data merely because a global parent-child relationship exists.
 
@@ -503,7 +521,13 @@ OrganizationMembership.role = teacher
 
 for an account that cannot act as a teacher under the current account model.
 
-If this requires a product decision, stop and ask rather than guessing.
+Phase 2 drew that line at the *configuration*, not the membership:
+`OrganizationTeacherConfiguration` refuses any member whose account role is not `lead`
+or `sub`, while a bare `teacher` membership stays what Phase 1 made it — authority
+inside the academy, claiming nothing about teaching. The reasoning is in
+`learnings.md`; the looseness that remains is in `tech-debt.md`.
+
+If a further product decision is required, stop and ask rather than guessing.
 
 ---
 
@@ -733,7 +757,7 @@ Do not implement the entire phase in one AI session.
 
 A normal Claude Code session should look like:
 
-> Implement SaaS Phase 2 task 2.1 only. Read the Phase 2 specification and inspect the existing accounts models, serializers, views, permissions, URLs, and tests relevant to task 2.1. Do not modify curriculum, scheduling, pricing, assessment, or payouts unless explicitly required by the task. Preserve all existing account invariants. Add focused regression tests. Run the targeted checks and report changed files and manual verification steps. Stop when task 2.1 is complete.
+> Implement SaaS Phase 3 task 3.1 only. Read the Phase 3 specification and inspect the existing curriculum models, serializers, views, permissions, URLs, and tests relevant to task 3.1. Do not modify scheduling, pricing, assessment, or payouts unless explicitly required by the task. Preserve all existing curriculum invariants. Add focused regression tests. Run the targeted checks and report changed files and manual verification steps. Stop when task 3.1 is complete.
 
 ---
 
