@@ -2,12 +2,23 @@
 
 Django REST backend for a multi-tenant SaaS platform for Quran academies, Islamic schools, Hifz schools, Tajweed schools, Arabic learning institutions, and related learning organizations.
 
-The product intent is documented in `docs/quran-academy-mvp-spec.md`.
-Detailed requirements live under `specs/`.
+The product intent is documented in:
 
-## Current Phase Status
+```text
+docs/quran-academy-mvp-spec.md
+```
 
-### Original product phases
+Detailed implementation requirements live under:
+
+```text
+specs/
+```
+
+---
+
+# Current Phase Status
+
+## Original product phases
 
 - Phase 1 Accounts — DONE / ACCEPTED
 - Phase 2 Curriculum & placement — DONE / ACCEPTED
@@ -19,7 +30,7 @@ Detailed requirements live under `specs/`.
 - Phase 7 Assessment & progress — DONE / ACCEPTED
 - Phase 8 Payouts & statements — DONE / ACCEPTED
 
-### SaaS expansion
+## SaaS expansion
 
 - SaaS Phase 1 Organization foundation — DONE / ACCEPTED
 - SaaS Phase 2 Accounts tenancy — DONE / ACCEPTED
@@ -34,15 +45,21 @@ Detailed requirements live under `specs/`.
 - SaaS Phase 11 Tenant security audit
 - Frontend
 
-**Write `specs/saas/SaaS Phase 4 — Scheduling Tenancy.md` before beginning Phase 4.** Every SaaS phase so far has had a specification to read first, and Phase 4 is the one that must switch scheduling from the legacy global `TeacherProfile.specialties` to the academy-scoped `curriculum.TeacherTrack` — a change to accepted booking and routing behaviour, which is not something to design while writing it.
+The specification for the current phase is:
 
-A phase is not complete merely because code exists. Implementation, automated tests, manual/API acceptance where specified, documentation, and a commit are all part of completion.
+```text
+specs/saas/SaaS Phase 4 — Scheduling Tenancy.md
+```
+
+Read the entire specification before changing scheduling code.
+
+Do not start SaaS Phase 5 until Phase 4 implementation, tests, API/manual acceptance, documentation, migrations, and commit are complete.
 
 ---
 
-# SaaS Architecture Rules
+# SaaS Architecture
 
-The fundamental tenant boundary is:
+The tenant boundary is:
 
 ```text
 Organization
@@ -60,11 +77,17 @@ A `User` is a global identity.
 
 An `OrganizationMembership` represents the user's relationship with one academy.
 
-A user may belong to multiple organizations.
+A user may belong to multiple academies.
 
-**Never add `User.organization`.**
+Never add:
 
-Organization roles are:
+```python
+User.organization
+```
+
+That would incorrectly force one global user into one tenant.
+
+Organization roles remain:
 
 ```text
 owner
@@ -73,7 +96,7 @@ staff
 teacher
 ```
 
-Existing global account roles remain:
+Global account roles remain:
 
 ```text
 lead
@@ -82,9 +105,29 @@ student
 parent
 ```
 
-Do not replace one role system with the other.
+These answer different questions.
 
-Use `organizations.active_membership()` as the canonical active-membership check. Do not create another membership-status implementation.
+```text
+User.role
+    =
+what kind of account is this?
+
+OrganizationMembership.role
+    =
+what authority does this user have inside this academy?
+```
+
+Do not replace either role system during Phase 4.
+
+Use:
+
+```python
+organizations.active_membership()
+```
+
+as the canonical active-membership rule.
+
+Do not create another membership-status implementation.
 
 ---
 
@@ -96,15 +139,17 @@ SaaS Phase 1 established:
 - `OrganizationMembership`
 - organization roles
 - membership status
-- owner membership
+- automatic owner membership
 - organization creation
 - organization membership APIs
-- organization membership permissions
-- cross-tenant organization access protection
+- organization permissions
+- cross-tenant membership protection
 
-Do not recreate or redesign these.
+Do not recreate these.
 
-Ownership is represented by the owner membership. Do not add a second organization owner field.
+Ownership is represented by the owner membership.
+
+Do not add another owner field to `Organization`.
 
 ---
 
@@ -122,22 +167,20 @@ SaaS Phase 2 established:
 Settled rules:
 
 1. `User` remains global.
-2. Registration remains global and does not automatically create organization membership.
-3. `ParentLink` remains a global family relationship.
-4. Academy-specific parent/student access requires both accounts to be active members of that academy.
-5. `TeacherProfile` remains unchanged for compatibility.
-6. Academy-specific teacher terms live in `OrganizationTeacherConfiguration`.
-7. `TeacherProfile.specialties` remains coupled to the old global `Track` model until SaaS Phase 3 migrates curriculum ownership.
-8. Organization-scoped routes use:
+2. Registration remains global.
+3. Registration does not automatically create organization membership.
+4. `ParentLink` remains global.
+5. Organization-specific parent/student access requires both accounts to be active members of the academy.
+6. `TeacherProfile` remains for compatibility.
+7. Academy-specific teacher terms live in `OrganizationTeacherConfiguration`.
+8. Academy authority and `User.role` are separate concepts.
+9. Organization-scoped routes follow:
 
 ```text
 /api/<domain>/organizations/<organization_id>/<resource>/
 ```
 
-9. Organization membership authority and `User.role` are separate concepts.
-10. Onboarding, invitations, billing, and frontend are later concerns.
-
-Do not recreate or redesign Phase 1/2 infrastructure in a later phase.
+Do not recreate Phase 1 or Phase 2 infrastructure.
 
 ---
 
@@ -145,294 +188,129 @@ Do not recreate or redesign Phase 1/2 infrastructure in a later phase.
 
 SaaS Phase 3 established:
 
-- `Track.organization`, with `(organization, slug)` uniqueness
-- `curriculum.TeacherTrack`, anchored to `OrganizationMembership`
-- organization-scoped curriculum, level, placement and teacher-track endpoints
-- academy-safe placement submission, review and private audio access
-- `curriculum/legacy.py`, the pre-SaaS curriculum backfill
-- curriculum tenant-isolation and cross-academy teacher tests
+- `Track.organization`
+- `(organization, slug)` track uniqueness
+- academy-owned curriculum
+- organization-scoped curriculum APIs
+- academy-safe placements
+- academy-safe placement audio access
+- `curriculum.TeacherTrack`
+- curriculum tenant-isolation tests
+- legacy curriculum migration support
 
-Settled rules:
+Important settled rules:
 
-1. `Track.organization` is the **only** stored tenant column in the domain.
-   `Level.organization` and `PlacementResult.organization` are properties that read
-   through the track, and every queryset joins rather than reading a local copy. Do
-   not add a second organization column to a curriculum model.
-2. Track slug uniqueness is `(organization, slug)`. Two academies may both teach
-   `tajweed`; one academy may not.
-3. A track's academy is immutable after creation (`Track.clean()`). Transferring
-   curriculum between academies is a separate product decision, not a field edit.
-4. Levels are still appended, never inserted. The API does not accept `order` at
-   all — the server computes `max(order)+1` — and an existing level's order and
-   track are not editable.
-5. A placement's academy is its track's. `PlacementResult.clean()` requires the
-   student, and the reviewer, to be **active members** of that academy;
-   `PlacementResult.objects.in_organization()` is the one queryset that expresses
-   it, and it filters on the track *and* the student's membership.
-6. Placement review is still lead-only, and now also requires active membership in
-   the placement's academy.
-7. Curriculum authoring is `owner` and `admin`
-   (`curriculum.permissions.CURRICULUM_MANAGER_ROLES`). Every active member may
-   read the curriculum; the teacher-track roster is owner/admin only, and a teacher
-   reads their own from `teachers/mine/`.
-8. Teacher curriculum eligibility is `TeacherTrack(membership, track, active)`, and
-   `membership.organization` must equal `track.organization`. One teacher holds
-   independent eligibility per academy.
-9. `TeacherProfile.specialties` is untouched and is **still the relation scheduling
-   enforces**. Do not remove it before SaaS Phase 4 has migrated those readers.
-10. The Phase 2 global curriculum routes are retired. The only global route left is
-    the token-gated placement-audio download, and it is global because the token —
-    not the path — authorises it.
-11. Pre-SaaS curriculum is assigned by `curriculum/legacy.py`, which resolves the
-    owning academy or refuses with instructions. It never creates an academy, and it
-    never alters an existing membership.
+## Track ownership
 
-Do not recreate or redesign Phase 1/2/3 infrastructure in a later phase.
+`Track.organization` is the stored curriculum tenant boundary.
+
+Do not add redundant `organization` columns to `Level` or `PlacementResult`.
+
+Their organization is derived through:
+
+```text
+Level
+    -> Track
+        -> Organization
+```
+
+and:
+
+```text
+PlacementResult
+    -> Track
+        -> Organization
+```
+
+## Teacher curriculum eligibility
+
+Academy-specific teacher curriculum eligibility is:
+
+```text
+OrganizationMembership
+        |
+        +-- TeacherTrack
+                |
+                +-- Track
+```
+
+The invariant is:
+
+```text
+TeacherTrack.membership.organization
+==
+TeacherTrack.track.organization
+```
+
+A teacher may therefore teach different tracks in different academies.
+
+## Legacy specialty field
+
+`TeacherProfile.specialties` still exists only because scheduling has not yet migrated its readers.
+
+Phase 4 owns that migration.
+
+After Phase 4 scheduling code must not use:
+
+```text
+TeacherProfile.specialties
+```
+
+as the authority for whether a teacher may teach an academy track.
+
+Do not remove the legacy field until all remaining consumers have been audited.
 
 ---
 
 # Current Phase — SaaS Phase 4 Scheduling Tenancy
 
-No specification has been written yet. Write
-`specs/saas/SaaS Phase 4 — Scheduling Tenancy.md` first, and read it before editing
-code.
-
-What Phase 3 left on Phase 4's doorstep, in the order it will matter:
-
-- `scheduling.models.specialty_error`, `Booking.clean()`, `Cohort.clean()` and
-  `scheduling.routing` all still read `TeacherProfile.specialties`, which is global.
-  They should read `TeacherTrack.objects.in_organization(...).active()` instead,
-  resolving the teacher's membership from the booking's academy.
-- `scheduling/serializers.py` accepts `Level.objects.all()`. It needs the academy
-  from the route and `curriculum.serializers.levels_in()`.
-- `scheduling/permissions.py` still equates `User.role == lead` with academy
-  authority. Convert it the way `curriculum/permissions.py` was converted: pair the
-  account role with `organizations.permissions.IsOrganizationMember` and scope the
-  queryset.
-
-`tech-debt.md` carries the full list with the reasoning.
----
-
-# Security Rules
-
-Never authorize academy data from object ids alone.
-
-Every academy-scoped request must establish:
+Full detail moved out of this file for token efficiency. Read:
 
 ```text
-request.user
-+
-organization
-+
-active membership
+specs/saas/phase-4/00-core.md          <- read every Phase 4 session
+specs/saas/phase-4/4.<N>-*.md          <- read only the one file matching the task you are doing
 ```
 
-Then query only records within that organization.
+The unabridged original spec is kept at `specs/saas/SaaS Phase 4 — Scheduling Tenancy (full).md` for reference only — do not load it wholesale during normal task work; the split files above cover every task.
 
-Never trust client-supplied:
+Do not start SaaS Phase 5 until Phase 4 implementation, tests, API/manual acceptance, documentation, migrations, and commit are complete (`specs/saas/phase-4/00-core.md` has the full Definition of Done).
 
-```text
-organization_id
-user_id
-role
-```
+## Hard constraints (violating any of these fails the phase regardless of task)
 
-as proof of authorization.
+- `Booking`, `Cohort`, and `TeacherWaitlist` derive their organization through `level.track.organization` — never add a redundant `organization` column to them.
+- `Availability` has no curriculum relation, so it alone gets an explicit `organization` field.
+- `TeacherBookingLock` stays global per teacher, permanently — a human teacher cannot double-book across academies even though capacity is academy-specific.
+- After this phase, scheduling must stop reading `TeacherProfile.approved`, `TeacherProfile.max_weekly_hours`, and `TeacherProfile.specialties` as authority — those become `OrganizationTeacherConfiguration` and `TeacherTrack`. Do not remove the legacy fields; other consumers may still exist.
+- Never trust a client-supplied `organization_id` — every scheduling request needs `request.user` + verified organization + active membership + tenant-scoped queryset.
+- `hourly_payout_rate` is not migrated in this phase — that's SaaS Phase 7.
 
-Tenant isolation must exist in:
+## Out of scope for Phase 4
 
-- model/service validation;
-- querysets;
-- permissions;
-- serializers where appropriate;
-- automated regression tests.
-
-A serializer hiding an organization field is not tenant isolation.
+Pricing tenancy, assessment tenancy, payout tenancy, academy onboarding, invitations, notifications, billing, frontend, recurring-class redesign, new organization roles, lead/owner role unification, AI routing.
 
 ---
 
-# Parent Access
+# Working Session Discipline (applies to every phase from here on, not only Phase 4)
 
-`ParentLink` remains global.
+Large tenancy migrations burn hours and tokens when run as one unbroken session. Follow this for Phase 4 and every phase after it:
 
-Academy-specific parent access requires:
-
-```text
-parent active in organization
-AND
-student active in organization
-AND
-ParentLink exists
-```
-
-Reuse `accounts.tenancy.children_in_organization()`.
-
-Do not duplicate the parent/student tenancy rule.
-
----
-
-# Audio Security
-
-Preserve Phase 6 private placement audio behaviour.
-
-Never restore public media URLs.
-
-Authorization becomes:
-
-```text
-authenticated user
-        |
-        v
-active organization membership
-        |
-        v
-placement belongs to organization
-        |
-        v
-existing Phase 6 audio authorization
-        |
-        v
-short-lived signed URL
-```
-
-This is now implemented (`curriculum.views.AcademyPlacementAudioURLView`). The
-roles that may hear a sample are the lead teacher and the student themselves —
-**not** sub-teachers, and not a minor's linked parent, who may read the placement
-but not the recording. Every phase from here inherits that rule; widening it is a
-product decision with its own tests to change.
-
----
-
-# Existing Domain Preservation
-
-These domains have **no tenant boundary yet**, and each has a phase of its own:
-
-```text
-scheduling/   SaaS Phase 4
-pricing/      SaaS Phase 5
-assessment/   SaaS Phase 6
-payouts/      SaaS Phase 7
-```
-
-Migrate one per phase. Do not rewrite, outside the phase that owns it:
-
-```text
-Booking.clean()
-route_session()
-TeacherBookingLock
-availability logic
-cohort routing
-weekly capacity logic
-PricingAgreement
-SessionAssessment
-ProgressSnapshot
-payout calculations
-```
-
-Make only the smallest compatibility changes required. SaaS Phase 3 needed **none**
-at all: `Track` and `Level` became organization-owned without any of these files
-changing, because they reach curriculum through foreign keys that still resolve.
-
-That is also the trap. Those apps resolve `Track` and `Level` *globally* — a caller
-who knows an id can name another academy's level in a booking or an agreement — and
-that reachability is now visible in a way it was not before. It is each domain's own
-phase to close, not a Phase 3 omission; `tech-debt.md` records it.
-
----
-
-# Migration Discipline
-
-For existing pre-SaaS data:
-
-- do not invent academies;
-- do not duplicate users;
-- assign old data to the determinable existing academy context;
-- preserve primary keys where practical;
-- keep referential integrity during migrations;
-- do not make tenant ownership permanently nullable;
-- document any ambiguous legacy mappings in `learnings.md`;
-- record accepted shortcuts or deferred cleanup in `tech-debt.md`.
-
-Do not perform destructive data migrations merely to simplify code.
-
-**`curriculum/legacy.py` is the pattern to reuse.** SaaS Phase 3 hit the case where
-the answer was not determinable — existing curriculum and no organization at all —
-and settled it as *resolve or refuse*:
-
-```text
-nothing unowned                                ->  no-op
-exactly one organization                       ->  that academy
-SAAS_LEGACY_CURRICULUM_ORGANIZATION=<pk|slug>  ->  the academy it names
-anything else                                  ->  raise, with instructions
-```
-
-Three properties are worth copying. The decision lives in an importable module
-rather than inside the migration, so it is unit-tested. The migration is a no-op on
-a fresh database, which is the path every deployment and the test database take. And
-it never creates an academy and never edits an existing membership — in particular a
-suspended member stays suspended, because a migration quietly restoring revoked
-access is worse than one that does too little.
-
-A tenancy phase whose backfill needs users to hold memberships should admit only the
-people who *already hold* that domain's data, and say so in `learnings.md`.
-
----
-
-# Testing Gate
-
-Every tenancy phase inherits this gate. Before it is marked complete, prove:
-
-1. every existing test still passes — the original Phase 1–8 suite and each accepted
-   SaaS phase's;
-2. fresh PostgreSQL migrations succeed on an empty database;
-3. `python manage.py check` passes;
-4. `python manage.py makemigrations --check` passes;
-5. tenant isolation is tested for every model the phase made academy-owned;
-6. object-id attacks across academies are rejected — detail and mutation endpoints,
-   not only listings;
-7. private placement audio remains isolated;
-8. OpenAPI/Swagger exposes the final organization-scoped API;
-9. manual/API acceptance for the phase's journey is completed;
-10. the phase is committed before the next one begins.
-
-SaaS Phase 3 met this gate on 2026-09-05: 1439 tests pass (1301 before the phase),
-fresh migrations apply to an empty PostgreSQL database, `check` and
-`makemigrations --check` are clean, the schema documents all thirteen
-academy-scoped curriculum paths, and the two-academy journey in §31 of the phase
-spec was walked over HTTP.
-
----
-
-# Coding Rules
-
-Prefer the existing repository patterns over introducing new frameworks.
-
-Before changing an existing model:
-
-1. inspect all consumers;
-2. inspect tests;
-3. inspect migrations;
-4. inspect permissions and querysets;
-5. make the smallest safe change;
-6. add regression tests before declaring the phase complete.
-
-Do not use `bulk_create()` where it bypasses required invariants.
-
-Where an invariant spans related rows or tables, enforce it in domain/model/service logic as appropriate, not only in serializers.
-
-Do not silently change completed product behaviour.
-
-When a specification says "stop and ask", do not guess.
+- **One numbered task per session.** Start a new session per `4.<N>` task rather than carrying one long session through the whole phase — old audit/read output sitting in context is dead weight once you move to a different task.
+- **Stop after an audit task.** When a task says "no code changes" / "report the plan," hold to it literally — review the report before opening a coding session for the next task.
+- **Don't run the full gate after every edit.** `manage.py check` / `makemigrations --check` / `migrate` / full `pytest` against PostgreSQL belong at the Acceptance task only. During development tasks, run just the relevant test module.
+- **Commit after each task**, not only at the end of the phase. Small commits give a rollback point and a natural place to end a session.
+- **For future phases (5–11): split their spec the same way this one was split** — a short `00-core.md` with the goal/architecture/invariants/out-of-scope/definition-of-done, plus one file per numbered task in the "Recommended Implementation Sequence." Do not let a phase spec live only as one large file that every session reloads in full.
 
 ---
 
 # Phase Completion Rule
 
-Do not update this file to move to the next phase until:
+Phase 4 is complete only when implementation + tests + fresh migrations + tenant isolation + manual/API acceptance + OpenAPI verification + documentation + commit are all done (full checklist in `specs/saas/phase-4/00-core.md`).
 
-- all of the current phase's acceptance criteria pass;
-- manual/API acceptance is complete;
-- documentation is updated;
-- technical debt is recorded;
-- changes are committed;
-- the repository is in a reproducible state on PostgreSQL.
+Only then update this file to:
+
+```text
+SaaS Phase 4 Scheduling tenancy — DONE / ACCEPTED
+SaaS Phase 5 Pricing tenancy — NEXT
+```
+
+And condense this phase's settled decisions into a new `# Accepted SaaS Phase 4 Decisions` section, the same way Phases 1–3 are recorded above — not by leaving the task files in place as the permanent record.
