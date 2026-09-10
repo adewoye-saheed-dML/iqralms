@@ -34,7 +34,10 @@ from curriculum.tests.factories import (
     GroupEligibleLevelFactory,
     LevelFactory,
     TrackFactory,
+    admit,
 )
+from organizations.models import MembershipStatus
+from organizations.tests.factories import OrganizationFactory
 from scheduling.exceptions import BookingNotCancellable
 from scheduling.models import (
     Availability,
@@ -112,14 +115,21 @@ def unapprove(teacher):
 
 class AvailabilityModelTests(TestCase):
     def test_window_can_be_created_with_spec_fields(self):
+        from curriculum.tests.factories import admit
+        from organizations.tests.factories import OrganizationFactory
+
+        organization = OrganizationFactory()
         teacher = BookableTeacherFactory()
+        admit(teacher, organization)
         window = Availability.objects.create(
+            organization=organization,
             teacher=teacher,
             weekday=Weekday.WEDNESDAY,
             start_time_utc=time(14, 0),
             end_time_utc=time(16, 30),
         )
         window.refresh_from_db()
+        self.assertEqual(window.organization, organization)
         self.assertEqual(window.teacher, teacher)
         self.assertEqual(window.weekday, 2)
         self.assertEqual(window.start_time_utc, time(14, 0))
@@ -359,7 +369,7 @@ class BookingModelTests(TestCase):
     def test_booking_can_be_created_with_spec_defaults(self):
         window = AvailabilityFactory()
         student = StudentFactory()
-        level = LevelFactory()
+        level = LevelFactory(track__organization=window.organization)
         teaches(window.teacher, level)
         start = slot_at(window)
 
@@ -851,13 +861,15 @@ class PastBookingRuleTests(TestCase):
         empty error set for exactly that reason.
         """
         teacher = BookableTeacherFactory()
+        teaches(teacher, level)
         Availability.objects.create(
+            organization=level.track.organization,
             teacher=teacher,
             weekday=moment.weekday(),
             start_time_utc=time(0, 0),
             end_time_utc=time.max,
         )
-        return teaches(teacher, level)
+        return teacher
 
     def attempt(self, start):
         """Try to create a default-length booking starting at ``start``."""
@@ -1110,6 +1122,204 @@ class SchedulingTenancyQuerysetTests(TestCase):
         # Unsaved waitlist entry with no level returns None
         unsaved = TeacherWaitlist()
         self.assertIsNone(unsaved.organization)
+
+
+class AvailabilityTenancyTests(TestCase):
+    """SaaS Phase 4 Task 4.3 — Availability academy ownership and access semantics."""
+
+    def setUp(self):
+        self.org_a = OrganizationFactory(name="Academy A", slug="academy-a")
+        self.org_b = OrganizationFactory(name="Academy B", slug="academy-b")
+        self.teacher = BookableTeacherFactory()
+        self.membership_a = admit(self.teacher, self.org_a)
+        self.membership_b = admit(self.teacher, self.org_b)
+
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.level_a = LevelFactory(track=self.track_a)
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_b = LevelFactory(track=self.track_b)
+        teaches(self.teacher, self.level_a)
+        teaches(self.teacher, self.level_b)
+
+    def test_clean_requires_active_membership_in_target_organization(self):
+        """Teacher must hold active membership in availability.organization."""
+        outsider = BookableTeacherFactory()
+        window = Availability(
+            teacher=outsider,
+            organization=self.org_a,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            window.full_clean()
+        self.assertIn(
+            "teacher_not_active_member", error_codes(ctx.exception, field="teacher")
+        )
+
+    def test_clean_rejects_suspended_membership(self):
+        """Suspended membership does not permit creating availability."""
+        self.membership_a.status = MembershipStatus.SUSPENDED
+        self.membership_a.save()
+
+        window = Availability(
+            teacher=self.teacher,
+            organization=self.org_a,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            window.full_clean()
+        self.assertIn(
+            "teacher_not_active_member", error_codes(ctx.exception, field="teacher")
+        )
+
+    def test_clean_accepts_active_membership(self):
+        """Active membership allows window creation."""
+        window = Availability(
+            teacher=self.teacher,
+            organization=self.org_a,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        window.full_clean()  # should not raise
+        window.save()
+        self.assertEqual(window.organization, self.org_a)
+
+    def test_in_organization_isolates_windows_per_academy(self):
+        """Looking up availability in Academy A never discloses Academy B hours."""
+        w_a = AvailabilityFactory(
+            teacher=self.teacher,
+            organization=self.org_a,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(8, 0),
+            end_time_utc=time(12, 0),
+        )
+        w_b = AvailabilityFactory(
+            teacher=self.teacher,
+            organization=self.org_b,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(14, 0),
+            end_time_utc=time(18, 0),
+        )
+
+        self.assertEqual(
+            list(Availability.objects.in_organization(self.org_a)),
+            [w_a],
+        )
+        self.assertEqual(
+            list(Availability.objects.in_organization(self.org_b)),
+            [w_b],
+        )
+        self.assertEqual(
+            list(Availability.objects.in_organization(self.org_a.pk)),
+            [w_a],
+        )
+
+    def test_cross_academy_availability_cannot_be_consumed_by_booking(self):
+        """An Academy A booking may not succeed merely because Academy B has an
+        availability window covering the requested time (spec Section 6)."""
+        AvailabilityFactory(
+            teacher=self.teacher,
+            organization=self.org_b,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(14, 0),
+            end_time_utc=time(18, 0),
+        )
+        start_utc = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(
+            datetime.combine(start_utc, time(14, 0)), UTC
+        )
+
+        student = StudentFactory()
+        admit(student, self.org_a)
+
+        # Booking in Academy A (level_a belongs to org_a) has no availability in org_a
+        booking = Booking(
+            student=student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn("outside_availability", error_codes(ctx.exception))
+
+    def test_suspended_teacher_membership_makes_availability_unusable(self):
+        """Suspended teacher membership shuts off availability for new bookings (spec Section 44)."""
+        AvailabilityFactory(
+            teacher=self.teacher,
+            organization=self.org_a,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        start_utc = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(
+            datetime.combine(start_utc, time(10, 0)), UTC
+        )
+
+        student = StudentFactory()
+        admit(student, self.org_a)
+
+        # Suspend teacher in org_a
+        self.membership_a.status = MembershipStatus.SUSPENDED
+        self.membership_a.save()
+
+        booking = Booking(
+            student=student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn("outside_availability", error_codes(ctx.exception))
+
+    def test_booking_succeeds_when_teacher_active_in_correct_academy(self):
+        """Booking succeeds when teacher is active and availability belongs to same academy."""
+        AvailabilityFactory(
+            teacher=self.teacher,
+            organization=self.org_a,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        start_utc = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(
+            datetime.combine(start_utc, time(10, 0)), UTC
+        )
+        student = StudentFactory()
+        admit(student, self.org_a)
+
+        booking = Booking(
+            student=student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+        )
+        booking.full_clean()
+        booking.save()
+        self.assertEqual(booking.status, BookingStatus.SCHEDULED)
+        self.assertEqual(booking.organization, self.org_a)
+
+    def test_create_from_local_infers_single_organization(self):
+        """create_from_local infers organization if teacher belongs to exactly one."""
+        single_org_teacher = BookableTeacherFactory()
+        single_org = OrganizationFactory()
+        admit(single_org_teacher, single_org)
+
+        windows = Availability.create_from_local(
+            teacher=single_org_teacher,
+            weekday=Weekday.TUESDAY,
+            start_local=time(10, 0),
+            end_local=time(14, 0),
+        )
+        self.assertTrue(len(windows) > 0)
+        for w in windows:
+            self.assertEqual(w.organization, single_org)
 
 
 class MigrationStateTests(TestCase):

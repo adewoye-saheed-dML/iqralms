@@ -23,15 +23,21 @@ from .models import Availability, Booking, Cohort, TeacherWaitlist, Weekday
 @admin.register(Availability)
 class AvailabilityAdmin(admin.ModelAdmin):
     list_display = (
+        "organization",
         "teacher",
         "weekday",
         "start_time_utc",
         "end_time_utc",
         "teacher_local_window",
     )
-    list_filter = ("weekday", "teacher")
-    search_fields = ("teacher__username", "teacher__email")
-    autocomplete_fields = ("teacher",)
+    list_filter = ("organization", "weekday", "teacher")
+    search_fields = (
+        "organization__name",
+        "organization__slug",
+        "teacher__username",
+        "teacher__email",
+    )
+    autocomplete_fields = ("organization", "teacher")
 
     @admin.display(description="Teacher's local time")
     def teacher_local_window(self, obj):

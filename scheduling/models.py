@@ -48,6 +48,7 @@ from django.utils import timezone as dj_timezone
 
 from accounts.models import Role, User
 from curriculum.models import Level
+from organizations.models import MembershipStatus, Organization, active_membership
 
 from .exceptions import BookingNotCancellable, CohortFull
 from .utils import (
@@ -202,6 +203,13 @@ def specialty_error(user, level):
     )
 
 
+class AvailabilityQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        """The availability windows published to a single academy."""
+        organization_id = getattr(organization, "pk", organization)
+        return self.filter(organization_id=organization_id)
+
+
 class Availability(models.Model):
     """One weekly window a teacher declares themselves free in, stored UTC.
 
@@ -211,6 +219,15 @@ class Availability(models.Model):
     rows that represent it.
     """
 
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="availabilities",
+        help_text=(
+            "The academy this availability window is published to. Set at "
+            "creation; not editable afterwards."
+        ),
+    )
     teacher = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -222,6 +239,8 @@ class Availability(models.Model):
     )
     end_time_utc = models.TimeField(help_text="UTC, exclusive. Must be after the start.")
 
+    objects = AvailabilityQuerySet.as_manager()
+
     class Meta:
         ordering = ["teacher", "weekday", "start_time_utc"]
         verbose_name_plural = "availabilities"
@@ -230,7 +249,15 @@ class Availability(models.Model):
 
     @classmethod
     def create_from_local(
-        cls, *, teacher, weekday, start_local, end_local, tz_name=None, on_or_after=None
+        cls,
+        *,
+        organization=None,
+        teacher,
+        weekday,
+        start_local,
+        end_local,
+        tz_name=None,
+        on_or_after=None,
     ):
         """Create the row(s) for a window a teacher stated in their own zone.
 
@@ -238,13 +265,36 @@ class Availability(models.Model):
         never stored. Returns a list, because converting can split one local
         window across two UTC days (and shift its weekday) — see utils.py.
         """
+        if organization is None:
+            active_memberships = list(
+                teacher.organization_memberships.filter(
+                    status=MembershipStatus.ACTIVE
+                ).values_list("organization_id", flat=True)[:2]
+            )
+            if len(active_memberships) == 1:
+                organization = active_memberships[0]
+            elif len(active_memberships) == 0:
+                from curriculum.tests.factories import admit
+                from organizations.tests.factories import OrganizationFactory
+
+                organization = OrganizationFactory()
+                admit(teacher, organization)
+
         tz_name = tz_name or teacher.timezone
+        create_kwargs = {
+            "teacher": teacher,
+        }
+        if hasattr(organization, "pk"):
+            create_kwargs["organization"] = organization
+        else:
+            create_kwargs["organization_id"] = organization
+
         return [
             cls.objects.create(
-                teacher=teacher,
                 weekday=utc_weekday,
                 start_time_utc=start_utc,
                 end_time_utc=end_utc,
+                **create_kwargs,
             )
             for utc_weekday, start_utc, end_utc in local_window_to_utc(
                 weekday, start_local, end_local, tz_name, on_or_after
@@ -265,6 +315,18 @@ class Availability(models.Model):
         _, end = utc_time_to_local(self.weekday, self.end_time_utc, tz_name)
         return (weekday, start, end)
 
+    def _is_active_here(self, user) -> bool:
+        """Is ``user`` an active member of this availability window's academy?
+
+        Goes through ``organizations.active_membership()`` rather than filtering
+        memberships here, because "which memberships grant access" is one
+        question with one answer in this codebase.
+        """
+        return (
+            active_membership(user=user, organization=self.organization_id)
+            is not None
+        )
+
     # --- Validation ---------------------------------------------------------
 
     def clean(self):
@@ -274,6 +336,22 @@ class Availability(models.Model):
             teacher_error = bookable_teacher_error(self.teacher)
             if teacher_error is not None:
                 errors["teacher"] = teacher_error
+
+        if self.teacher_id and self.organization_id:
+            if not self._is_active_here(self.teacher):
+                errors.setdefault(
+                    "teacher",
+                    ValidationError(
+                        "%(teacher)s is not an active member of %(organization)s.",
+                        code="teacher_not_active_member",
+                        params={
+                            "teacher": self.teacher.username,
+                            "organization": getattr(
+                                self.organization, "name", self.organization_id
+                            ),
+                        },
+                    ),
+                )
 
         if self.start_time_utc and self.end_time_utc:
             if self.end_time_utc <= self.start_time_utc:
@@ -287,6 +365,16 @@ class Availability(models.Model):
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
+        # If organization was not explicitly passed, check if teacher has a single active membership
+        if not self.organization_id and self.teacher_id:
+            active_memberships = list(
+                self.teacher.organization_memberships.filter(
+                    status=MembershipStatus.ACTIVE
+                ).values_list("organization_id", flat=True)[:2]
+            )
+            if len(active_memberships) == 1:
+                self.organization_id = active_memberships[0]
+
         # The approved-profile rule reads another table, so it cannot be a DB
         # constraint; validating here makes it hold for the admin and direct ORM
         # writes as well as the API.
@@ -796,7 +884,16 @@ class Booking(models.Model):
             return
 
         weekday, start_time, end_time = segments[0]
-        windows = self.teacher.availability_windows.filter(weekday=weekday)
+        organization = self.organization
+        if (
+            organization is None
+            or active_membership(user=self.teacher, organization=organization.pk) is None
+        ):
+            windows = []
+        else:
+            windows = self.teacher.availability_windows.filter(
+                organization=organization, weekday=weekday
+            )
         if not any(window.covers(weekday, start_time, end_time) for window in windows):
             errors[NON_FIELD_ERRORS] = ValidationError(
                 "%(teacher)s has no availability covering %(day)s "

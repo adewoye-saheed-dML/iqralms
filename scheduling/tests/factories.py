@@ -32,7 +32,8 @@ from accounts.tests.factories import (
     SubTeacherFactory,
     TeacherProfileFactory,
 )
-from curriculum.tests.factories import GroupEligibleLevelFactory, LevelFactory
+from curriculum.tests.factories import GroupEligibleLevelFactory, LevelFactory, admit
+from organizations.tests.factories import OrganizationFactory
 from scheduling.models import (
     Availability,
     Booking,
@@ -62,6 +63,12 @@ def teaches(teacher, level):
     test asserting the rejection needs to *not* call it.
     """
     teacher.teacher_profile.specialties.add(level.track)
+    if (
+        hasattr(level, "track")
+        and hasattr(level.track, "organization")
+        and level.track.organization is not None
+    ):
+        admit(teacher, level.track.organization)
     return teacher
 
 
@@ -125,10 +132,19 @@ class AvailabilityFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = Availability
 
+    organization = factory.SubFactory(OrganizationFactory)
     teacher = factory.SubFactory(BookableTeacherFactory)
     weekday = DEFAULT_WEEKDAY
     start_time_utc = DEFAULT_WINDOW_START
     end_time_utc = DEFAULT_WINDOW_END
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        teacher = kwargs.get("teacher")
+        organization = kwargs.get("organization")
+        if teacher is not None and organization is not None:
+            admit(teacher, organization)
+        return super()._create(model_class, *args, **kwargs)
 
 
 class BookingFactory(factory.django.DjangoModelFactory):
@@ -141,12 +157,11 @@ class BookingFactory(factory.django.DjangoModelFactory):
 
     class Meta:
         model = Booking
-        exclude = ("availability",)
 
     availability = factory.SubFactory(AvailabilityFactory)
     student = factory.SubFactory(StudentFactory)
     teacher = factory.SelfAttribute("availability.teacher")
-    level = factory.SubFactory(LevelFactory)
+    level = None
     start_time_utc = factory.LazyAttribute(lambda o: slot_at(o.availability))
     duration_minutes = DEFAULT_DURATION_MINUTES
 
@@ -163,9 +178,33 @@ class BookingFactory(factory.django.DjangoModelFactory):
         A test that wants the rejection constructs its ``Booking`` directly and
         simply does not call ``teaches``.
         """
-        teacher, level = kwargs.get("teacher"), kwargs.get("level")
+        availability = kwargs.pop("availability", None)
+        level = kwargs.get("level")
+        teacher = kwargs.get("teacher")
+
+        if availability is not None:
+            if level is None:
+                level = LevelFactory(track__organization=availability.organization)
+                kwargs["level"] = level
+            else:
+                if (
+                    hasattr(level, "track")
+                    and hasattr(level.track, "organization")
+                    and availability.organization_id != level.track.organization_id
+                ):
+                    admit(availability.teacher, level.track.organization)
+                    Availability.objects.filter(pk=availability.pk).update(
+                        organization=level.track.organization
+                    )
+                    availability.organization = level.track.organization
+
+            admit(availability.teacher, availability.organization)
+
         if teacher is not None and level is not None:
             teaches(teacher, level)
+            if hasattr(level, "track") and hasattr(level.track, "organization"):
+                admit(teacher, level.track.organization)
+
         return super()._create(model_class, *args, **kwargs)
 
 
@@ -193,11 +232,10 @@ class CohortFactory(factory.django.DjangoModelFactory):
 
     class Meta:
         model = Cohort
-        exclude = ("availability",)
 
     availability = factory.SubFactory(AvailabilityFactory)
     teacher = factory.SelfAttribute("availability.teacher")
-    level = factory.SubFactory(GroupEligibleLevelFactory)
+    level = None
     max_students = DEFAULT_MAX_STUDENTS
     schedule_start_utc = factory.LazyAttribute(lambda o: slot_at(o.availability))
 
@@ -205,9 +243,35 @@ class CohortFactory(factory.django.DjangoModelFactory):
     def _create(cls, model_class, *args, **kwargs):
         # Cohort.clean() refuses a teacher who does not teach the level's track,
         # for the same reason Booking.clean() does — see BookingFactory._create.
-        teacher, level = kwargs.get("teacher"), kwargs.get("level")
+        availability = kwargs.pop("availability", None)
+        level = kwargs.get("level")
+        teacher = kwargs.get("teacher")
+
+        if availability is not None:
+            if level is None:
+                level = GroupEligibleLevelFactory(
+                    track__organization=availability.organization
+                )
+                kwargs["level"] = level
+            else:
+                if (
+                    hasattr(level, "track")
+                    and hasattr(level.track, "organization")
+                    and availability.organization_id != level.track.organization_id
+                ):
+                    admit(availability.teacher, level.track.organization)
+                    Availability.objects.filter(pk=availability.pk).update(
+                        organization=level.track.organization
+                    )
+                    availability.organization = level.track.organization
+
+            admit(availability.teacher, availability.organization)
+
         if teacher is not None and level is not None:
             teaches(teacher, level)
+            if hasattr(level, "track") and hasattr(level.track, "organization"):
+                admit(teacher, level.track.organization)
+
         return super()._create(model_class, *args, **kwargs)
 
 
@@ -235,12 +299,11 @@ class WaitlistEntryFactory(factory.django.DjangoModelFactory):
 
     class Meta:
         model = TeacherWaitlist
-        exclude = ("availability",)
 
     availability = factory.SubFactory(AvailabilityFactory)
     student = factory.SubFactory(StudentFactory)
     requested_teacher = factory.SelfAttribute("availability.teacher")
-    level = factory.SubFactory(LevelFactory)
+    level = None
     requested_start_utc = factory.LazyAttribute(lambda o: slot_at(o.availability))
     requested_duration_minutes = DEFAULT_DURATION_MINUTES
 
@@ -251,9 +314,33 @@ class WaitlistEntryFactory(factory.django.DjangoModelFactory):
         # entry that could never be promoted would be a trap. Granted here for
         # the same reason BookingFactory does it, and in _create rather than a
         # post_generation hook so it is in place before save().
-        teacher, level = kwargs.get("requested_teacher"), kwargs.get("level")
+        availability = kwargs.pop("availability", None)
+        level = kwargs.get("level")
+        teacher = kwargs.get("requested_teacher")
+
+        if availability is not None:
+            if level is None:
+                level = LevelFactory(track__organization=availability.organization)
+                kwargs["level"] = level
+            else:
+                if (
+                    hasattr(level, "track")
+                    and hasattr(level.track, "organization")
+                    and availability.organization_id != level.track.organization_id
+                ):
+                    admit(availability.teacher, level.track.organization)
+                    Availability.objects.filter(pk=availability.pk).update(
+                        organization=level.track.organization
+                    )
+                    availability.organization = level.track.organization
+
+            admit(availability.teacher, availability.organization)
+
         if teacher is not None and level is not None:
             teaches(teacher, level)
+            if hasattr(level, "track") and hasattr(level.track, "organization"):
+                admit(teacher, level.track.organization)
+
         return super()._create(model_class, *args, **kwargs)
 
 
