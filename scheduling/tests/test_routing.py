@@ -19,6 +19,7 @@ needs ``TransactionTestCase``.
 
 from datetime import time, timedelta
 
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone as dj_timezone
 
@@ -27,7 +28,13 @@ from accounts.tests.factories import (
     ParentLinkFactory,
     StudentFactory,
 )
-from curriculum.tests.factories import GroupEligibleLevelFactory, LevelFactory
+from curriculum.tests.factories import (
+    GroupEligibleLevelFactory,
+    LevelFactory,
+    TrackFactory,
+    admit,
+)
+from organizations.tests.factories import OrganizationFactory
 from scheduling.exceptions import NoCapacity
 from scheduling.models import (
     Availability,
@@ -35,6 +42,7 @@ from scheduling.models import (
     BookingStatus,
     RoutedReason,
     TeacherBookingLock,
+    TeacherWaitlist,
     weekly_committed_minutes,
 )
 from scheduling.routing import lead_teacher, matching_sub_teachers, route_session
@@ -44,6 +52,7 @@ from .factories import (
     BookableLeadTeacherFactory,
     BookableTeacherFactory,
     CohortFactory,
+    ensure_teacher_configured,
     teaches,
 )
 from .test_models import unapprove
@@ -93,6 +102,14 @@ class RoutingWorld:
         profile = teacher.teacher_profile
         profile.max_weekly_hours = hours
         profile.save()
+        if hasattr(self, "level") and getattr(getattr(self.level, "track", None), "organization", None):
+            org = self.level.track.organization
+            ensure_teacher_configured(teacher, org)
+            from accounts.models import OrganizationTeacherConfiguration
+
+            OrganizationTeacherConfiguration.objects.filter(
+                membership__user=teacher, membership__organization=org
+            ).update(max_weekly_hours=hours)
         if teaches_level:
             teaches(teacher, self.level)
         return teacher
@@ -104,9 +121,13 @@ class RoutingWorld:
         maximal — a routing failure then always means capacity, specialty or a
         clash, never "nobody had declared hours".
         """
+        org = None
+        if hasattr(self, "level") and getattr(getattr(self.level, "track", None), "organization", None):
+            org = self.level.track.organization
         for weekday in range(7):
             Availability.objects.create(
                 teacher=teacher,
+                organization=org,
                 weekday=weekday,
                 start_time_utc=time(0, 0),
                 end_time_utc=time.max,
@@ -123,7 +144,8 @@ class RoutingWorld:
         """
         teacher = self.free_all_week(self.make_teacher(**kwargs))
         if not approved:
-            teacher = unapprove(teacher)
+            org = getattr(getattr(self.level, "track", None), "organization", None)
+            teacher = unapprove(teacher, organization=org)
         return teacher
 
     def fill_week(self, teacher, minutes):
@@ -135,10 +157,14 @@ class RoutingWorld:
         """
         placed = 0
         hour = 0
+        org = getattr(getattr(self.level, "track", None), "organization", None)
         while placed < minutes:
             chunk = min(60, minutes - placed)
+            student = StudentFactory()
+            if org:
+                admit(student, org)
             Booking.objects.create(
-                student=StudentFactory(),
+                student=student,
                 teacher=teacher,
                 level=self.level,
                 start_time_utc=self.slot + timedelta(days=1, hours=hour),
@@ -146,8 +172,24 @@ class RoutingWorld:
             )
             placed += chunk
             hour += 2
-        assert weekly_committed_minutes(teacher.pk, self.slot) == minutes
+        assert (
+            weekly_committed_minutes(teacher.pk, self.slot, organization=org)
+            == minutes
+        )
         return teacher
+
+    def book(self, *, student=None, teacher=None, level=None, **kwargs):
+        level = level or self.level
+        student = student or StudentFactory()
+        org = getattr(getattr(level, "track", None), "organization", None)
+        if org:
+            admit(student, org)
+        return Booking.objects.create(
+            student=student,
+            teacher=teacher,
+            level=level,
+            **kwargs,
+        )
 
     def route(self, **overrides):
         kwargs = {
@@ -157,6 +199,12 @@ class RoutingWorld:
             "duration_minutes": 30,
         }
         kwargs.update(overrides)
+        org = getattr(getattr(kwargs["level"], "track", None), "organization", None)
+        if org and kwargs.get("student"):
+            from organizations.models import active_membership
+
+            if active_membership(user=kwargs["student"], organization=org) is None:
+                admit(kwargs["student"], org)
         return route_session(**kwargs)
 
 
@@ -282,7 +330,10 @@ class RouteToCohortTests(RoutingWorld, TestCase):
         self.assertIsNone(routed.booking.cohort)
 
     def test_a_non_group_eligible_level_never_routes_to_a_cohort(self):
-        plain = LevelFactory(group_eligible=False)
+        plain = LevelFactory(
+            track__organization=self.level.track.organization,
+            group_eligible=False,
+        )
         teaches(self.lead, plain)
 
         routed = self.route(level=plain)
@@ -371,8 +422,10 @@ class RouteToLeadTests(RoutingWorld, TestCase):
     def test_the_lead_is_skipped_outside_their_declared_hours(self):
         """No hours on that day, so step 2 declines and a sub takes it."""
         self.lead.availability_windows.all().delete()
+        org = getattr(getattr(self.level, "track", None), "organization", None)
         Availability.objects.create(
             teacher=self.lead,
+            organization=org,
             weekday=(self.slot.weekday() + 1) % 7,
             start_time_utc=time(0, 0),
             end_time_utc=time.max,
@@ -390,10 +443,8 @@ class RouteToLeadTests(RoutingWorld, TestCase):
         )
 
     def test_the_lead_is_skipped_when_already_booked_at_that_time(self):
-        Booking.objects.create(
-            student=StudentFactory(),
+        self.book(
             teacher=self.lead,
-            level=self.level,
             start_time_utc=self.slot,
         )
         sub = self.available_teacher()
@@ -405,7 +456,7 @@ class RouteToLeadTests(RoutingWorld, TestCase):
 
     def test_the_lead_is_skipped_for_a_level_they_do_not_teach(self):
         """Specialties gate the lead as much as anyone."""
-        other = LevelFactory()
+        other = LevelFactory(track__organization=self.level.track.organization)
         sub = self.available_teacher()
         teaches(sub, other)
 
@@ -539,10 +590,8 @@ class RouteToSubTests(RoutingWorld, TestCase):
     def test_a_sub_already_booked_at_that_time_is_not_selected(self):
         self.fill_week(self.lead, 60)
         busy = self.available_teacher(hours=10)
-        Booking.objects.create(
-            student=StudentFactory(),
+        self.book(
             teacher=busy,
-            level=self.level,
             start_time_utc=self.slot,
         )
         free = self.available_teacher(hours=10)
@@ -627,10 +676,12 @@ class NoCapacityTests(RoutingWorld, TestCase):
     def test_nobody_free_at_that_hour_is_a_failure_not_a_booking_outside_hours(self):
         lead = self.available_teacher(lead=True)
         sub = self.available_teacher()
+        org = getattr(getattr(self.level, "track", None), "organization", None)
         for teacher in (lead, sub):
             teacher.availability_windows.all().delete()
             Availability.objects.create(
                 teacher=teacher,
+                organization=org,
                 weekday=self.slot.weekday(),
                 start_time_utc=time(3, 0),
                 end_time_utc=time(4, 0),
@@ -765,3 +816,204 @@ class RoutedBookingsAreOrdinaryBookingsTests(RoutingWorld, TestCase):
         cohort.refresh_from_db()
         self.assertIn(self.student, cohort.students.all())
         self.assertEqual(cohort.seats_taken, 1)
+
+
+class RoutingTenancyTests(TestCase):
+    """SaaS Phase 4 Task 4.7: Candidate routing and preferred-teacher resolution are academy-scoped."""
+
+    def setUp(self):
+        self.org_a = OrganizationFactory(name="Academy A")
+        self.org_b = OrganizationFactory(name="Academy B")
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_a = LevelFactory(track=self.track_a)
+        self.level_b = LevelFactory(track=self.track_b)
+        self.student_a = StudentFactory()
+        admit(self.student_a, self.org_a)
+        self.student_b = StudentFactory()
+        admit(self.student_b, self.org_b)
+        self.slot = next_monday() + timedelta(hours=10)
+
+    def test_lead_teacher_scoped_to_academy(self):
+        """Lead candidate resolution searches only active members of target academy."""
+        lead_a = BookableLeadTeacherFactory()
+        ensure_teacher_configured(lead_a, self.org_a)
+        teaches(lead_a, self.level_a)
+
+        lead_b = BookableLeadTeacherFactory()
+        ensure_teacher_configured(lead_b, self.org_b)
+        teaches(lead_b, self.level_b)
+
+        self.assertEqual(
+            lead_teacher(organization=self.org_a, track=self.track_a), lead_a
+        )
+        self.assertEqual(
+            lead_teacher(organization=self.org_b, track=self.track_b), lead_b
+        )
+        self.assertIsNone(
+            lead_teacher(organization=self.org_a, track=self.track_b)
+        )
+
+    def test_sub_teacher_scoped_to_academy(self):
+        """Sub-teacher candidate resolution matches only within target academy."""
+        sub_a = BookableTeacherFactory()
+        ensure_teacher_configured(sub_a, self.org_a)
+        teaches(sub_a, self.level_a)
+
+        sub_b = BookableTeacherFactory()
+        ensure_teacher_configured(sub_b, self.org_b)
+        teaches(sub_b, self.level_b)
+
+        self.assertEqual(
+            list(matching_sub_teachers(self.level_a, organization=self.org_a)),
+            [sub_a],
+        )
+        self.assertEqual(
+            list(matching_sub_teachers(self.level_b, organization=self.org_b)),
+            [sub_b],
+        )
+        self.assertEqual(
+            list(matching_sub_teachers(self.level_a, organization=self.org_b)),
+            [],
+        )
+
+    def test_route_session_does_not_borrow_lead_from_another_academy(self):
+        """Academy A route request raises NoCapacity when A has no lead, even if B has an available lead."""
+        lead_b = BookableLeadTeacherFactory()
+        ensure_teacher_configured(lead_b, self.org_b)
+        teaches(lead_b, self.level_b)
+        Availability.objects.create(
+            teacher=lead_b,
+            organization=self.org_b,
+            weekday=self.slot.weekday(),
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+
+        with self.assertRaises(NoCapacity):
+            route_session(
+                student=self.student_a,
+                level=self.level_a,
+                start_time_utc=self.slot,
+                organization=self.org_a,
+            )
+
+    def test_route_session_does_not_borrow_sub_from_another_academy(self):
+        """Academy A route request raises NoCapacity when A has no sub, even if B has a free sub."""
+        sub_b = BookableTeacherFactory()
+        ensure_teacher_configured(sub_b, self.org_b)
+        teaches(sub_b, self.level_b)
+        Availability.objects.create(
+            teacher=sub_b,
+            organization=self.org_b,
+            weekday=self.slot.weekday(),
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+
+        with self.assertRaises(NoCapacity):
+            route_session(
+                student=self.student_a,
+                level=self.level_a,
+                start_time_utc=self.slot,
+                organization=self.org_a,
+            )
+
+    def test_route_session_does_not_borrow_cohort_from_another_academy(self):
+        """Academy A route request does not borrow an open cohort belonging to Academy B."""
+        level_a_group = GroupEligibleLevelFactory(track=self.track_a)
+        level_b_group = GroupEligibleLevelFactory(track=self.track_b)
+        teacher_b = BookableTeacherFactory()
+        ensure_teacher_configured(teacher_b, self.org_b)
+        teaches(teacher_b, level_b_group)
+        avail_b = Availability.objects.create(
+            teacher=teacher_b,
+            organization=self.org_b,
+            weekday=self.slot.weekday(),
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+        CohortFactory(
+            availability=avail_b,
+            teacher=teacher_b,
+            level=level_b_group,
+            schedule_start_utc=self.slot,
+            max_students=6,
+        )
+
+        with self.assertRaises(NoCapacity):
+            route_session(
+                student=self.student_a,
+                level=level_a_group,
+                start_time_utc=self.slot,
+                organization=self.org_a,
+            )
+
+    def test_preferred_teacher_from_another_academy_rejected_no_waitlist(self):
+        """Teacher belonging only to Academy B is rejected outright in Academy A; no waitlist created."""
+        teacher_b = BookableTeacherFactory()
+        ensure_teacher_configured(teacher_b, self.org_b)
+        teaches(teacher_b, self.level_b)
+        Availability.objects.create(
+            teacher=teacher_b,
+            organization=self.org_b,
+            weekday=self.slot.weekday(),
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            route_session(
+                student=self.student_a,
+                level=self.level_a,
+                start_time_utc=self.slot,
+                preferred_teacher=teacher_b,
+                organization=self.org_a,
+            )
+        self.assertIn("teacher", ctx.exception.error_dict)
+        self.assertEqual(
+            ctx.exception.error_dict["teacher"][0].code,
+            "teacher_not_active_member",
+        )
+        self.assertFalse(TeacherWaitlist.objects.exists())
+
+    def test_preferred_teacher_in_academy_temporarily_unavailable_creates_waitlist(self):
+        """Teacher belonging to Academy A who has no availability at requested slot waitlists."""
+        teacher_a = BookableTeacherFactory()
+        ensure_teacher_configured(teacher_a, self.org_a)
+        teaches(teacher_a, self.level_a)
+        Availability.objects.create(
+            teacher=teacher_a,
+            organization=self.org_a,
+            weekday=(self.slot.weekday() + 1) % 7,
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+
+        with self.assertRaises(NoCapacity) as ctx:
+            route_session(
+                student=self.student_a,
+                level=self.level_a,
+                start_time_utc=self.slot,
+                preferred_teacher=teacher_a,
+                organization=self.org_a,
+            )
+        self.assertIn("waitlist", ctx.exception.considered)
+        self.assertTrue(
+            TeacherWaitlist.objects.filter(
+                student=self.student_a,
+                requested_teacher=teacher_a,
+                level=self.level_a,
+            ).exists()
+        )
+
+    def test_route_session_mismatched_organization_rejected(self):
+        """Passing level from Academy B with explicit organization Academy A raises ValidationError."""
+        with self.assertRaises(ValidationError) as ctx:
+            route_session(
+                student=self.student_a,
+                level=self.level_b,
+                start_time_utc=self.slot,
+                organization=self.org_a,
+            )
+        self.assertIn("level", ctx.exception.error_dict)

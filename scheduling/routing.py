@@ -171,15 +171,32 @@ def _candidate(*, student, teacher, level, start_time_utc, duration_minutes, rea
     return booking, None
 
 
-def lead_teacher():
+def lead_teacher(organization=None, track=None):
     """The academy's lead teacher, or None if there isn't a bookable one.
 
-    ``role`` and ``TeacherProfile.is_lead`` duplicate each other and are
-    validated to agree (learnings.md), so filtering on both is belt-and-braces
-    rather than two conditions. Ordered by pk because nothing yet stops a second
-    lead existing — that is a known gap in tech-debt.md, and routing picking
-    arbitrarily would make it a silent one.
+    SaaS Phase 4: Lead candidate resolution is academy-scoped.
+    Required candidate conditions:
+    - User.role == Role.LEAD
+    - active membership in organization
+    - approved OrganizationTeacherConfiguration
+    - active TeacherTrack for requested track (if track provided)
     """
+    if organization is not None:
+        from organizations.models import MembershipStatus
+
+        qs = User.objects.filter(
+            role=Role.LEAD,
+            organization_memberships__organization=organization,
+            organization_memberships__status=MembershipStatus.ACTIVE,
+            organization_memberships__teacher_configuration__approved=True,
+        )
+        if track is not None:
+            qs = qs.filter(
+                organization_memberships__teacher_tracks__track=track,
+                organization_memberships__teacher_tracks__active=True,
+            )
+        return qs.order_by("pk").distinct().first()
+
     return (
         User.objects.filter(
             role=Role.LEAD,
@@ -192,12 +209,35 @@ def lead_teacher():
     )
 
 
-def matching_sub_teachers(level):
-    """Approved sub-teachers who specialise in ``level``'s track.
+def matching_sub_teachers(level, organization=None):
+    """Approved sub-teachers who specialise in ``level``'s track in ``organization``.
 
-    Specialty is filtered in SQL because it is the cheap discriminator; hours,
-    clashes and capacity are per-candidate and are left to ``_candidate``.
+    SaaS Phase 4: Sub-teacher candidate resolution is academy-scoped using TeacherTrack.
+    Candidate conditions:
+    - User.role == Role.SUB
+    - active organization membership
+    - approved organization teacher configuration
+    - active TeacherTrack for requested track
     """
+    if organization is None and hasattr(level, "track") and hasattr(level.track, "organization"):
+        organization = level.track.organization
+
+    if organization is not None:
+        from organizations.models import MembershipStatus
+
+        return (
+            User.objects.filter(
+                role=Role.SUB,
+                organization_memberships__organization=organization,
+                organization_memberships__status=MembershipStatus.ACTIVE,
+                organization_memberships__teacher_configuration__approved=True,
+                organization_memberships__teacher_tracks__track=level.track,
+                organization_memberships__teacher_tracks__active=True,
+            )
+            .distinct()
+            .order_by("pk")
+        )
+
     return (
         User.objects.filter(
             role=Role.SUB,
@@ -244,7 +284,7 @@ def _waitlist(*, student, teacher, level, start_time_utc, duration_minutes, why_
     )
 
 
-def _resolve_preferred(*, student, teacher, level, start_time_utc, duration_minutes):
+def _resolve_preferred(*, student, teacher, level, start_time_utc, duration_minutes, organization=None):
     """The whole preferred-teacher path (Phase 5). Returns a ``Routed`` or raises.
 
     The spec's four steps, in order:
@@ -321,7 +361,7 @@ def _resolve_preferred(*, student, teacher, level, start_time_utc, duration_minu
     raise as_validation_error(why_not)
 
 
-def _route_to_cohort(*, student, level, start_time_utc, duration_minutes):
+def _route_to_cohort(*, student, level, start_time_utc, duration_minutes, organization=None):
     """Step 1. Returns ``((booking, cohort) | None, why_not)``.
 
     ``why_not`` is filled in whether or not the step succeeds, so a caller can
@@ -332,6 +372,11 @@ def _route_to_cohort(*, student, level, start_time_utc, duration_minutes):
         return None, f"{level} is not group-eligible, so it cannot run as a cohort."
 
     open_cohorts = Cohort.open_near(level, start_time_utc)
+    if organization is not None:
+        open_cohorts = [
+            c for c in open_cohorts
+            if getattr(c, "organization", None) == organization
+        ]
     if not open_cohorts:
         return None, "No open cohort for that level starts near the requested time."
 
@@ -374,9 +419,12 @@ def _route_to_cohort(*, student, level, start_time_utc, duration_minutes):
     return None, rejected
 
 
-def _route_to_lead(*, student, level, start_time_utc, duration_minutes):
+def _route_to_lead(*, student, level, start_time_utc, duration_minutes, organization=None):
     """Step 2. Returns ``(booking | None, why_not)``."""
-    lead = lead_teacher()
+    if organization is None and hasattr(level, "track") and hasattr(level.track, "organization"):
+        organization = level.track.organization
+    track = getattr(level, "track", None)
+    lead = lead_teacher(organization=organization, track=track)
     if lead is None:
         return None, "No approved lead teacher exists."
     booking, why_not = _candidate(
@@ -390,7 +438,7 @@ def _route_to_lead(*, student, level, start_time_utc, duration_minutes):
     return booking, ({} if why_not is None else {lead.username: why_not})
 
 
-def _route_to_sub(*, student, level, start_time_utc, duration_minutes):
+def _route_to_sub(*, student, level, start_time_utc, duration_minutes, organization=None):
     """Step 3. Returns ``(booking | None, why_not)``.
 
     Every specialty match is tested, then the eligible ones are ranked by
@@ -402,7 +450,9 @@ def _route_to_sub(*, student, level, start_time_utc, duration_minutes):
     The teachers who were ruled out come back even when one is chosen, so a caller
     can report who was considered rather than only who won.
     """
-    subs = list(matching_sub_teachers(level))
+    if organization is None and hasattr(level, "track") and hasattr(level.track, "organization"):
+        organization = level.track.organization
+    subs = list(matching_sub_teachers(level, organization=organization))
     if not subs:
         return None, f"No approved sub-teacher specialises in {level.track.name}."
 
@@ -419,7 +469,13 @@ def _route_to_sub(*, student, level, start_time_utc, duration_minutes):
         )
         if why_not is None:
             eligible.append(
-                (remaining_weekly_minutes(sub, start_time_utc), -sub.pk, booking)
+                (
+                    remaining_weekly_minutes(
+                        sub, start_time_utc, organization=organization
+                    ),
+                    -sub.pk,
+                    booking,
+                )
             )
         else:
             rejected[sub.username] = why_not
@@ -433,7 +489,15 @@ def _route_to_sub(*, student, level, start_time_utc, duration_minutes):
     return eligible[0][2], rejected
 
 
-def route_session(*, student, level, start_time_utc, duration_minutes=None, preferred_teacher=None):
+def route_session(
+    *,
+    student,
+    level,
+    start_time_utc,
+    duration_minutes=None,
+    preferred_teacher=None,
+    organization=None,
+):
     """Assign a teacher for ``student`` at ``start_time_utc`` and book it.
 
     Returns a ``Routed`` describing what was decided. Raises ``NoCapacity`` when
@@ -465,6 +529,24 @@ def route_session(*, student, level, start_time_utc, duration_minutes=None, pref
     than being quietly reassigned to a teacher the student was never matched
     with.
     """
+    if (
+        organization is None
+        and hasattr(level, "track")
+        and hasattr(level.track, "organization")
+    ):
+        organization = level.track.organization
+
+    if (
+        organization is not None
+        and hasattr(level, "track")
+        and hasattr(level.track, "organization")
+        and level.track.organization is not None
+        and level.track.organization != organization
+    ):
+        raise ValidationError(
+            {"level": [f"{level} does not belong to {getattr(organization, 'name', organization)}."]}
+        )
+
     duration_minutes = duration_minutes or DEFAULT_DURATION_MINUTES
     considered = {}
     common = {
@@ -472,6 +554,7 @@ def route_session(*, student, level, start_time_utc, duration_minutes=None, pref
         "level": level,
         "start_time_utc": start_time_utc,
         "duration_minutes": duration_minutes,
+        "organization": organization,
     }
 
     if preferred_teacher is not None:
