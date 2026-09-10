@@ -65,6 +65,7 @@ from .factories import (
     CompletedBookingFactory,
     UnapprovedTeacherFactory,
     WaitlistEntryFactory,
+    ensure_teacher_configured,
     slot_at,
     teaches,
 )
@@ -98,7 +99,7 @@ def age_booking(booking, age):
     return booking
 
 
-def unapprove(teacher):
+def unapprove(teacher, organization=None):
     """Withdraw approval from a teacher who already has availability.
 
     Criterion 4 needs a teacher who *has* declared hours but is not approved,
@@ -106,9 +107,20 @@ def unapprove(teacher):
     against an unapproved teacher. Building it approved and then flipping the
     flag is the same order it happens in real life, when a lead revokes someone.
     """
-    profile = teacher.teacher_profile
-    profile.approved = False
-    profile.save()
+    profile = getattr(teacher, "teacher_profile", None)
+    if profile is not None:
+        profile.approved = False
+        profile.save()
+    from accounts.models import OrganizationTeacherConfiguration
+
+    memberships = teacher.organization_memberships.all()
+    if organization is not None:
+        memberships = memberships.filter(organization=organization)
+    for m in memberships:
+        OrganizationTeacherConfiguration.objects.update_or_create(
+            membership=m,
+            defaults={"approved": False},
+        )
     teacher.refresh_from_db()
     return teacher
 
@@ -120,7 +132,7 @@ class AvailabilityModelTests(TestCase):
 
         organization = OrganizationFactory()
         teacher = BookableTeacherFactory()
-        admit(teacher, organization)
+        ensure_teacher_configured(teacher, organization)
         window = Availability.objects.create(
             organization=organization,
             teacher=teacher,
@@ -506,11 +518,13 @@ class BookingAvailabilityRulesTests(TestCase):
 
     def test_a_booking_against_a_teacher_with_no_availability_is_rejected(self):
         other = BookableTeacherFactory()
+        level = LevelFactory(track__organization=self.window.organization)
+        teaches(other, level)
         with self.assertRaises(ValidationError) as ctx:
             Booking.objects.create(
                 student=StudentFactory(),
                 teacher=other,
-                level=LevelFactory(),
+                level=level,
                 start_time_utc=slot_at(self.window),
             )
         self.assertEqual(error_codes(ctx.exception), ["outside_availability"])
@@ -520,15 +534,18 @@ class BookingAvailabilityRulesTests(TestCase):
         other = BookableTeacherFactory()
         AvailabilityFactory(
             teacher=other,
+            organization=self.window.organization,
             weekday=Weekday.MONDAY,
             start_time_utc=time(3, 0),
             end_time_utc=time(4, 0),
         )
+        level = LevelFactory(track__organization=self.window.organization)
+        teaches(self.teacher, level)
         with self.assertRaises(ValidationError) as ctx:
             Booking.objects.create(
                 student=StudentFactory(),
                 teacher=self.teacher,
-                level=LevelFactory(),
+                level=level,
                 start_time_utc=slot_at(self.window, -6 * 60),  # 03:00, other's window
             )
         self.assertEqual(error_codes(ctx.exception), ["outside_availability"])
@@ -1276,7 +1293,9 @@ class AvailabilityTenancyTests(TestCase):
         )
         with self.assertRaises(ValidationError) as ctx:
             booking.full_clean()
-        self.assertIn("outside_availability", error_codes(ctx.exception))
+        self.assertIn(
+            "teacher_not_active_member", error_codes(ctx.exception, field="teacher")
+        )
 
     def test_booking_succeeds_when_teacher_active_in_correct_academy(self):
         """Booking succeeds when teacher is active and availability belongs to same academy."""
@@ -1309,7 +1328,7 @@ class AvailabilityTenancyTests(TestCase):
         """create_from_local infers organization if teacher belongs to exactly one."""
         single_org_teacher = BookableTeacherFactory()
         single_org = OrganizationFactory()
-        admit(single_org_teacher, single_org)
+        ensure_teacher_configured(single_org_teacher, single_org)
 
         windows = Availability.create_from_local(
             teacher=single_org_teacher,
@@ -1320,6 +1339,137 @@ class AvailabilityTenancyTests(TestCase):
         self.assertTrue(len(windows) > 0)
         for w in windows:
             self.assertEqual(w.organization, single_org)
+
+
+class TeacherConfigurationTenancyTests(TestCase):
+    """SaaS Phase 4 Task 4.4 — OrganizationTeacherConfiguration approval and validation."""
+
+    def setUp(self):
+        from accounts.models import OrganizationTeacherConfiguration
+
+        self.org_a = OrganizationFactory(name="Academy A", slug="academy-a")
+        self.org_b = OrganizationFactory(name="Academy B", slug="academy-b")
+
+        self.teacher = BookableTeacherFactory()
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.level_a = LevelFactory(track=self.track_a)
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_b = LevelFactory(track=self.track_b)
+
+        # Admitted and configured in A as approved
+        ensure_teacher_configured(self.teacher, self.org_a)
+        teaches(self.teacher, self.level_a)
+
+        # Admitted in B but configured as unapproved
+        m_b = admit(self.teacher, self.org_b)
+        OrganizationTeacherConfiguration.objects.update_or_create(
+            membership=m_b,
+            defaults={"approved": False, "max_weekly_hours": 10},
+        )
+        teaches(self.teacher, self.level_b)
+
+    def test_teacher_approved_in_a_can_be_booked_in_a(self):
+        """Spec Section 13: Teacher T approved in A can be booked by A."""
+        AvailabilityFactory(
+            teacher=self.teacher,
+            organization=self.org_a,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        student_a = StudentFactory()
+        admit(student_a, self.org_a)
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=student_a,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        booking.full_clean()
+        booking.save()
+        self.assertEqual(booking.status, BookingStatus.SCHEDULED)
+        self.assertEqual(booking.organization, self.org_a)
+
+    def test_teacher_unapproved_in_b_cannot_be_booked_in_b(self):
+        """Spec Section 13: Teacher T unapproved in B cannot be booked by B."""
+        from accounts.models import OrganizationTeacherConfiguration
+
+        config_b = OrganizationTeacherConfiguration.objects.get(
+            membership__user=self.teacher, membership__organization=self.org_b
+        )
+        config_b.approved = True
+        config_b.save()
+
+        Availability.objects.filter(
+            teacher=self.teacher, organization=self.org_b
+        ).delete()
+        Availability.objects.create(
+            teacher=self.teacher,
+            organization=self.org_b,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+
+        # Now revoke approval in Academy B
+        config_b.approved = False
+        config_b.save()
+
+        student_b = StudentFactory()
+        admit(student_b, self.org_b)
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=student_b,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn(
+            "teacher_not_approved", error_codes(ctx.exception, field="teacher")
+        )
+
+    def test_teacher_without_configuration_is_rejected(self):
+        """Spec Section 16: Missing configuration in academy is rejected with teacher_not_configured."""
+        from accounts.models import OrganizationTeacherConfiguration
+
+        org_c = OrganizationFactory(name="Academy C", slug="academy-c")
+        track_c = TrackFactory(organization=org_c)
+        level_c = LevelFactory(track=track_c)
+        admit(self.teacher, org_c)
+        self.teacher.teacher_profile.specialties.add(track_c)
+        # Ensure no configuration exists in org_c
+        OrganizationTeacherConfiguration.objects.filter(
+            membership__user=self.teacher, membership__organization=org_c
+        ).delete()
+
+        student_c = StudentFactory()
+        admit(student_c, org_c)
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=student_c,
+            teacher=self.teacher,
+            level=level_c,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn(
+            "teacher_not_configured", error_codes(ctx.exception, field="teacher")
+        )
 
 
 class MigrationStateTests(TestCase):

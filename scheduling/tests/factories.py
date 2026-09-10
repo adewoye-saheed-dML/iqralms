@@ -68,7 +68,7 @@ def teaches(teacher, level):
         and hasattr(level.track, "organization")
         and level.track.organization is not None
     ):
-        admit(teacher, level.track.organization)
+        ensure_teacher_configured(teacher, level.track.organization)
     return teacher
 
 
@@ -126,6 +126,34 @@ class BookableLeadTeacherFactory(LeadTeacherFactory):
         )
 
 
+def ensure_teacher_configured(teacher, organization):
+    """Ensure teacher has active membership and OrganizationTeacherConfiguration."""
+    if teacher is None or organization is None:
+        return
+    if not getattr(teacher, "is_teacher", False):
+        return
+    admit(teacher, organization)
+    from accounts.models import OrganizationTeacherConfiguration
+
+    memberships = getattr(teacher, "organization_memberships", None)
+    if memberships is not None:
+        m = memberships.filter(organization=organization).first()
+        if (
+            m
+            and not OrganizationTeacherConfiguration.objects.filter(
+                membership=m
+            ).exists()
+        ):
+            profile = getattr(teacher, "teacher_profile", None)
+            approved = getattr(profile, "approved", True)
+            max_hours = getattr(profile, "max_weekly_hours", 20) or 20
+            OrganizationTeacherConfiguration.objects.create(
+                membership=m,
+                approved=approved,
+                max_weekly_hours=max_hours,
+            )
+
+
 class AvailabilityFactory(factory.django.DjangoModelFactory):
     """One declared window, Monday 09:00-17:00 UTC unless told otherwise."""
 
@@ -143,7 +171,7 @@ class AvailabilityFactory(factory.django.DjangoModelFactory):
         teacher = kwargs.get("teacher")
         organization = kwargs.get("organization")
         if teacher is not None and organization is not None:
-            admit(teacher, organization)
+            ensure_teacher_configured(teacher, organization)
         return super()._create(model_class, *args, **kwargs)
 
 
@@ -182,6 +210,17 @@ class BookingFactory(factory.django.DjangoModelFactory):
         level = kwargs.get("level")
         teacher = kwargs.get("teacher")
 
+        if teacher is not None and availability is not None and availability.teacher != teacher:
+            existing = teacher.availability_windows.first()
+            if existing is not None:
+                availability = existing
+                if "start_time_utc" not in kwargs:
+                    kwargs["start_time_utc"] = slot_at(existing)
+            else:
+                availability.teacher = teacher
+                ensure_teacher_configured(teacher, availability.organization)
+                availability.save()
+
         if availability is not None:
             if level is None:
                 level = LevelFactory(track__organization=availability.organization)
@@ -192,18 +231,22 @@ class BookingFactory(factory.django.DjangoModelFactory):
                     and hasattr(level.track, "organization")
                     and availability.organization_id != level.track.organization_id
                 ):
-                    admit(availability.teacher, level.track.organization)
+                    ensure_teacher_configured(
+                        availability.teacher, level.track.organization
+                    )
                     Availability.objects.filter(pk=availability.pk).update(
                         organization=level.track.organization
                     )
                     availability.organization = level.track.organization
 
-            admit(availability.teacher, availability.organization)
+            ensure_teacher_configured(
+                availability.teacher, availability.organization
+            )
 
         if teacher is not None and level is not None:
             teaches(teacher, level)
             if hasattr(level, "track") and hasattr(level.track, "organization"):
-                admit(teacher, level.track.organization)
+                ensure_teacher_configured(teacher, level.track.organization)
 
         return super()._create(model_class, *args, **kwargs)
 
@@ -247,6 +290,17 @@ class CohortFactory(factory.django.DjangoModelFactory):
         level = kwargs.get("level")
         teacher = kwargs.get("teacher")
 
+        if teacher is not None and availability is not None and availability.teacher != teacher:
+            existing = teacher.availability_windows.first()
+            if existing is not None:
+                availability = existing
+                if "schedule_start_utc" not in kwargs:
+                    kwargs["schedule_start_utc"] = slot_at(existing)
+            else:
+                availability.teacher = teacher
+                ensure_teacher_configured(teacher, availability.organization)
+                availability.save()
+
         if availability is not None:
             if level is None:
                 level = GroupEligibleLevelFactory(
@@ -259,18 +313,22 @@ class CohortFactory(factory.django.DjangoModelFactory):
                     and hasattr(level.track, "organization")
                     and availability.organization_id != level.track.organization_id
                 ):
-                    admit(availability.teacher, level.track.organization)
+                    ensure_teacher_configured(
+                        availability.teacher, level.track.organization
+                    )
                     Availability.objects.filter(pk=availability.pk).update(
                         organization=level.track.organization
                     )
                     availability.organization = level.track.organization
 
-            admit(availability.teacher, availability.organization)
+            ensure_teacher_configured(
+                availability.teacher, availability.organization
+            )
 
         if teacher is not None and level is not None:
             teaches(teacher, level)
             if hasattr(level, "track") and hasattr(level.track, "organization"):
-                admit(teacher, level.track.organization)
+                ensure_teacher_configured(teacher, level.track.organization)
 
         return super()._create(model_class, *args, **kwargs)
 
@@ -328,18 +386,22 @@ class WaitlistEntryFactory(factory.django.DjangoModelFactory):
                     and hasattr(level.track, "organization")
                     and availability.organization_id != level.track.organization_id
                 ):
-                    admit(availability.teacher, level.track.organization)
+                    ensure_teacher_configured(
+                        availability.teacher, level.track.organization
+                    )
                     Availability.objects.filter(pk=availability.pk).update(
                         organization=level.track.organization
                     )
                     availability.organization = level.track.organization
 
-            admit(availability.teacher, availability.organization)
+            ensure_teacher_configured(
+                availability.teacher, availability.organization
+            )
 
         if teacher is not None and level is not None:
             teaches(teacher, level)
             if hasattr(level, "track") and hasattr(level.track, "organization"):
-                admit(teacher, level.track.organization)
+                ensure_teacher_configured(teacher, level.track.organization)
 
         return super()._create(model_class, *args, **kwargs)
 

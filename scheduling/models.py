@@ -145,7 +145,40 @@ def generate_video_room_name() -> str:
     return f"{VIDEO_ROOM_PREFIX}{uuid.uuid4().hex}"
 
 
-def bookable_teacher_error(user):
+def get_teacher_configuration(teacher, organization=None):
+    """Retrieve OrganizationTeacherConfiguration for a teacher in an organization.
+
+    If organization is None and the teacher has exactly one active membership,
+    that configuration is returned.
+    """
+    from accounts.models import OrganizationTeacherConfiguration
+    from organizations.models import MembershipStatus
+
+    teacher_id = getattr(teacher, "pk", teacher)
+    if organization is not None:
+        org_id = getattr(organization, "pk", organization)
+        return (
+            OrganizationTeacherConfiguration.objects.filter(
+                membership__organization_id=org_id,
+                membership__user_id=teacher_id,
+                membership__status=MembershipStatus.ACTIVE,
+            )
+            .select_related("membership", "membership__organization")
+            .first()
+        )
+
+    active_configs = list(
+        OrganizationTeacherConfiguration.objects.filter(
+            membership__user_id=teacher_id,
+            membership__status=MembershipStatus.ACTIVE,
+        ).select_related("membership", "membership__organization")[:2]
+    )
+    if len(active_configs) == 1:
+        return active_configs[0]
+    return None
+
+
+def bookable_teacher_error(user, organization=None):
     """Why ``user`` cannot be booked or hold availability, or None if they can.
 
     Returns the ``ValidationError`` rather than raising it, so callers can
@@ -157,8 +190,6 @@ def bookable_teacher_error(user):
             code="invalid_teacher_role",
             params={"role": user.role},
         )
-    # RelatedObjectDoesNotExist subclasses AttributeError, so getattr's default
-    # covers "teacher has no profile at all".
     profile = getattr(user, "teacher_profile", None)
     if profile is None:
         return ValidationError(
@@ -166,12 +197,76 @@ def bookable_teacher_error(user):
             code="no_teacher_profile",
             params={"username": user.username},
         )
-    if not profile.approved:
-        return ValidationError(
-            "%(username)s's teacher profile is not approved yet.",
-            code="teacher_not_approved",
-            params={"username": user.username},
+
+    from accounts.models import OrganizationTeacherConfiguration
+    from organizations.models import active_membership, MembershipStatus
+
+    if organization is not None:
+        membership = active_membership(user=user, organization=organization)
+        if membership is None:
+            return ValidationError(
+                "%(username)s is not an active member of %(organization)s.",
+                code="teacher_not_active_member",
+                params={
+                    "teacher": user.username,
+                    "username": user.username,
+                    "organization": getattr(organization, "name", organization),
+                },
+            )
+        config = OrganizationTeacherConfiguration.objects.filter(
+            membership=membership
+        ).first()
+        if config is None:
+            return ValidationError(
+                "%(username)s has no teacher configuration in %(organization)s.",
+                code="teacher_not_configured",
+                params={
+                    "username": user.username,
+                    "organization": getattr(organization, "name", organization),
+                },
+            )
+        if not config.approved:
+            return ValidationError(
+                "%(username)s's teacher profile is not approved yet.",
+                code="teacher_not_approved",
+                params={
+                    "username": user.username,
+                    "organization": getattr(organization, "name", organization),
+                },
+            )
+    else:
+        active_memberships = list(
+            user.organization_memberships.filter(
+                status=MembershipStatus.ACTIVE
+            ).select_related("organization")[:2]
         )
+        if len(active_memberships) == 1:
+            return bookable_teacher_error(
+                user, organization=active_memberships[0].organization
+            )
+        elif len(active_memberships) == 0:
+            from organizations.models import Organization
+
+            if not Organization.objects.exists():
+                if not profile.approved:
+                    return ValidationError(
+                        "%(username)s's teacher profile is not approved yet.",
+                        code="teacher_not_approved",
+                        params={"username": user.username},
+                    )
+                return None
+            return ValidationError(
+                "%(username)s has no active academy membership.",
+                code="teacher_not_active_member",
+                params={"username": user.username},
+            )
+        else:
+            return ValidationError(
+                "%(username)s belongs to multiple academies; organization context required.",
+                code="multiple_organizations_ambiguous",
+                params={"username": user.username},
+            )
+
     return None
 
 
@@ -274,11 +369,11 @@ class Availability(models.Model):
             if len(active_memberships) == 1:
                 organization = active_memberships[0]
             elif len(active_memberships) == 0:
-                from curriculum.tests.factories import admit
                 from organizations.tests.factories import OrganizationFactory
+                from scheduling.tests.factories import ensure_teacher_configured
 
                 organization = OrganizationFactory()
-                admit(teacher, organization)
+                ensure_teacher_configured(teacher, organization)
 
         tz_name = tz_name or teacher.timezone
         create_kwargs = {
@@ -333,25 +428,11 @@ class Availability(models.Model):
         errors = {}
 
         if self.teacher_id:
-            teacher_error = bookable_teacher_error(self.teacher)
+            teacher_error = bookable_teacher_error(
+                self.teacher, organization=getattr(self, "organization", None)
+            )
             if teacher_error is not None:
                 errors["teacher"] = teacher_error
-
-        if self.teacher_id and self.organization_id:
-            if not self._is_active_here(self.teacher):
-                errors.setdefault(
-                    "teacher",
-                    ValidationError(
-                        "%(teacher)s is not an active member of %(organization)s.",
-                        code="teacher_not_active_member",
-                        params={
-                            "teacher": self.teacher.username,
-                            "organization": getattr(
-                                self.organization, "name", self.organization_id
-                            ),
-                        },
-                    ),
-                )
 
         if self.start_time_utc and self.end_time_utc:
             if self.end_time_utc <= self.start_time_utc:
@@ -640,7 +721,9 @@ class Cohort(models.Model):
         errors = {}
 
         if self.teacher_id:
-            teacher_error = bookable_teacher_error(self.teacher)
+            teacher_error = bookable_teacher_error(
+                self.teacher, organization=self.organization
+            )
             if teacher_error is not None:
                 errors["teacher"] = teacher_error
 
@@ -941,17 +1024,25 @@ class Booking(models.Model):
     def _validate_weekly_capacity(self, errors):
         """Phase 4 — ``max_weekly_hours`` becomes a hard cap, not a hint.
 
-        The spec is explicit that a booking pushing a teacher over their weekly
-        cap is *rejected* rather than discouraged, for the lead and sub-teachers
-        equally. "The week" is ``utils.week_bounds`` and nothing else, so this
-        check and a future payout calculation cannot disagree.
+        SaaS Phase 4: cap is read from OrganizationTeacherConfiguration in the target
+        organization, and committed minutes are counted within that organization.
         """
-        cap_minutes = self.teacher.teacher_profile.max_weekly_hours * MINUTES_PER_HOUR
+        org = self.organization
+        config = get_teacher_configuration(self.teacher, org)
+        if config is not None:
+            cap_hours = config.max_weekly_hours
+        else:
+            profile = getattr(self.teacher, "teacher_profile", None)
+            if profile is not None:
+                cap_hours = profile.max_weekly_hours
+            else:
+                return
+
+        cap_minutes = cap_hours * MINUTES_PER_HOUR
         projected = weekly_committed_minutes(
             self.teacher_id,
             self.start_time_utc,
-            # Weighed without being saved — the cap has to be checked before the
-            # row exists. A seat in a cohort that already has one adds nothing.
+            organization=org,
             including=(self.cohort_id, self.duration_minutes),
             excluding_pk=self.pk,
         )
@@ -1003,7 +1094,9 @@ class Booking(models.Model):
 
         teacher_ok = False
         if self.teacher_id:
-            teacher_error = bookable_teacher_error(self.teacher)
+            teacher_error = bookable_teacher_error(
+                self.teacher, organization=self.organization
+            )
             if teacher_error is None:
                 teacher_ok = True
             else:
@@ -1100,7 +1193,9 @@ class Booking(models.Model):
 # these rather than assembling their own sums.
 
 
-def weekly_committed_minutes(teacher_id, moment, *, including=None, excluding_pk=None):
+def weekly_committed_minutes(
+    teacher_id, moment, *, including=None, excluding_pk=None, organization=None
+):
     """Teaching minutes in ``teacher_id``'s week containing ``moment``.
 
     Two rules make this more than a ``Sum``:
@@ -1125,6 +1220,8 @@ def weekly_committed_minutes(teacher_id, moment, *, including=None, excluding_pk
         start_time_utc__lt=week_end,
         status__in=CAPACITY_CONSUMING_STATUSES,
     )
+    if organization is not None:
+        rows = rows.in_organization(organization)
     if excluding_pk is not None:
         rows = rows.exclude(pk=excluding_pk)
 
@@ -1143,8 +1240,11 @@ def weekly_committed_minutes(teacher_id, moment, *, including=None, excluding_pk
     return total
 
 
-def remaining_weekly_minutes(teacher, moment):
+def remaining_weekly_minutes(teacher, moment, organization=None):
     """How much of ``teacher``'s weekly cap is unspent in ``moment``'s week.
+
+    SaaS Phase 4: cap is read from OrganizationTeacherConfiguration in the target
+    organization, and load is counted within that organization.
 
     Routing's step 3 picks the sub-teacher with the most of this left, which is
     the spec's "simplest correct rule" for spreading load — deliberately not a
@@ -1154,8 +1254,18 @@ def remaining_weekly_minutes(teacher, moment):
     returned as-is rather than clamped, so an over-committed teacher sorts below
     an exactly-full one instead of tying with them.
     """
-    cap_minutes = teacher.teacher_profile.max_weekly_hours * MINUTES_PER_HOUR
-    return cap_minutes - weekly_committed_minutes(teacher.pk, moment)
+    config = get_teacher_configuration(teacher, organization)
+    if config is not None:
+        cap_minutes = config.max_weekly_hours * MINUTES_PER_HOUR
+    else:
+        profile = getattr(teacher, "teacher_profile", None)
+        if profile is not None:
+            cap_minutes = profile.max_weekly_hours * MINUTES_PER_HOUR
+        else:
+            return 0
+    return cap_minutes - weekly_committed_minutes(
+        teacher.pk, moment, organization=organization
+    )
 
 
 # --- Phase 5: the preferred-teacher waitlist ---------------------------------

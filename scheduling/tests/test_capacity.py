@@ -93,6 +93,20 @@ class WeekBoundsTests(TestCase):
         )
 
 
+def set_teacher_cap(teacher, hours, organization=None):
+    """Set max_weekly_hours on TeacherProfile and OrganizationTeacherConfiguration."""
+    profile = getattr(teacher, "teacher_profile", None)
+    if profile is not None:
+        profile.max_weekly_hours = hours
+        profile.save()
+    from accounts.models import OrganizationTeacherConfiguration
+
+    configs = OrganizationTeacherConfiguration.objects.filter(membership__user=teacher)
+    if organization is not None:
+        configs = configs.filter(membership__organization=organization)
+    configs.update(max_weekly_hours=hours)
+
+
 class WeeklyCommittedMinutesTests(TestCase):
     """What counts towards a teacher's week, and what does not."""
 
@@ -104,6 +118,7 @@ class WeeklyCommittedMinutesTests(TestCase):
         # reason a booking below is refused.
         for weekday in range(7):
             Availability.objects.create(
+                organization=self.level.track.organization,
                 teacher=self.teacher,
                 weekday=weekday,
                 start_time_utc=time(0, 0),
@@ -255,12 +270,12 @@ class WeeklyCommittedMinutesTests(TestCase):
         )
 
     def test_remaining_minutes_is_the_cap_less_the_load(self):
-        profile = self.teacher.teacher_profile
-        profile.max_weekly_hours = 2
-        profile.save()
+        set_teacher_cap(self.teacher, 2, self.level.track.organization)
         self.book(A_MONDAY + timedelta(hours=10), minutes=30)
         self.assertEqual(
-            remaining_weekly_minutes(self.teacher, A_MONDAY),
+            remaining_weekly_minutes(
+                self.teacher, A_MONDAY, organization=self.level.track.organization
+            ),
             2 * MINUTES_PER_HOUR - 30,
         )
 
@@ -274,11 +289,14 @@ class WeeklyCommittedMinutesTests(TestCase):
         """
         self.book(A_MONDAY + timedelta(hours=10), minutes=90)
 
-        profile = self.teacher.teacher_profile
-        profile.max_weekly_hours = 1
-        profile.save()
+        set_teacher_cap(self.teacher, 1, self.level.track.organization)
 
-        self.assertEqual(remaining_weekly_minutes(self.teacher, A_MONDAY), -30)
+        self.assertEqual(
+            remaining_weekly_minutes(
+                self.teacher, A_MONDAY, organization=self.level.track.organization
+            ),
+            -30,
+        )
 
 
 class WeeklyCapEnforcementTests(TestCase):
@@ -291,17 +309,17 @@ class WeeklyCapEnforcementTests(TestCase):
     def teacher_with_cap(self, hours, factory=BookableTeacherFactory):
         """A teacher capped at ``hours``, free all week, teaching this track."""
         teacher = factory()
-        profile = teacher.teacher_profile
-        profile.max_weekly_hours = hours
-        profile.save()
+        teaches(teacher, self.level)
+        set_teacher_cap(teacher, hours, self.level.track.organization)
         for weekday in range(7):
             Availability.objects.create(
+                organization=self.level.track.organization,
                 teacher=teacher,
                 weekday=weekday,
                 start_time_utc=self.window_start,
                 end_time_utc=time.max,
             )
-        return teaches(teacher, self.level)
+        return teacher
 
     def next_monday(self):
         """The start of a week that has not happened yet.
@@ -419,9 +437,7 @@ class WeeklyCapEnforcementTests(TestCase):
         teacher = self.teacher_with_cap(2)
         booking = self.book(teacher, timedelta(hours=9), minutes=90)
 
-        profile = teacher.teacher_profile
-        profile.max_weekly_hours = 1
-        profile.save()
+        set_teacher_cap(teacher, 1, self.level.track.organization)
 
         booking.cancel()  # must not raise
         booking.refresh_from_db()
@@ -437,3 +453,139 @@ class WeeklyCapEnforcementTests(TestCase):
 
         booking.refresh_from_db()
         self.assertEqual(booking.status, BookingStatus.COMPLETED)
+
+
+class MultiAcademyCapacityIsolationTests(TestCase):
+    """SaaS Phase 4 Task 4.4 — Multi-academy capacity isolation (spec Section 17).
+
+    Example from spec:
+    Teacher T
+    Academy A cap = 10 hours
+    Academy B cap = 5 hours
+
+    If T has used:
+    8 hours in Academy A
+    1 hour in Academy B
+
+    remaining capacity is:
+    Academy A = 2 hours
+    Academy B = 4 hours
+
+    Do not sum Academy A's booking minutes into Academy B's contracted weekly cap.
+    """
+
+    def setUp(self):
+        from organizations.tests.factories import OrganizationFactory
+        from curriculum.tests.factories import TrackFactory, admit
+
+        self.org_a = OrganizationFactory(name="Academy A", slug="academy-a")
+        self.org_b = OrganizationFactory(name="Academy B", slug="academy-b")
+
+        self.teacher = BookableTeacherFactory()
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.level_a = LevelFactory(track=self.track_a)
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_b = LevelFactory(track=self.track_b)
+
+        teaches(self.teacher, self.level_a)
+        teaches(self.teacher, self.level_b)
+
+        # Set Academy A cap = 10 hours, Academy B cap = 5 hours
+        set_teacher_cap(self.teacher, 10, self.org_a)
+        set_teacher_cap(self.teacher, 5, self.org_b)
+
+        # Create availability all week in both academies
+        for weekday in range(7):
+            Availability.objects.create(
+                organization=self.org_a,
+                teacher=self.teacher,
+                weekday=weekday,
+                start_time_utc=time(0, 0),
+                end_time_utc=time.max,
+            )
+            Availability.objects.create(
+                organization=self.org_b,
+                teacher=self.teacher,
+                weekday=weekday,
+                start_time_utc=time(0, 0),
+                end_time_utc=time.max,
+            )
+
+        self.student_a = StudentFactory()
+        admit(self.student_a, self.org_a)
+        self.student_b = StudentFactory()
+        admit(self.student_b, self.org_b)
+
+    def test_multi_academy_capacity_consumption_is_isolated(self):
+        """Spec Section 17: 8h used in A, 1h used in B -> remaining A=2h, B=4h."""
+        _, next_week = week_bounds(dj_timezone.now())
+        future_monday = next_week
+        moment = future_monday + timedelta(hours=10)
+
+        # Book 8 hours (16 x 30m) in Academy A
+        for i in range(16):
+            Booking.objects.create(
+                student=self.student_a,
+                teacher=self.teacher,
+                level=self.level_a,
+                start_time_utc=future_monday + timedelta(hours=i),
+                duration_minutes=30,
+            )
+
+        # Book 1 hour (2 x 30m) in Academy B
+        for i in range(2):
+            Booking.objects.create(
+                student=self.student_b,
+                teacher=self.teacher,
+                level=self.level_b,
+                start_time_utc=future_monday + timedelta(days=1, hours=i),
+                duration_minutes=30,
+            )
+
+        # Committed minutes isolated per academy
+        self.assertEqual(
+            weekly_committed_minutes(self.teacher.pk, moment, organization=self.org_a),
+            8 * 60,
+        )
+        self.assertEqual(
+            weekly_committed_minutes(self.teacher.pk, moment, organization=self.org_b),
+            1 * 60,
+        )
+
+        # Remaining minutes: A = 2 hours (120 mins), B = 4 hours (240 mins)
+        self.assertEqual(
+            remaining_weekly_minutes(self.teacher, moment, organization=self.org_a),
+            2 * 60,
+        )
+        self.assertEqual(
+            remaining_weekly_minutes(self.teacher, moment, organization=self.org_b),
+            4 * 60,
+        )
+
+        # A 2-hour booking in Academy B is accepted (1h + 2h = 3h <= 5h cap)
+        # even though Academy A has already used 8 hours!
+        booking_b = Booking(
+            student=self.student_b,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=future_monday + timedelta(days=2, hours=10),
+            duration_minutes=120,
+        )
+        booking_b.full_clean()
+        booking_b.save()
+        self.assertEqual(booking_b.status, BookingStatus.SCHEDULED)
+
+        # A 3-hour booking in Academy A is rejected (8h + 3h = 11h > 10h cap)
+        booking_a = Booking(
+            student=self.student_a,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=future_monday + timedelta(days=2, hours=14),
+            duration_minutes=180,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking_a.full_clean()
+        self.assertIn(
+            "teacher_weekly_capacity_exceeded",
+            [e.code for e in ctx.exception.error_dict.get("__all__", [])],
+        )
