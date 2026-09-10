@@ -62,13 +62,27 @@ def teaches(teacher, level):
     booking without going through ``BookingFactory`` needs this first, and any
     test asserting the rejection needs to *not* call it.
     """
-    teacher.teacher_profile.specialties.add(level.track)
+    profile = getattr(teacher, "teacher_profile", None)
+    if profile is not None:
+        profile.specialties.add(level.track)
     if (
         hasattr(level, "track")
         and hasattr(level.track, "organization")
         and level.track.organization is not None
     ):
-        ensure_teacher_configured(teacher, level.track.organization)
+        org = level.track.organization
+        ensure_teacher_configured(teacher, org)
+        from curriculum.models import TeacherTrack
+
+        memberships = getattr(teacher, "organization_memberships", None)
+        if memberships is not None:
+            m = memberships.filter(organization=org).first()
+            if m:
+                TeacherTrack.objects.update_or_create(
+                    membership=m,
+                    track=level.track,
+                    defaults={"active": True},
+                )
     return teacher
 
 

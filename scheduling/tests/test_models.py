@@ -1472,6 +1472,145 @@ class TeacherConfigurationTenancyTests(TestCase):
         )
 
 
+class TeacherTrackSchedulingTenancyTests(TestCase):
+    """SaaS Phase 4 Task 4.5 — TeacherTrack curriculum eligibility migration (spec Section 14 & 15)."""
+
+    def setUp(self):
+        from curriculum.models import TeacherTrack
+
+        self.org_a = OrganizationFactory(name="Academy A", slug="academy-a")
+        self.org_b = OrganizationFactory(name="Academy B", slug="academy-b")
+
+        self.teacher = BookableTeacherFactory()
+        self.membership_a = admit(self.teacher, self.org_a)
+        self.membership_b = admit(self.teacher, self.org_b)
+        ensure_teacher_configured(self.teacher, self.org_a)
+        ensure_teacher_configured(self.teacher, self.org_b)
+
+        self.track_a = TrackFactory(organization=self.org_a, name="Tajweed A")
+        self.level_a = LevelFactory(track=self.track_a, name="Tajweed Level 1")
+        self.track_b = TrackFactory(organization=self.org_b, name="Tajweed B")
+        self.level_b = LevelFactory(track=self.track_b, name="Tajweed Level 1")
+
+        # Give availability in both academies
+        Availability.objects.create(
+            organization=self.org_a,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        Availability.objects.create(
+            organization=self.org_b,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+
+        # Grant eligibility in Academy A only
+        self.tt_a = TeacherTrack.objects.create(
+            membership=self.membership_a,
+            track=self.track_a,
+            active=True,
+        )
+
+        self.student_a = StudentFactory()
+        admit(self.student_a, self.org_a)
+        self.student_b = StudentFactory()
+        admit(self.student_b, self.org_b)
+
+    def test_teachertrack_in_academy_a_does_not_grant_eligibility_in_academy_b(self):
+        """Spec Section 14: A track assignment in Academy A grants no eligibility in Academy B."""
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        # Booking in Academy A succeeds
+        booking_a = Booking(
+            student=self.student_a,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        booking_a.full_clean()
+        booking_a.save()
+        self.assertEqual(booking_a.status, BookingStatus.SCHEDULED)
+
+        # Booking in Academy B is rejected with teacher_lacks_specialty on level
+        booking_b = Booking(
+            student=self.student_b,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking_b.full_clean()
+        self.assertIn(
+            "teacher_lacks_specialty", error_codes(ctx.exception, field="level")
+        )
+
+    def test_inactive_teachertrack_is_rejected(self):
+        """Spec Section 14: TeacherTrack.active == true is required."""
+        self.tt_a.active = False
+        self.tt_a.save()
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student_a,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn(
+            "teacher_lacks_specialty", error_codes(ctx.exception, field="level")
+        )
+
+    def test_cohort_clean_enforces_teachertrack(self):
+        """Cohort.clean rejects a teacher who does not have an active TeacherTrack."""
+        from curriculum.tests.factories import GroupEligibleLevelFactory
+
+        group_level_b = GroupEligibleLevelFactory(track=self.track_b)
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        cohort = Cohort(
+            teacher=self.teacher,
+            level=group_level_b,
+            schedule_start_utc=start_utc,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            cohort.full_clean()
+        self.assertIn(
+            "teacher_lacks_specialty", error_codes(ctx.exception, field="teacher")
+        )
+
+    def test_specialty_error_helper_directly(self):
+        """Spec Section 15: Direct evaluation of specialty_error helper."""
+        from scheduling.models import specialty_error
+
+        # With active eligibility in Academy A
+        self.assertIsNone(specialty_error(self.teacher, self.level_a))
+
+        # Without eligibility in Academy B
+        err_b = specialty_error(self.teacher, self.level_b)
+        self.assertIsNotNone(err_b)
+        self.assertEqual(err_b.code, "teacher_lacks_specialty")
+
+        # When deactivated in Academy A
+        self.tt_a.active = False
+        self.tt_a.save()
+        err_a = specialty_error(self.teacher, self.level_a)
+        self.assertIsNotNone(err_a)
+        self.assertEqual(err_a.code, "teacher_lacks_specialty")
+
+
 class MigrationStateTests(TestCase):
     def test_no_model_changes_are_missing_a_migration(self):
         """Guards acceptance criterion 1 against later model edits."""

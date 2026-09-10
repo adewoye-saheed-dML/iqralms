@@ -270,30 +270,49 @@ def bookable_teacher_error(user, organization=None):
     return None
 
 
-def specialty_error(user, level):
+def specialty_error(user, level, organization=None):
     """Why ``user`` may not teach ``level``, or None if they may.
 
-    Phase 4 closes the Phase 3 tech-debt item that recorded
-    ``TeacherProfile.specialties`` without ever reading it. A teacher with no
-    specialties recorded therefore teaches *nothing* — which is the strict
-    reading of the rule and the right default for a quality gate, but it does
-    mean an existing teacher is unbookable until their tracks are set in the
-    admin. Callers pass the error to whichever field is theirs.
+    SaaS Phase 4 Task 4.5: Migrated from TeacherProfile.specialties to TeacherTrack.
+    The teacher must have an active TeacherTrack assignment for level.track
+    in the level's owning academy.
     """
-    profile = getattr(user, "teacher_profile", None)
-    if profile is None:
+    if not getattr(user, "is_teacher", False):
         # bookable_teacher_error() has already reported this; nothing to add.
         return None
-    if profile.specialties.filter(pk=level.track_id).exists():
-        return None
+
+    if (
+        organization is None
+        and hasattr(level, "track")
+        and hasattr(level.track, "organization")
+    ):
+        organization = level.track.organization
+
+    from curriculum.models import TeacherTrack
+
+    if organization is not None:
+        org_id = getattr(organization, "pk", organization)
+        has_eligibility = TeacherTrack.objects.filter(
+            membership__user=user,
+            membership__organization_id=org_id,
+            track=level.track,
+            active=True,
+        ).exists()
+        if has_eligibility:
+            return None
+    else:
+        profile = getattr(user, "teacher_profile", None)
+        if profile is not None and profile.specialties.filter(pk=level.track_id).exists():
+            return None
+
     return ValidationError(
         "%(username)s does not teach %(track)s, so they cannot take a "
         "%(level)s session.",
         code="teacher_lacks_specialty",
         params={
             "username": user.username,
-            "track": level.track.name,
-            "level": level.name,
+            "track": getattr(level.track, "name", "this track"),
+            "level": getattr(level, "name", "this level"),
         },
     )
 
