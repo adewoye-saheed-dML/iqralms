@@ -20,8 +20,11 @@ from accounts.tests.factories import (
     StudentFactory,
     SubTeacherFactory,
 )
-from curriculum.tests.factories import LevelFactory, TrackFactory
+from curriculum.tests.factories import LevelFactory, TrackFactory, admit
+from organizations.models import MembershipStatus
+from organizations.tests.factories import OrganizationFactory
 from scheduling.models import DEFAULT_DURATION_MINUTES, TeacherWaitlist
+from scheduling.routing import promote_waitlist_entry
 
 from .factories import (
     AvailabilityFactory,
@@ -29,6 +32,7 @@ from .factories import (
     BookingFactory,
     LeadWaitlistEntryFactory,
     WaitlistEntryFactory,
+    ensure_teacher_configured,
     slot_at,
     teaches,
 )
@@ -468,8 +472,6 @@ class NotifiedIsForALaterPhaseTests(TestCase):
         self.assertFalse(WaitlistEntryFactory().notified)
 
     def test_promotion_does_not_set_notified(self):
-        from scheduling.routing import promote_waitlist_entry
-
         entry = WaitlistEntryFactory()
         promote_waitlist_entry(entry)
 
@@ -478,3 +480,164 @@ class NotifiedIsForALaterPhaseTests(TestCase):
             entry.notified,
             "nothing in this phase delivers a notification, so nothing claims to",
         )
+
+
+class WaitlistTenancyTests(TestCase):
+    """SaaS Phase 4 Task 4.8: Waitlist ownership, promotion, and isolation."""
+
+    def setUp(self):
+        self.org_a = OrganizationFactory(name="Academy A")
+        self.org_b = OrganizationFactory(name="Academy B")
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_a = LevelFactory(track=self.track_a)
+        self.level_b = LevelFactory(track=self.track_b)
+        self.student_a = StudentFactory()
+        admit(self.student_a, self.org_a)
+        self.student_b = StudentFactory()
+        admit(self.student_b, self.org_b)
+
+        self.teacher_a = BookableTeacherFactory()
+        ensure_teacher_configured(self.teacher_a, self.org_a)
+        teaches(self.teacher_a, self.level_a)
+        self.avail_a = AvailabilityFactory(
+            teacher=self.teacher_a,
+            organization=self.org_a,
+        )
+
+        self.teacher_b = BookableTeacherFactory()
+        ensure_teacher_configured(self.teacher_b, self.org_b)
+        teaches(self.teacher_b, self.level_b)
+        self.avail_b = AvailabilityFactory(
+            teacher=self.teacher_b,
+            organization=self.org_b,
+        )
+
+    def test_waitlist_ownership_derived_from_level_track_organization(self):
+        entry_a = WaitlistEntryFactory(
+            availability=self.avail_a,
+            level=self.level_a,
+            student=self.student_a,
+        )
+        self.assertEqual(entry_a.organization, self.org_a)
+
+    def test_queryset_in_organization_scopes_entries(self):
+        entry_a = WaitlistEntryFactory(
+            availability=self.avail_a,
+            level=self.level_a,
+            student=self.student_a,
+        )
+        entry_b = WaitlistEntryFactory(
+            availability=self.avail_b,
+            level=self.level_b,
+            student=self.student_b,
+        )
+
+        a_entries = list(TeacherWaitlist.objects.in_organization(self.org_a))
+        b_entries = list(TeacherWaitlist.objects.in_organization(self.org_b))
+
+        self.assertIn(entry_a, a_entries)
+        self.assertNotIn(entry_b, a_entries)
+        self.assertIn(entry_b, b_entries)
+        self.assertNotIn(entry_a, b_entries)
+
+    def test_open_for_teacher_filters_by_organization(self):
+        # Teacher configured in both orgs
+        ensure_teacher_configured(self.teacher_a, self.org_b)
+        teaches(self.teacher_a, self.level_b)
+        avail_a_in_b = AvailabilityFactory(
+            teacher=self.teacher_a,
+            organization=self.org_b,
+        )
+
+        entry_a = WaitlistEntryFactory(
+            availability=self.avail_a,
+            level=self.level_a,
+            student=self.student_a,
+            requested_teacher=self.teacher_a,
+        )
+        entry_b = WaitlistEntryFactory(
+            availability=avail_a_in_b,
+            level=self.level_b,
+            student=self.student_b,
+            requested_teacher=self.teacher_a,
+        )
+
+        a_open = list(TeacherWaitlist.open_for_teacher(self.teacher_a, organization=self.org_a))
+        b_open = list(TeacherWaitlist.open_for_teacher(self.teacher_a, organization=self.org_b))
+
+        self.assertIn(entry_a, a_open)
+        self.assertNotIn(entry_b, a_open)
+        self.assertIn(entry_b, b_open)
+        self.assertNotIn(entry_a, b_open)
+
+    def test_promote_waitlist_entry_with_mismatched_organization_rejected(self):
+        entry_a = WaitlistEntryFactory(
+            availability=self.avail_a,
+            level=self.level_a,
+            student=self.student_a,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            promote_waitlist_entry(entry_a, organization=self.org_b)
+        self.assertIn("entry", ctx.exception.error_dict)
+
+    def test_promote_waitlist_entry_enforces_active_student_membership(self):
+        entry_a = WaitlistEntryFactory(
+            availability=self.avail_a,
+            level=self.level_a,
+            student=self.student_a,
+        )
+        # Deactivate student membership in org_a
+        self.student_a.organization_memberships.filter(organization=self.org_a).update(
+            status=MembershipStatus.SUSPENDED
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            promote_waitlist_entry(entry_a)
+        self.assertIn("student", ctx.exception.error_dict)
+        self.assertEqual(
+            ctx.exception.error_dict["student"][0].code,
+            "student_not_active_member",
+        )
+
+    def test_promote_waitlist_entry_enforces_teacher_approval(self):
+        entry_a = WaitlistEntryFactory(
+            availability=self.avail_a,
+            level=self.level_a,
+            student=self.student_a,
+        )
+        from accounts.models import OrganizationTeacherConfiguration
+
+        OrganizationTeacherConfiguration.objects.filter(
+            membership__user=self.teacher_a,
+            membership__organization=self.org_a,
+        ).update(approved=False)
+
+        with self.assertRaises(ValidationError) as ctx:
+            promote_waitlist_entry(entry_a)
+        self.assertIn("teacher", ctx.exception.error_dict)
+        self.assertEqual(
+            ctx.exception.error_dict["teacher"][0].code,
+            "teacher_not_approved",
+        )
+
+    def test_promote_waitlist_entry_enforces_active_teachertrack(self):
+        entry_a = WaitlistEntryFactory(
+            availability=self.avail_a,
+            level=self.level_a,
+            student=self.student_a,
+        )
+        from curriculum.models import TeacherTrack
+
+        TeacherTrack.objects.filter(
+            membership__user=self.teacher_a,
+            track=self.track_a,
+        ).update(active=False)
+
+        with self.assertRaises(ValidationError) as ctx:
+            promote_waitlist_entry(entry_a)
+        self.assertIn("level", ctx.exception.error_dict)
+        self.assertEqual(
+            ctx.exception.error_dict["level"][0].code,
+            "teacher_lacks_specialty",
+        )
+

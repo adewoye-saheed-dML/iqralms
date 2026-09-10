@@ -197,6 +197,12 @@ def bookable_teacher_error(user, organization=None):
             code="no_teacher_profile",
             params={"username": user.username},
         )
+    if not profile.approved:
+        return ValidationError(
+            "%(username)s's teacher profile is not approved yet.",
+            code="teacher_not_approved",
+            params={"username": user.username},
+        )
 
     from accounts.models import OrganizationTeacherConfiguration
     from organizations.models import active_membership, MembershipStatus
@@ -1467,20 +1473,23 @@ class TeacherWaitlist(models.Model):
         )
 
     @classmethod
-    def open_for_teacher(cls, teacher):
+    def open_for_teacher(cls, teacher, organization=None):
         """Unfulfilled entries naming ``teacher``, in the order to work them.
 
         ``Meta.ordering`` supplies the order — priority desc, then longest
         waiting — so the endpoint and any future automatic offer read the same
         queue rather than each defining "next in line".
         """
-        return (
+        qs = (
             cls.objects.filter(
                 requested_teacher_id=getattr(teacher, "pk", teacher),
             )
             .open()
             .select_related("student", "requested_teacher", "level", "level__track")
         )
+        if organization is not None:
+            qs = qs.in_organization(organization)
+        return qs
 
     @classmethod
     def record(cls, *, student, requested_teacher, level, requested_start_utc, requested_duration_minutes=None):

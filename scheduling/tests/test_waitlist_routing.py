@@ -29,7 +29,12 @@ from django.test import TestCase
 from django.utils import timezone as dj_timezone
 
 from accounts.tests.factories import MinorStudentFactory, StudentFactory
-from curriculum.tests.factories import GroupEligibleLevelFactory, LevelFactory, TrackFactory
+from curriculum.tests.factories import (
+    GroupEligibleLevelFactory,
+    LevelFactory,
+    TrackFactory,
+    admit,
+)
 from scheduling.exceptions import NoCapacity, WaitlistEntryAlreadyFulfilled
 from scheduling.models import (
     Availability,
@@ -67,6 +72,8 @@ class PreferredTeacherWorld(RoutingWorld):
     def setUp(self):
         self.level = LevelFactory()
         self.student = StudentFactory()
+        if hasattr(self.level, "track") and self.level.track.organization:
+            admit(self.student, self.level.track.organization)
         self.slot = next_monday() + timedelta(hours=10)
 
     def prefer(self, teacher, **overrides):
@@ -249,10 +256,8 @@ class PreferredTeacherAtCapacityTests(PreferredTeacherWorld, TestCase):
 
     def test_a_teacher_already_booked_at_that_time_is_waitlisted(self):
         wanted = self.available_teacher()
-        Booking.objects.create(
-            student=StudentFactory(),
+        self.book(
             teacher=wanted,
-            level=self.level,
             start_time_utc=self.slot,
             duration_minutes=30,
         )
@@ -339,10 +344,15 @@ class HardBlocksDoNotWaitlistTests(PreferredTeacherWorld, TestCase):
         than a promise resting on the half that could change.
         """
         wanted = self.available_teacher(hours=1, teaches_level=False)
-        other_level = LevelFactory(track=TrackFactory(name="Other", slug="other-hb"))
+        other_level = LevelFactory(
+            track=TrackFactory(
+                name="Other",
+                slug="other-hb",
+                organization=self.level.track.organization,
+            )
+        )
         teaches(wanted, other_level)
-        Booking.objects.create(
-            student=StudentFactory(),
+        self.book(
             teacher=wanted,
             level=other_level,
             start_time_utc=self.slot + timedelta(days=1),
@@ -437,8 +447,7 @@ class PreferredTeacherIsNeverACohortSeatTests(PreferredTeacherWorld, TestCase):
             schedule_start_utc=self.slot,
         )
         # An actual seat, so the teacher is committed at that instant.
-        Booking.objects.create(
-            student=StudentFactory(),
+        self.book(
             teacher=wanted,
             level=self.level,
             cohort=cohort,
@@ -561,8 +570,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         entry = self.waiting_entry()
         teacher = entry.requested_teacher
         # Somebody else takes the slot in the meantime.
-        Booking.objects.create(
-            student=StudentFactory(),
+        self.book(
             teacher=teacher,
             level=self.level,
             start_time_utc=entry.requested_start_utc,
@@ -577,8 +585,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
     def test_a_failed_promotion_leaves_the_entry_open(self):
         """The other half of criterion 8: nothing is forced and nothing is lost."""
         entry = self.waiting_entry()
-        Booking.objects.create(
-            student=StudentFactory(),
+        self.book(
             teacher=entry.requested_teacher,
             level=self.level,
             start_time_utc=entry.requested_start_utc,

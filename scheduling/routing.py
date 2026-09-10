@@ -607,7 +607,9 @@ def route_session(
     )
 
 
-def promote_waitlist_entry(entry, *, start_time_utc=None, duration_minutes=None):
+def promote_waitlist_entry(
+    entry, *, start_time_utc=None, duration_minutes=None, organization=None
+):
     """Turn an open ``TeacherWaitlist`` entry into the session it was waiting for.
 
     This is the whole fulfillment mechanism this phase ships: the lead reads
@@ -642,6 +644,15 @@ def promote_waitlist_entry(entry, *, start_time_utc=None, duration_minutes=None)
             f"This request was already fulfilled by booking "
             f"{entry.fulfilled_booking_id}; promoting it again would either "
             "overwrite that record or double-book the family."
+        )
+
+    if (
+        organization is not None
+        and entry.organization is not None
+        and entry.organization != organization
+    ):
+        raise ValidationError(
+            {"entry": [f"Waitlist entry does not belong to {getattr(organization, 'name', organization)}."]}
         )
 
     booking, why_not = _candidate(
