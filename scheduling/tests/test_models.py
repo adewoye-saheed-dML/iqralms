@@ -381,6 +381,7 @@ class BookingModelTests(TestCase):
     def test_booking_can_be_created_with_spec_defaults(self):
         window = AvailabilityFactory()
         student = StudentFactory()
+        admit(student, window.organization)
         level = LevelFactory(track__organization=window.organization)
         teaches(window.teacher, level)
         start = slot_at(window)
@@ -891,8 +892,10 @@ class PastBookingRuleTests(TestCase):
     def attempt(self, start):
         """Try to create a default-length booking starting at ``start``."""
         level = LevelFactory()
+        student = StudentFactory()
+        admit(student, level.track.organization)
         return Booking.objects.create(
-            student=StudentFactory(),
+            student=student,
             teacher=self.covering_teacher(start, level),
             level=level,
             start_time_utc=start,
@@ -1609,6 +1612,255 @@ class TeacherTrackSchedulingTenancyTests(TestCase):
         err_a = specialty_error(self.teacher, self.level_a)
         self.assertIsNotNone(err_a)
         self.assertEqual(err_a.code, "teacher_lacks_specialty")
+
+
+class BookingAndCohortTenancyTests(TestCase):
+    """SaaS Phase 4 Task 4.6 — Booking and Cohort Tenancy (specs/saas/phase-4/4.6-booking-cohort-tenancy.md)."""
+
+    def setUp(self):
+        self.org_a = OrganizationFactory(name="Academy A", slug="academy-a")
+        self.org_b = OrganizationFactory(name="Academy B", slug="academy-b")
+
+        self.teacher = BookableTeacherFactory()
+        admit(self.teacher, self.org_a)
+        admit(self.teacher, self.org_b)
+        ensure_teacher_configured(self.teacher, self.org_a)
+        ensure_teacher_configured(self.teacher, self.org_b)
+
+        self.track_a = TrackFactory(organization=self.org_a, name="Track A")
+        self.level_a = LevelFactory(track=self.track_a, name="Level A")
+        self.group_level_a = GroupEligibleLevelFactory(track=self.track_a, name="Group Level A")
+        teaches(self.teacher, self.level_a)
+        teaches(self.teacher, self.group_level_a)
+
+        self.track_b = TrackFactory(organization=self.org_b, name="Track B")
+        self.level_b = LevelFactory(track=self.track_b, name="Level B")
+        self.group_level_b = GroupEligibleLevelFactory(track=self.track_b, name="Group Level B")
+        teaches(self.teacher, self.level_b)
+        teaches(self.teacher, self.group_level_b)
+
+        Availability.objects.create(
+            organization=self.org_a,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        Availability.objects.create(
+            organization=self.org_b,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+
+        self.student_a = StudentFactory()
+        self.student_a_membership = admit(self.student_a, self.org_a)
+        self.student_b = StudentFactory()
+        self.student_b_membership = admit(self.student_b, self.org_b)
+
+    def test_student_in_academy_a_cannot_be_booked_in_academy_b(self):
+        """Spec Section 9: Active membership for booking.organization is required."""
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student_a,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn(
+            "student_not_active_member", error_codes(ctx.exception, field="student")
+        )
+
+    def test_suspended_student_cannot_receive_new_booking(self):
+        """Spec Section 9: A suspended student cannot receive a new academy booking."""
+        self.student_a_membership.status = MembershipStatus.SUSPENDED
+        self.student_a_membership.save()
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student_a,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn(
+            "student_not_active_member", error_codes(ctx.exception, field="student")
+        )
+
+    def test_cross_academy_physical_overlap_is_rejected(self):
+        """Spec Section 18: Simultaneous sessions across academies must conflict (global overlap)."""
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        # Booking in Academy A succeeds
+        booking_a = Booking(
+            student=self.student_a,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        booking_a.full_clean()
+        booking_a.save()
+        self.assertEqual(booking_a.status, BookingStatus.SCHEDULED)
+
+        # Booking in Academy B for the same time fails with teacher_double_booked
+        booking_b = Booking(
+            student=self.student_b,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking_b.full_clean()
+        self.assertIn(
+            "teacher_double_booked",
+            [e.code for e in ctx.exception.error_dict[NON_FIELD_ERRORS]],
+        )
+
+        # But a neighbouring non-overlapping booking in Academy B succeeds
+        booking_b_next = Booking(
+            student=self.student_b,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc + timedelta(minutes=30),
+            duration_minutes=30,
+        )
+        booking_b_next.full_clean()
+        booking_b_next.save()
+        self.assertEqual(booking_b_next.status, BookingStatus.SCHEDULED)
+
+    def test_historical_booking_stays_saveable_and_cancellable_after_student_suspended(self):
+        """Spec Section 45: Membership suspension does not retroactively invalidate accepted bookings."""
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student_a,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        booking.full_clean()
+        booking.save()
+
+        # Suspend student
+        self.student_a_membership.status = MembershipStatus.SUSPENDED
+        self.student_a_membership.save()
+
+        # Historical booking remains cancellable
+        booking.refresh_from_db()
+        booking.cancel()
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, BookingStatus.CANCELLED)
+
+    def test_cohort_seat_booking_must_match_cohort_organization(self):
+        """Spec Section 8 & 21: A booking combining records from different academies must fail."""
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        cohort_a = Cohort.objects.create(
+            teacher=self.teacher,
+            level=self.group_level_a,
+            schedule_start_utc=start_utc,
+        )
+
+        booking = Booking(
+            student=self.student_b,
+            teacher=self.teacher,
+            level=self.group_level_b,
+            cohort=cohort_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn("cohort_mismatch", error_codes(ctx.exception, field="cohort"))
+
+    def test_teacher_not_active_in_academy_cannot_run_cohort(self):
+        """Spec Section 21: Cohort teacher must be an active member of cohort academy."""
+        teacher_foreign = BookableTeacherFactory()
+        admit(teacher_foreign, self.org_a)
+        ensure_teacher_configured(teacher_foreign, self.org_a)
+        teaches(teacher_foreign, self.group_level_a)
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        cohort = Cohort(
+            teacher=teacher_foreign,
+            level=self.group_level_b,
+            schedule_start_utc=start_utc,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            cohort.full_clean()
+        self.assertIn(
+            "teacher_not_active_member", error_codes(ctx.exception, field="teacher")
+        )
+
+
+class ParentBookingTenancyTests(TestCase):
+    """SaaS Phase 4 Task 4.6 — Parent Booking Rule (specs/saas/phase-4/4.6-booking-cohort-tenancy.md Section 10)."""
+
+    def setUp(self):
+        from accounts.models import ParentLink
+
+        self.org_a = OrganizationFactory(name="Academy A", slug="academy-a")
+        self.org_b = OrganizationFactory(name="Academy B", slug="academy-b")
+
+        self.parent = ParentFactory()
+        self.student = StudentFactory()
+
+        # Global parent link exists
+        ParentLink.objects.create(parent=self.parent, student=self.student)
+
+        # Level in Academy A and Level in Academy B
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.level_a = LevelFactory(track=self.track_a)
+
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_b = LevelFactory(track=self.track_b)
+
+    def test_parent_booking_requires_both_active_in_organization(self):
+        """Parent P active in A and B, Student S active only in B:
+        P booking S in B -> allowed
+        P booking S in A -> denied
+        """
+        from scheduling.serializers import resolve_requested_student
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        # Parent active in A and B
+        admit(self.parent, self.org_a)
+        admit(self.parent, self.org_b)
+
+        # Student active only in B
+        admit(self.student, self.org_b)
+
+        # In Academy B: resolved successfully
+        resolved = resolve_requested_student(
+            self.parent, self.student, organization=self.org_b
+        )
+        self.assertEqual(resolved, self.student)
+
+        # In Academy A: denied
+        with self.assertRaises(DRFValidationError) as ctx:
+            resolve_requested_student(
+                self.parent, self.student, organization=self.org_a
+            )
+        self.assertIn("student", ctx.exception.detail)
 
 
 class MigrationStateTests(TestCase):

@@ -262,6 +262,18 @@ class BookingFactory(factory.django.DjangoModelFactory):
             if hasattr(level, "track") and hasattr(level.track, "organization"):
                 ensure_teacher_configured(teacher, level.track.organization)
 
+        student = kwargs.get("student")
+        if (
+            student is not None
+            and level is not None
+            and hasattr(level, "track")
+            and hasattr(level.track, "organization")
+            and level.track.organization is not None
+        ):
+            from curriculum.tests.factories import admit
+
+            admit(student, level.track.organization)
+
         return super()._create(model_class, *args, **kwargs)
 
 

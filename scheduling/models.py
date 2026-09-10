@@ -971,6 +971,18 @@ class Booking(models.Model):
                 "their account.",
                 code="student_not_fully_active",
             )
+        elif self.organization is not None and self._state.adding:
+            from organizations.models import active_membership
+
+            if active_membership(user=self.student, organization=self.organization) is None:
+                errors["student"] = ValidationError(
+                    "%(username)s is not an active member of %(organization)s.",
+                    code="student_not_active_member",
+                    params={
+                        "username": self.student.username,
+                        "organization": getattr(self.organization, "name", self.organization),
+                    },
+                )
 
     def _validate_within_availability(self, errors):
         segments = self.utc_segments()
@@ -1098,6 +1110,12 @@ class Booking(models.Model):
             and self.start_time_utc != cohort.schedule_start_utc
         ):
             disagreements.append("start_time_utc")
+        if (
+            self.organization is not None
+            and cohort.organization is not None
+            and self.organization != cohort.organization
+        ):
+            disagreements.append("organization")
         if disagreements:
             errors["cohort"] = ValidationError(
                 "A cohort seat must match its cohort; %(fields)s disagree.",

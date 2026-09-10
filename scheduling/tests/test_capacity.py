@@ -24,7 +24,7 @@ from django.test import TestCase
 from django.utils import timezone as dj_timezone
 
 from accounts.tests.factories import StudentFactory
-from curriculum.tests.factories import LevelFactory
+from curriculum.tests.factories import LevelFactory, admit
 from scheduling.models import (
     Availability,
     Booking,
@@ -134,10 +134,14 @@ class WeeklyCommittedMinutesTests(TestCase):
         session reaches. An ``objects.create`` followed by an ``update`` is the
         same trick ``test_models.age_booking`` uses, and for the same reason.
         """
+        level = cohort.level if cohort else self.level
+        student = StudentFactory()
+        if hasattr(level, "track") and hasattr(level.track, "organization") and level.track.organization is not None:
+            admit(student, level.track.organization)
         booking = Booking.objects.create(
-            student=StudentFactory(),
+            student=student,
             teacher=self.teacher,
-            level=cohort.level if cohort else self.level,
+            level=level,
             start_time_utc=slot_at(self.teacher.availability_windows.first()),
             duration_minutes=minutes,
         )
@@ -332,8 +336,11 @@ class WeeklyCapEnforcementTests(TestCase):
         return next_week
 
     def book(self, teacher, offset, minutes=30):
+        student = StudentFactory()
+        if hasattr(self.level, "track") and hasattr(self.level.track, "organization") and self.level.track.organization is not None:
+            admit(student, self.level.track.organization)
         return Booking.objects.create(
-            student=StudentFactory(),
+            student=student,
             teacher=teacher,
             level=self.level,
             start_time_utc=self.next_monday() + offset,
@@ -416,8 +423,11 @@ class WeeklyCapEnforcementTests(TestCase):
             schedule_start_utc=self.next_monday() + timedelta(hours=9),
         )
         for _ in range(6):
+            student = StudentFactory()
+            if hasattr(cohort.level, "track") and hasattr(cohort.level.track, "organization") and cohort.level.track.organization is not None:
+                admit(student, cohort.level.track.organization)
             Booking.objects.create(
-                student=StudentFactory(),
+                student=student,
                 teacher=teacher,
                 level=cohort.level,
                 cohort=cohort,

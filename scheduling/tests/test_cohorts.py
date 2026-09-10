@@ -175,7 +175,9 @@ class CohortTeacherRuleTests(TestCase):
         rule, so failing at cohort creation is failing where the mistake was.
         """
         window = AvailabilityFactory()
-        level = GroupEligibleLevelFactory()  # teacher's specialties left empty
+        level = GroupEligibleLevelFactory(
+            track__organization=window.organization
+        )  # teacher's specialties left empty
 
         with self.assertRaises(ValidationError) as ctx:
             Cohort.objects.create(
@@ -358,8 +360,13 @@ class CohortSeatBookingTests(TestCase):
         self.cohort = CohortFactory()
 
     def seat(self, student=None, **overrides):
+        from curriculum.tests.factories import admit
+
+        student = student or StudentFactory()
+        if hasattr(self.cohort, "organization") and self.cohort.organization is not None:
+            admit(student, self.cohort.organization)
         fields = {
-            "student": student or StudentFactory(),
+            "student": student,
             "teacher": self.cohort.teacher,
             "level": self.cohort.level,
             "cohort": self.cohort,

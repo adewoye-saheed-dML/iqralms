@@ -43,11 +43,11 @@ def viewer_timezone(context, fallback_user):
     return fallback_user.timezone
 
 
-def resolve_requested_student(caller, student):
-    """Which student a request is for, given the caller and an optional id.
+def resolve_requested_student(caller, student, organization=None):
+    """Which student a request is for, given the caller, an optional id, and optional organization.
 
     Shared by direct booking and routing so the two cannot drift: a student acts
-    only for themselves, and a parent must name one of their linked children.
+    only for themselves, and a parent must name one of their linked children in that academy.
     Permission classes have already established the caller is one or the other.
     """
     if caller.role == Role.STUDENT:
@@ -60,10 +60,19 @@ def resolve_requested_student(caller, student):
         raise serializers.ValidationError(
             {"student": ["Required: which of your children this is for."]}
         )
-    if not ParentLink.objects.filter(parent=caller, student=student).exists():
-        raise serializers.ValidationError(
-            {"student": ["No linked student found for that id."]}
-        )
+    if organization is not None:
+        from accounts.tenancy import children_in_organization
+
+        children = children_in_organization(parent=caller, organization=organization)
+        if not children.filter(pk=student.pk).exists():
+            raise serializers.ValidationError(
+                {"student": ["No linked student found for that id."]}
+            )
+    else:
+        if not ParentLink.objects.filter(parent=caller, student=student).exists():
+            raise serializers.ValidationError(
+                {"student": ["No linked student found for that id."]}
+            )
     return student
 
 
@@ -198,8 +207,16 @@ class BookingCreateSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
+        level = attrs.get("level")
+        organization = (
+            level.track.organization
+            if level and hasattr(level, "track") and level.track
+            else None
+        )
         attrs["student"] = resolve_requested_student(
-            self.context["request"].user, attrs.get("student")
+            self.context["request"].user,
+            attrs.get("student"),
+            organization=organization,
         )
         return attrs
 
@@ -346,8 +363,16 @@ class RouteRequestSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
+        level = attrs.get("level")
+        organization = (
+            level.track.organization
+            if level and hasattr(level, "track") and level.track
+            else None
+        )
         attrs["student"] = resolve_requested_student(
-            self.context["request"].user, attrs.get("student")
+            self.context["request"].user,
+            attrs.get("student"),
+            organization=organization,
         )
         return attrs
 
