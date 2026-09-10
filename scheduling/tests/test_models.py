@@ -30,14 +30,20 @@ from accounts.tests.factories import (
     SubTeacherFactory,
     TeacherProfileFactory,
 )
-from curriculum.tests.factories import LevelFactory
+from curriculum.tests.factories import (
+    GroupEligibleLevelFactory,
+    LevelFactory,
+    TrackFactory,
+)
 from scheduling.exceptions import BookingNotCancellable
 from scheduling.models import (
     Availability,
     Booking,
     BookingStatus,
+    Cohort,
     DEFAULT_DURATION_MINUTES,
     PAST_BOOKING_GRACE,
+    TeacherWaitlist,
     VIDEO_ROOM_PREFIX,
     Weekday,
     generate_video_room_name,
@@ -52,8 +58,10 @@ from .factories import (
     BookableTeacherFactory,
     BookingFactory,
     CancelledBookingFactory,
+    CohortFactory,
     CompletedBookingFactory,
     UnapprovedTeacherFactory,
+    WaitlistEntryFactory,
     slot_at,
     teaches,
 )
@@ -1000,6 +1008,108 @@ class PastBookingRuleTests(TestCase):
 
         booking.refresh_from_db()
         self.assertEqual(booking.status, BookingStatus.NO_SHOW)
+
+
+class SchedulingTenancyQuerysetTests(TestCase):
+    """SaaS Phase 4 Task 4.2 — tenant query helpers and derived properties."""
+
+    def setUp(self):
+        self.track_a = TrackFactory(slug="track-a")
+        self.track_b = TrackFactory(slug="track-b")
+        self.level_a = LevelFactory(track=self.track_a)
+        self.level_b = LevelFactory(track=self.track_b)
+        self.group_level_a = GroupEligibleLevelFactory(track=self.track_a)
+        self.group_level_b = GroupEligibleLevelFactory(track=self.track_b)
+
+    def test_booking_derived_organization_and_queryset(self):
+        booking_a = BookingFactory(level=self.level_a)
+        booking_b = BookingFactory(level=self.level_b)
+
+        # Derived organization property
+        self.assertEqual(booking_a.organization, self.track_a.organization)
+        self.assertEqual(booking_b.organization, self.track_b.organization)
+
+        # in_organization queryset helper with Organization instance
+        self.assertEqual(
+            list(Booking.objects.in_organization(self.track_a.organization)),
+            [booking_a],
+        )
+        self.assertEqual(
+            list(Booking.objects.in_organization(self.track_b.organization)),
+            [booking_b],
+        )
+
+        # in_organization queryset helper with PK
+        self.assertEqual(
+            list(Booking.objects.in_organization(self.track_a.organization.pk)),
+            [booking_a],
+        )
+
+        # Unsaved booking with no level returns None
+        unsaved = Booking()
+        self.assertIsNone(unsaved.organization)
+
+    def test_cohort_derived_organization_and_queryset(self):
+        cohort_a = CohortFactory(level=self.group_level_a)
+        cohort_b = CohortFactory(level=self.group_level_b)
+
+        # Derived organization property
+        self.assertEqual(cohort_a.organization, self.track_a.organization)
+        self.assertEqual(cohort_b.organization, self.track_b.organization)
+
+        # in_organization queryset helper
+        self.assertEqual(
+            list(Cohort.objects.in_organization(self.track_a.organization)),
+            [cohort_a],
+        )
+        self.assertEqual(
+            list(Cohort.objects.in_organization(self.track_b.organization)),
+            [cohort_b],
+        )
+
+        # in_organization with PK
+        self.assertEqual(
+            list(Cohort.objects.in_organization(self.track_a.organization.pk)),
+            [cohort_a],
+        )
+
+        # open() queryset helper
+        self.assertIn(cohort_a, Cohort.objects.open())
+
+        # Unsaved cohort with no level returns None
+        unsaved = Cohort()
+        self.assertIsNone(unsaved.organization)
+
+    def test_waitlist_derived_organization_and_queryset(self):
+        entry_a = WaitlistEntryFactory(level=self.level_a)
+        entry_b = WaitlistEntryFactory(level=self.level_b)
+
+        # Derived organization property
+        self.assertEqual(entry_a.organization, self.track_a.organization)
+        self.assertEqual(entry_b.organization, self.track_b.organization)
+
+        # in_organization queryset helper
+        self.assertEqual(
+            list(TeacherWaitlist.objects.in_organization(self.track_a.organization)),
+            [entry_a],
+        )
+        self.assertEqual(
+            list(TeacherWaitlist.objects.in_organization(self.track_b.organization)),
+            [entry_b],
+        )
+
+        # in_organization with PK
+        self.assertEqual(
+            list(TeacherWaitlist.objects.in_organization(self.track_a.organization.pk)),
+            [entry_a],
+        )
+
+        # open() queryset helper
+        self.assertIn(entry_a, TeacherWaitlist.objects.open())
+
+        # Unsaved waitlist entry with no level returns None
+        unsaved = TeacherWaitlist()
+        self.assertIsNone(unsaved.organization)
 
 
 class MigrationStateTests(TestCase):

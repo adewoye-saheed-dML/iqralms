@@ -382,6 +382,20 @@ class TeacherBookingLock(models.Model):
         return f"booking lock for {self.teacher.username} (revision {self.revision})"
 
 
+class CohortQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        """The cohorts that belong to one academy through their curriculum track."""
+        organization_id = getattr(organization, "pk", organization)
+        return self.filter(level__track__organization_id=organization_id)
+
+    def open(self):
+        """Cohorts with at least one seat left."""
+        return (
+            self.annotate(seats_used=models.Count("students", distinct=True))
+            .filter(seats_used__lt=F("max_students"))
+        )
+
+
 class Cohort(models.Model):
     """A group class: one teacher, one level, one start time, several students.
 
@@ -431,10 +445,24 @@ class Cohort(models.Model):
         ),
     )
 
+    objects = CohortQuerySet.as_manager()
+
     class Meta:
         ordering = ["schedule_start_utc", "pk"]
 
     # --- Behaviour ----------------------------------------------------------
+
+    @property
+    def organization(self):
+        """The academy this cohort belongs to, reached through its level's track.
+
+        A property rather than a column, deliberately. The spec asks not to
+        duplicate ``organization`` on ``Cohort`` without a proven need, and the
+        reason is that a copy can disagree with the original.
+        """
+        if self.level_id:
+            return self.level.track.organization
+        return None
 
     @property
     def seats_taken(self) -> int:
@@ -459,8 +487,7 @@ class Cohort(models.Model):
         """
         return (
             cls.objects.filter(level=level)
-            .annotate(seats_used=models.Count("students", distinct=True))
-            .filter(seats_used__lt=F("max_students"))
+            .open()
             .select_related("teacher", "level", "level__track")
         )
 
@@ -566,6 +593,13 @@ class Cohort(models.Model):
         )
 
 
+class BookingQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        """The bookings that belong to one academy through their curriculum track."""
+        organization_id = getattr(organization, "pk", organization)
+        return self.filter(level__track__organization_id=organization_id)
+
+
 class Booking(models.Model):
     """One session between a student and a teacher, at a UTC instant.
 
@@ -635,10 +669,24 @@ class Booking(models.Model):
         ),
     )
 
+    objects = BookingQuerySet.as_manager()
+
     class Meta:
         ordering = ["start_time_utc", "pk"]
 
     # --- Behaviour ----------------------------------------------------------
+
+    @property
+    def organization(self):
+        """The academy this booking belongs to, reached through its level's track.
+
+        A property rather than a column, deliberately. The spec asks not to
+        duplicate ``organization`` on ``Booking`` without a proven need, and the
+        reason is that a copy can disagree with the original.
+        """
+        if self.level_id:
+            return self.level.track.organization
+        return None
 
     @property
     def end_time_utc(self):
@@ -1017,6 +1065,17 @@ def remaining_weekly_minutes(teacher, moment):
 # Defined below Booking because ``fulfilled_booking`` points at one.
 
 
+class TeacherWaitlistQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        """The waitlist requests that belong to one academy through their curriculum track."""
+        organization_id = getattr(organization, "pk", organization)
+        return self.filter(level__track__organization_id=organization_id)
+
+    def open(self):
+        """Unfulfilled waitlist entries."""
+        return self.filter(fulfilled_booking__isnull=True)
+
+
 class TeacherWaitlist(models.Model):
     """A family asked for one particular teacher, who could not take it.
 
@@ -1099,6 +1158,8 @@ class TeacherWaitlist(models.Model):
         ),
     )
 
+    objects = TeacherWaitlistQuerySet.as_manager()
+
     class Meta:
         # The order a lead works the list in, and the order the for-teacher
         # endpoint publishes: highest priority first, then longest waiting. In
@@ -1123,6 +1184,18 @@ class TeacherWaitlist(models.Model):
         ]
 
     # --- Behaviour ----------------------------------------------------------
+
+    @property
+    def organization(self):
+        """The academy this waitlist entry belongs to, reached through its level's track.
+
+        A property rather than a column, deliberately. The spec asks not to
+        duplicate ``organization`` on ``TeacherWaitlist`` without a proven need,
+        and the reason is that a copy can disagree with the original.
+        """
+        if self.level_id:
+            return self.level.track.organization
+        return None
 
     @property
     def is_open(self) -> bool:
@@ -1157,10 +1230,13 @@ class TeacherWaitlist(models.Model):
         waiting — so the endpoint and any future automatic offer read the same
         queue rather than each defining "next in line".
         """
-        return cls.objects.filter(
-            requested_teacher_id=getattr(teacher, "pk", teacher),
-            fulfilled_booking__isnull=True,
-        ).select_related("student", "requested_teacher", "level", "level__track")
+        return (
+            cls.objects.filter(
+                requested_teacher_id=getattr(teacher, "pk", teacher),
+            )
+            .open()
+            .select_related("student", "requested_teacher", "level", "level__track")
+        )
 
     @classmethod
     def record(cls, *, student, requested_teacher, level, requested_start_utc, requested_duration_minutes=None):
