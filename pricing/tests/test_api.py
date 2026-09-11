@@ -26,7 +26,9 @@ from accounts.tests.factories import (
     SubTeacherFactory,
     TeacherProfileFactory,
 )
-from curriculum.tests.factories import LevelFactory, TrackFactory
+from curriculum.tests.factories import LevelFactory, TrackFactory, admit
+from organizations.models import MembershipStatus, OrganizationRole
+from organizations.tests.factories import OrganizationFactory
 from pricing.models import PricingAgreement, PricingReason
 
 from .factories import (
@@ -37,19 +39,45 @@ from .factories import (
     PricingAgreementFactory,
 )
 
-AGREEMENTS_URL = reverse("pricing:agreements")
-MY_AGREEMENTS_URL = reverse("pricing:agreement-mine")
-
 
 class PricingWorld(APITestCase):
-    """Shared world: a lead, a sub-teacher, a student, and a level."""
+    """Shared world: an academy, a lead, a sub-teacher, a student, and a level."""
 
     def setUp(self):
+        self.organization = OrganizationFactory(name="Al-Furqan Academy")
+        self.track = TrackFactory(
+            organization=self.organization, name="Hifz", slug="hifz"
+        )
+        self.level = LevelFactory(track=self.track)
         self.lead = LeadTeacherFactory()
         self.sub = SubTeacherFactory()
         TeacherProfileFactory(user=self.sub, approved=True)
         self.student = StudentFactory()
-        self.level = LevelFactory()
+
+        # Active memberships in the academy
+        self.lead_membership = admit(
+            self.lead, self.organization, role=OrganizationRole.OWNER
+        )
+        self.sub_membership = admit(
+            self.sub, self.organization, role=OrganizationRole.TEACHER
+        )
+        self.student_membership = admit(
+            self.student, self.organization, role=OrganizationRole.STAFF
+        )
+
+    @property
+    def agreements_url(self):
+        return reverse(
+            "pricing:agreements",
+            kwargs={"organization_pk": self.organization.pk},
+        )
+
+    @property
+    def my_agreements_url(self):
+        return reverse(
+            "pricing:agreement-mine",
+            kwargs={"organization_pk": self.organization.pk},
+        )
 
     def payload(self, **overrides):
         body = {
@@ -63,9 +91,15 @@ class PricingWorld(APITestCase):
         body.update(overrides)
         return body
 
-    def post_agreement(self, user=None, **overrides):
-        self.client.force_authenticate(user=user or self.lead)
-        return self.client.post(AGREEMENTS_URL, self.payload(**overrides))
+    def post_agreement(self, user=None, organization=None, **overrides):
+        org = organization or self.organization
+        url = reverse(
+            "pricing:agreements", kwargs={"organization_pk": org.pk}
+        )
+        if user is not False:
+            self.client.force_authenticate(user=user or self.lead)
+        return self.client.post(url, self.payload(**overrides))
+
 
 
 class PricingAgreementCreateAPITests(PricingWorld):
@@ -103,7 +137,7 @@ class PricingAgreementCreateAPITests(PricingWorld):
         body = self.payload()
         del body["notes"]
         self.client.force_authenticate(user=self.lead)
-        response = self.client.post(AGREEMENTS_URL, body)
+        response = self.client.post(self.agreements_url, body)
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["notes"], "")
@@ -141,10 +175,13 @@ class PricingAgreementCreateAPITests(PricingWorld):
 
     def test_a_non_student_target_is_a_400(self):
         """The queryset is filtered to students, so a parent id is not found."""
-        response = self.post_agreement(student=ParentFactory().pk)
+        parent = ParentFactory()
+        admit(parent, self.organization, role=OrganizationRole.STAFF)
+        response = self.post_agreement(student=parent.pk)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("student", response.data)
         self.assertFalse(PricingAgreement.objects.exists())
+
 
 
 class PricingAgreementPermissionTests(PricingWorld):
@@ -182,7 +219,7 @@ class PricingAgreementPermissionTests(PricingWorld):
         self.assertFalse(PricingAgreement.objects.exists())
 
     def test_an_anonymous_caller_cannot_create_an_agreement(self):
-        response = self.client.post(AGREEMENTS_URL, self.payload())
+        response = self.client.post(self.agreements_url, self.payload())
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertFalse(PricingAgreement.objects.exists())
 
@@ -190,7 +227,7 @@ class PricingAgreementPermissionTests(PricingWorld):
         """Reading is gated too — a sub has no business seeing family rates."""
         PricingAgreementFactory(student=self.student, level=self.level)
         self.client.force_authenticate(user=self.sub)
-        response = self.client.get(AGREEMENTS_URL, {"student_id": self.student.pk})
+        response = self.client.get(self.agreements_url, {"student_id": self.student.pk})
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
@@ -226,7 +263,7 @@ class SupersedeAPITests(PricingWorld):
         self.post_agreement(agreed_rate=str(PREMIUM_RATE))
 
         self.client.force_authenticate(user=self.lead)
-        response = self.client.get(AGREEMENTS_URL, {"student_id": self.student.pk})
+        response = self.client.get(self.agreements_url, {"student_id": self.student.pk})
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 2)
@@ -237,7 +274,11 @@ class SupersedeAPITests(PricingWorld):
         )
 
     def test_a_replacement_for_another_level_does_not_supersede(self):
-        other = LevelFactory(track=TrackFactory(name="Hifz", slug="hifz-x"))
+        other = LevelFactory(
+            track=TrackFactory(
+                organization=self.organization, name="Hifz 2", slug="hifz-x"
+            )
+        )
         first = self.post_agreement()
         self.post_agreement(level=other.pk)
 
@@ -249,7 +290,7 @@ class PricingHistoryAPITests(PricingWorld):
 
     def get(self, user=None, **params):
         self.client.force_authenticate(user=user or self.lead)
-        return self.client.get(AGREEMENTS_URL, params)
+        return self.client.get(self.agreements_url, params)
 
     def test_the_lead_reads_a_students_history(self):
         agreement = PricingAgreementFactory(student=self.student, level=self.level)
@@ -291,9 +332,15 @@ class PricingHistoryAPITests(PricingWorld):
 class MyPricingAPITests(PricingWorld):
     """``GET /agreements/mine/`` — what the family sees, and what it does not."""
 
-    def get(self, user=None):
-        self.client.force_authenticate(user=user or self.student)
-        return self.client.get(MY_AGREEMENTS_URL)
+    def get(self, user=None, organization=None):
+        org = organization or self.organization
+        url = reverse(
+            "pricing:agreement-mine",
+            kwargs={"organization_pk": org.pk},
+        )
+        if user is not False:
+            self.client.force_authenticate(user=user or self.student)
+        return self.client.get(url)
 
     def test_a_student_sees_their_active_agreement(self):
         agreement = PricingAgreementFactory(student=self.student, level=self.level)
@@ -320,7 +367,11 @@ class MyPricingAPITests(PricingWorld):
         self.assertEqual([row["id"] for row in response.data], [current.pk])
 
     def test_one_row_per_level(self):
-        other = LevelFactory(track=TrackFactory(name="Arabic", slug="arabic-x"))
+        other = LevelFactory(
+            track=TrackFactory(
+                organization=self.organization, name="Arabic", slug="arabic-x"
+            )
+        )
         PricingAgreementFactory(student=self.student, level=self.level)
         PricingAgreementFactory(student=self.student, level=other)
 
@@ -337,6 +388,7 @@ class MyPricingAPITests(PricingWorld):
     def test_a_parent_cannot_read_their_childs_rate_here(self):
         """Narrower than booking on purpose — see permissions.py and tech-debt.md."""
         link = ParentLinkFactory()
+        admit(link.parent, self.organization, role=OrganizationRole.STAFF)
         PricingAgreementFactory(student=link.student, level=self.level)
 
         response = self.get(user=link.parent)
@@ -348,5 +400,131 @@ class MyPricingAPITests(PricingWorld):
                 self.assertEqual(self.get(user=user).status_code, status.HTTP_403_FORBIDDEN)
 
     def test_an_anonymous_caller_is_refused(self):
-        response = self.client.get(MY_AGREEMENTS_URL)
+        response = self.get(user=False)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class PricingTenancyAPITests(PricingWorld):
+    """Multi-academy boundary and tenant isolation tests for the API surface."""
+
+    def setUp(self):
+        super().setUp()
+        self.other_org = OrganizationFactory(name="Dar Al-Quran")
+        self.other_lead = LeadTeacherFactory()
+        self.other_student = StudentFactory()
+        self.other_track = TrackFactory(
+            organization=self.other_org, name="Hifz", slug="other-hifz"
+        )
+        self.other_level = LevelFactory(track=self.other_track)
+
+        admit(self.other_lead, self.other_org, role=OrganizationRole.OWNER)
+        admit(self.other_student, self.other_org, role=OrganizationRole.STAFF)
+
+    def test_post_agreement_with_foreign_level_fails(self):
+        """Cannot create an agreement using a level belonging to another academy."""
+        response = self.post_agreement(level=self.other_level.pk)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("level", response.data)
+        self.assertFalse(PricingAgreement.objects.filter(level=self.other_level).exists())
+
+    def test_post_agreement_with_foreign_student_fails(self):
+        """Cannot create an agreement for a student not enrolled in this academy."""
+        response = self.post_agreement(student=self.other_student.pk)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("student", response.data)
+        self.assertFalse(PricingAgreement.objects.filter(student=self.other_student).exists())
+
+    def test_cross_academy_lead_cannot_create_agreement(self):
+        """A lead from another academy cannot post agreements to this academy."""
+        response = self.post_agreement(user=self.other_lead)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(PricingAgreement.objects.exists())
+
+    def test_cross_academy_lead_cannot_view_agreements(self):
+        """A lead from another academy cannot view agreements in this academy."""
+        self.client.force_authenticate(user=self.other_lead)
+        response = self.client.get(
+            self.agreements_url, {"student_id": self.student.pk}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_suspended_lead_cannot_access_agreements(self):
+        """A lead with a suspended membership cannot manage agreements."""
+        self.lead_membership.status = MembershipStatus.SUSPENDED
+        self.lead_membership.save()
+
+        response = self.post_agreement(user=self.lead)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(user=self.lead)
+        get_response = self.client.get(
+            self.agreements_url, {"student_id": self.student.pk}
+        )
+        self.assertEqual(get_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_cross_academy_student_cannot_view_mine(self):
+        """A student from another academy cannot view mine under this academy."""
+        self.client.force_authenticate(user=self.other_student)
+        response = self.client.get(self.my_agreements_url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_suspended_student_cannot_view_mine(self):
+        """A suspended student cannot view their agreements in this academy."""
+        self.student_membership.status = MembershipStatus.SUSPENDED
+        self.student_membership.save()
+
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.my_agreements_url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_retired_unscoped_routes_return_404(self):
+        """Legacy unscoped routes are completely removed to prevent bypass."""
+        self.client.force_authenticate(user=self.lead)
+        self.assertEqual(
+            self.client.get("/api/pricing/agreements/").status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        self.assertEqual(
+            self.client.post("/api/pricing/agreements/", {}).status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        self.client.force_authenticate(user=self.student)
+        self.assertEqual(
+            self.client.get("/api/pricing/agreements/mine/").status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_multi_academy_student_mine_scoped_to_organization(self):
+        """A student belonging to multiple academies only sees agreements for the requested academy."""
+        admit(self.student, self.other_org, role=OrganizationRole.STAFF)
+        agreement_1 = PricingAgreementFactory(student=self.student, level=self.level)
+        agreement_2 = PricingAgreementFactory(
+            student=self.student, level=self.other_level
+        )
+
+        self.client.force_authenticate(user=self.student)
+        res_1 = self.client.get(self.my_agreements_url)
+        self.assertEqual(res_1.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in res_1.data], [agreement_1.pk])
+
+        other_mine_url = reverse(
+            "pricing:agreement-mine",
+            kwargs={"organization_pk": self.other_org.pk},
+        )
+        res_2 = self.client.get(other_mine_url)
+        self.assertEqual(res_2.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in res_2.data], [agreement_2.pk])
+
+    def test_student_history_scoped_to_organization(self):
+        """The lead's student history lookup only includes agreements within their academy."""
+        admit(self.student, self.other_org, role=OrganizationRole.STAFF)
+        agreement_1 = PricingAgreementFactory(student=self.student, level=self.level)
+        PricingAgreementFactory(student=self.student, level=self.other_level)
+
+        self.client.force_authenticate(user=self.lead)
+        response = self.client.get(
+            self.agreements_url, {"student_id": self.student.pk}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in response.data], [agreement_1.pk])
+

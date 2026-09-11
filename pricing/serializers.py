@@ -20,9 +20,21 @@ from rest_framework import serializers
 
 from accounts.models import Role, User
 from curriculum.models import Level
-from curriculum.serializers import LevelSerializer
+from curriculum.serializers import LevelSerializer, levels_in
 
 from .models import PricingAgreement
+
+
+def students_in(organization):
+    """Active student users in ``organization``."""
+    from organizations.models import MembershipStatus
+
+    return User.objects.filter(
+        role=Role.STUDENT,
+        organization_memberships__organization=organization,
+        organization_memberships__status=MembershipStatus.ACTIVE,
+    ).distinct()
+
 
 
 def as_drf_error(exc):
@@ -119,15 +131,22 @@ class PricingAgreementCreateSerializer(serializers.ModelSerializer):
     a caller sets.
     """
 
-    student = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(role=Role.STUDENT)
-    )
-    level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.all())
+    student = serializers.PrimaryKeyRelatedField(queryset=User.objects.none())
+    level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.none())
 
     class Meta:
         model = PricingAgreement
         fields = ["student", "level", "standard_rate", "agreed_rate", "reason", "notes"]
         extra_kwargs = {"notes": {"required": False}}
+
+    def get_fields(self):
+        fields = super().get_fields()
+        organization = self.context.get("organization")
+        if organization is not None:
+            fields["student"].queryset = students_in(organization)
+            fields["level"].queryset = levels_in(organization)
+        return fields
+
 
     def create(self, validated_data):
         agreement = PricingAgreement(
