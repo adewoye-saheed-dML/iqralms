@@ -19,6 +19,7 @@ from django.utils import timezone as dj_timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from accounts.models import Role
 from accounts.tests.factories import (
     LeadTeacherFactory,
     ParentFactory,
@@ -26,7 +27,12 @@ from accounts.tests.factories import (
     StudentFactory,
     SubTeacherFactory,
 )
-from curriculum.tests.factories import GroupEligibleLevelFactory, LevelFactory
+from curriculum.tests.factories import (
+    GroupEligibleLevelFactory,
+    LevelFactory,
+    admit,
+)
+from organizations.tests.factories import OrganizationFactory
 from scheduling.models import (
     Availability,
     Booking,
@@ -39,16 +45,32 @@ from .factories import (
     BookableLeadTeacherFactory,
     BookableTeacherFactory,
     CohortFactory,
+    ensure_teacher_configured,
     teaches,
 )
-from .test_routing_api import RouteAPIWorld
-
-MY_WAITLIST_URL = reverse("scheduling:waitlist-mine")
-FOR_TEACHER_URL = reverse("scheduling:waitlist-for-teacher")
+from .test_routing_api import RouteAPIWorld, route_url
 
 
-def promote_url(entry):
-    return reverse("scheduling:waitlist-promote", args=[entry.pk])
+def my_waitlist_url(organization):
+    return reverse(
+        "scheduling:waitlist-mine",
+        kwargs={"organization_pk": organization.pk},
+    )
+
+
+def for_teacher_url(organization):
+    return reverse(
+        "scheduling:waitlist-for-teacher",
+        kwargs={"organization_pk": organization.pk},
+    )
+
+
+def promote_url(organization, entry):
+    entry_pk = entry.pk if hasattr(entry, "pk") else entry
+    return reverse(
+        "scheduling:waitlist-promote",
+        kwargs={"organization_pk": organization.pk, "pk": entry_pk},
+    )
 
 
 class PreferredTeacherRouteAPIWorld(RouteAPIWorld):
@@ -157,13 +179,15 @@ class PreferredTeacherRouteAPITests(PreferredTeacherRouteAPIWorld):
     def test_an_unknown_preferred_teacher_is_a_400(self):
         self.client.force_authenticate(user=self.student)
         body = self.payload(preferred_teacher=999999)
-        response = self.client.post(reverse("scheduling:route"), body, format="json")
+        response = self.client.post(route_url(self.organization), body, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("preferred_teacher", response.data)
 
     def test_a_parent_can_name_a_teacher_for_a_linked_child(self):
         link = ParentLinkFactory()
+        admit(link.parent, self.organization)
+        admit(link.student, self.organization)
         wanted = self.available_teacher()
 
         response = self.post_prefer(wanted, user=link.parent, student=link.student.pk)
@@ -175,6 +199,8 @@ class PreferredTeacherRouteAPITests(PreferredTeacherRouteAPIWorld):
     def test_a_parent_naming_a_full_teacher_waitlists_their_child(self):
         """The entry belongs to the student, not to the parent who asked."""
         link = ParentLinkFactory()
+        admit(link.parent, self.organization)
+        admit(link.student, self.organization)
         wanted = self.available_teacher(hours=1)
         self.fill_week(wanted, 60)
 
@@ -194,7 +220,10 @@ class PreferredTeacherRouteAPITests(PreferredTeacherRouteAPIWorld):
 
     def test_a_teacher_cannot_route_a_preference_for_themselves(self):
         wanted = self.available_teacher()
-        for user in (SubTeacherFactory(), LeadTeacherFactory()):
+        for user in (
+            admit(SubTeacherFactory(), self.organization).user,
+            admit(LeadTeacherFactory(), self.organization).user,
+        ):
             with self.subTest(role=user.role):
                 response = self.post_prefer(wanted, user=user)
                 self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -204,7 +233,7 @@ class PreferredTeacherRouteAPITests(PreferredTeacherRouteAPIWorld):
         self.client.force_authenticate(user=None)
 
         response = self.client.post(
-            reverse("scheduling:route"),
+            route_url(self.organization),
             self.payload(preferred_teacher=wanted.pk),
             format="json",
         )
@@ -242,7 +271,7 @@ class PreferredTeacherNeverGetsACohortSeatAPITests(PreferredTeacherRouteAPIWorld
 
     def setUp(self):
         super().setUp()
-        self.level = GroupEligibleLevelFactory()
+        self.level = GroupEligibleLevelFactory(track__organization=self.organization)
 
     def open_cohort_for(self, teacher):
         return CohortFactory(
@@ -282,7 +311,10 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
 
     def setUp(self):
         super().setUp()
-        self.lead = BookableLeadTeacherFactory()
+        self.lead = admit(
+            BookableLeadTeacherFactory(), self.organization
+        ).user
+        ensure_teacher_configured(self.lead, self.organization)
 
     def waiting_entry(self):
         """An open entry created the way production creates them, then freed.
@@ -301,7 +333,9 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
 
     def promote(self, entry, user=None, **body):
         self.client.force_authenticate(user=user or self.lead)
-        return self.client.post(promote_url(entry), body, format="json")
+        return self.client.post(
+            promote_url(self.organization, entry), body, format="json"
+        )
 
     def test_the_lead_promotes_an_entry_into_a_booking(self):
         """Acceptance criterion 7, over HTTP."""
@@ -351,7 +385,7 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
         """Acceptance criterion 8, over HTTP — refused, not forced."""
         entry = self.waiting_entry()
         Booking.objects.create(
-            student=StudentFactory(),
+            student=admit(StudentFactory(), self.organization).user,
             teacher=entry.requested_teacher,
             level=entry.level,
             start_time_utc=entry.requested_start_utc,
@@ -370,7 +404,7 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
         """The lead needs to know it is a clash, not a bug."""
         entry = self.waiting_entry()
         Booking.objects.create(
-            student=StudentFactory(),
+            student=admit(StudentFactory(), self.organization).user,
             teacher=entry.requested_teacher,
             level=entry.level,
             start_time_utc=entry.requested_start_utc,
@@ -403,7 +437,7 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
     def test_an_unknown_entry_is_a_404(self):
         self.client.force_authenticate(user=self.lead)
         response = self.client.post(
-            reverse("scheduling:waitlist-promote", args=[999999]), {}, format="json"
+            promote_url(self.organization, 999999), {}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
@@ -429,7 +463,8 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
 
     def test_a_parent_cannot_promote_their_child(self):
         entry = self.waiting_entry()
-        response = self.promote(entry, user=ParentFactory())
+        parent = admit(ParentFactory(), self.organization).user
+        response = self.promote(entry, user=parent)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_an_anonymous_caller_cannot_promote(self):
@@ -438,27 +473,49 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
         # otherwise this asserts "a student cannot promote" a second time.
         self.client.force_authenticate(user=None)
 
-        response = self.client.post(promote_url(entry), {}, format="json")
+        response = self.client.post(
+            promote_url(self.organization, entry), {}, format="json"
+        )
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         entry.refresh_from_db()
         self.assertTrue(entry.is_open)
+
+    def test_a_lead_from_another_academy_cannot_promote(self):
+        entry = self.waiting_entry()
+        other_org = OrganizationFactory()
+        other_lead = admit(
+            BookableLeadTeacherFactory(), other_org
+        ).user
+        self.client.force_authenticate(user=other_lead)
+        response = self.client.post(
+            promote_url(self.organization, entry), {}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class TeacherWaitlistListAPITests(APITestCase):
     """``GET /waitlist/for-teacher/?teacher_id=`` — the queue the lead works."""
 
     def setUp(self):
-        self.lead = BookableLeadTeacherFactory()
-        self.teacher = BookableTeacherFactory()
+        self.organization = OrganizationFactory()
+        self.lead = admit(
+            BookableLeadTeacherFactory(), self.organization
+        ).user
+        self.teacher = admit(
+            BookableTeacherFactory(), self.organization
+        ).user
+        ensure_teacher_configured(self.teacher, self.organization)
         self.window = Availability.objects.create(
+            organization=self.organization,
             teacher=self.teacher,
             weekday=0,
             start_time_utc=time(0, 0),
             end_time_utc=time.max,
         )
-        self.level = LevelFactory()
+        self.level = LevelFactory(track__organization=self.organization)
         teaches(self.teacher, self.level)
+        self.url = for_teacher_url(self.organization)
 
     def entry(self, *, priority=0, hours=1, student=None):
         from .factories import WaitlistEntryFactory, slot_at
@@ -467,14 +524,14 @@ class TeacherWaitlistListAPITests(APITestCase):
             availability=self.window,
             requested_teacher=self.teacher,
             level=self.level,
-            student=student or StudentFactory(),
+            student=student or admit(StudentFactory(), self.organization).user,
             requested_start_utc=slot_at(self.window, hours * 60),
             priority=priority,
         )
 
     def get(self, user=None, **params):
         self.client.force_authenticate(user=user or self.lead)
-        return self.client.get(FOR_TEACHER_URL, params)
+        return self.client.get(self.url, params)
 
     def test_open_entries_are_listed(self):
         entry = self.entry()
@@ -506,6 +563,7 @@ class TeacherWaitlistListAPITests(APITestCase):
         done.mark_fulfilled(
             BookingFactory(
                 availability=self.window,
+                teacher=self.teacher,
                 student=done.student,
                 level=self.level,
                 start_time_utc=done.requested_start_utc,
@@ -519,10 +577,52 @@ class TeacherWaitlistListAPITests(APITestCase):
         from .factories import WaitlistEntryFactory
 
         mine = self.entry()
-        WaitlistEntryFactory()
+        other_teacher = admit(
+            BookableTeacherFactory(), self.organization
+        ).user
+        ensure_teacher_configured(other_teacher, self.organization)
+        other_window = Availability.objects.create(
+            organization=self.organization,
+            teacher=other_teacher,
+            weekday=0,
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+        WaitlistEntryFactory(
+            availability=other_window,
+            requested_teacher=other_teacher,
+            level=self.level,
+            student=admit(StudentFactory(), self.organization).user,
+        )
 
         response = self.get(teacher_id=self.teacher.pk)
         self.assertEqual([row["id"] for row in response.data], [mine.pk])
+
+    def test_a_foreign_organization_queue_is_not_listed(self):
+        other_org = OrganizationFactory()
+        other_teacher = admit(
+            BookableTeacherFactory(), other_org
+        ).user
+        ensure_teacher_configured(other_teacher, other_org)
+        other_level = LevelFactory(track__organization=other_org)
+        other_window = Availability.objects.create(
+            organization=other_org,
+            teacher=other_teacher,
+            weekday=0,
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+        from .factories import WaitlistEntryFactory
+
+        WaitlistEntryFactory(
+            availability=other_window,
+            requested_teacher=other_teacher,
+            level=other_level,
+            student=admit(StudentFactory(), other_org).user,
+        )
+        response = self.get(teacher_id=other_teacher.pk)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list(response.data), [])
 
     def test_teacher_id_is_required(self):
         response = self.get()
@@ -552,8 +652,14 @@ class TeacherWaitlistListAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_an_anonymous_caller_is_refused(self):
-        response = self.client.get(FOR_TEACHER_URL, {"teacher_id": self.teacher.pk})
+        response = self.client.get(self.url, {"teacher_id": self.teacher.pk})
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_a_non_member_lead_is_refused(self):
+        outsider = LeadTeacherFactory()
+        self.client.force_authenticate(user=outsider)
+        response = self.client.get(self.url, {"teacher_id": self.teacher.pk})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class MyWaitlistAPITests(APITestCase):
@@ -562,12 +668,33 @@ class MyWaitlistAPITests(APITestCase):
     def setUp(self):
         from .factories import WaitlistEntryFactory
 
-        self.entry = WaitlistEntryFactory(student=StudentFactory(timezone="Africa/Lagos"))
-        self.student = self.entry.student
+        self.organization = OrganizationFactory()
+        self.student = admit(
+            StudentFactory(timezone="Africa/Lagos"), self.organization
+        ).user
+        self.teacher = admit(
+            BookableTeacherFactory(), self.organization
+        ).user
+        ensure_teacher_configured(self.teacher, self.organization)
+        self.level = LevelFactory(track__organization=self.organization)
+        self.window = Availability.objects.create(
+            organization=self.organization,
+            teacher=self.teacher,
+            weekday=0,
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+        self.entry = WaitlistEntryFactory(
+            availability=self.window,
+            requested_teacher=self.teacher,
+            level=self.level,
+            student=self.student,
+        )
+        self.url = my_waitlist_url(self.organization)
 
     def get(self, user=None):
         self.client.force_authenticate(user=user or self.student)
-        return self.client.get(MY_WAITLIST_URL)
+        return self.client.get(self.url)
 
     def test_a_student_sees_their_own_entry_and_its_status(self):
         response = self.get()
@@ -591,7 +718,8 @@ class MyWaitlistAPITests(APITestCase):
         from .factories import BookingFactory
 
         booking = BookingFactory(
-            availability=self.entry.requested_teacher.availability_windows.first(),
+            availability=self.window,
+            teacher=self.teacher,
             student=self.student,
             level=self.entry.level,
             start_time_utc=self.entry.requested_start_utc,
@@ -606,7 +734,13 @@ class MyWaitlistAPITests(APITestCase):
     def test_another_students_entry_is_not_visible(self):
         from .factories import WaitlistEntryFactory
 
-        WaitlistEntryFactory()
+        other_student = admit(StudentFactory(), self.organization).user
+        WaitlistEntryFactory(
+            availability=self.window,
+            requested_teacher=self.teacher,
+            level=self.level,
+            student=other_student,
+        )
         response = self.get()
         self.assertEqual([row["id"] for row in response.data], [self.entry.pk])
 
@@ -621,7 +755,7 @@ class MyWaitlistAPITests(APITestCase):
         is one of the two people who can *create* an entry. Refusing them the
         listing would mean a request nobody who made it can check.
         """
-        parent = ParentFactory()
+        parent = admit(ParentFactory(), self.organization).user
         ParentLinkFactory(parent=parent, student=self.student)
 
         response = self.get(user=parent)
@@ -632,16 +766,18 @@ class MyWaitlistAPITests(APITestCase):
 
     def test_a_parent_does_not_see_an_unlinked_students_entries(self):
         """Scoped through ParentLink, exactly as cancelling a booking is."""
-        response = self.get(user=ParentLinkFactory().parent)
+        parent = admit(ParentFactory(), self.organization).user
+        response = self.get(user=parent)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data, [])
 
     def test_a_child_with_two_linked_parents_is_listed_once(self):
         """What the queryset's distinct() is for — a join, not a duplicate."""
-        parent = ParentFactory()
+        parent = admit(ParentFactory(), self.organization).user
         ParentLinkFactory(parent=parent, student=self.student)
-        ParentLinkFactory(parent=ParentFactory(), student=self.student)
+        parent2 = admit(ParentFactory(), self.organization).user
+        ParentLinkFactory(parent=parent2, student=self.student)
 
         response = self.get(user=parent)
 
@@ -655,7 +791,9 @@ class MyWaitlistAPITests(APITestCase):
         """
         from accounts.utils import to_user_timezone
 
-        parent = ParentFactory(timezone="America/New_York")
+        parent = admit(
+            ParentFactory(timezone="America/New_York"), self.organization
+        ).user
         ParentLinkFactory(parent=parent, student=self.student)
 
         response = self.get(user=parent)
@@ -669,8 +807,14 @@ class MyWaitlistAPITests(APITestCase):
         self.assertNotIn("+01:00", response.data[0]["requested_start_local"])
 
     def test_an_anonymous_caller_is_refused(self):
-        response = self.client.get(MY_WAITLIST_URL)
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_a_non_member_student_is_refused(self):
+        outsider = StudentFactory()
+        self.client.force_authenticate(user=outsider)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class WaitlistIsCreatedOnlyByRoutingAPITests(PreferredTeacherRouteAPIWorld):
@@ -689,7 +833,7 @@ class WaitlistIsCreatedOnlyByRoutingAPITests(PreferredTeacherRouteAPIWorld):
 
     def test_posting_to_the_listing_is_refused(self):
         self.client.force_authenticate(user=self.student)
-        response = self.client.post(MY_WAITLIST_URL, {}, format="json")
+        response = self.client.post(my_waitlist_url(self.organization), {}, format="json")
         self.assertEqual(
             response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED
         )

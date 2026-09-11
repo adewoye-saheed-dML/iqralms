@@ -40,7 +40,11 @@ from django.db import connection, transaction
 from django.test import TransactionTestCase
 
 from accounts.tests.factories import StudentFactory
-from curriculum.tests.factories import GroupEligibleLevelFactory, LevelFactory
+from curriculum.tests.factories import (
+    GroupEligibleLevelFactory,
+    LevelFactory,
+    admit,
+)
 from scheduling.exceptions import NoCapacity
 from scheduling.models import (
     Availability,
@@ -80,14 +84,20 @@ class BookingConcurrencyTests(TransactionTestCase):
             start_time_utc=DEFAULT_WINDOW_START,
             end_time_utc=DEFAULT_WINDOW_END,
         )
+        self.organization = self.window.organization
         self.teacher = self.window.teacher
-        self.level = LevelFactory()
+        self.level = LevelFactory(track__organization=self.organization)
         # Phase 4's specialty rule would otherwise refuse every contender, which
         # would pass "only one booking survives" for entirely the wrong reason.
         teaches(self.teacher, self.level)
         # The one slot everybody wants. Future-dated by slot_at, so the Phase 3.5
         # past-start rule plays no part in what is being measured here.
         self.slot = slot_at(self.window, 120)
+
+    def student(self, org=None):
+        student = StudentFactory()
+        admit(student, org or self.organization)
+        return student
 
     # --- Machinery ----------------------------------------------------------
 
@@ -151,7 +161,7 @@ class BookingConcurrencyTests(TransactionTestCase):
 
     def test_only_one_of_two_simultaneous_bookings_for_one_slot_survives(self):
         """Acceptance criterion 1, minimal form: two requests, one slot."""
-        results = self.book_concurrently([StudentFactory(), StudentFactory()])
+        results = self.book_concurrently([self.student(), self.student()])
 
         self.assert_no_crashes(results)
         outcomes = sorted(outcome for outcome, _ in results)
@@ -165,7 +175,7 @@ class BookingConcurrencyTests(TransactionTestCase):
         database happened to blow up on the second write", which would also
         leave one booking behind and would otherwise pass the test above.
         """
-        results = self.book_concurrently([StudentFactory(), StudentFactory()])
+        results = self.book_concurrently([self.student(), self.student()])
 
         self.assert_no_crashes(results)
         refusals = [detail for outcome, detail in results if outcome == "refused"]
@@ -177,7 +187,7 @@ class BookingConcurrencyTests(TransactionTestCase):
 
     def test_one_slot_survives_several_simultaneous_contenders(self):
         """The same invariant with more pressure than two threads."""
-        students = [StudentFactory() for _ in range(CONTENDERS)]
+        students = [self.student() for _ in range(CONTENDERS)]
         results = self.book_concurrently(students)
 
         self.assert_no_crashes(results)
@@ -196,7 +206,7 @@ class BookingConcurrencyTests(TransactionTestCase):
         name is generated in ``save()`` and validated for uniqueness, so it is
         the field most likely to show damage from a rolled-back sibling.
         """
-        results = self.book_concurrently([StudentFactory(), StudentFactory()])
+        results = self.book_concurrently([self.student(), self.student()])
         self.assert_no_crashes(results)
 
         booking = Booking.objects.get(teacher=self.teacher)
@@ -216,12 +226,13 @@ class BookingConcurrencyTests(TransactionTestCase):
         not a conflict and must not be treated as one.
         """
         other_window = AvailabilityFactory(
+            organization=self.organization,
             weekday=self.window.weekday,
             start_time_utc=self.window.start_time_utc,
             end_time_utc=self.window.end_time_utc,
         )
         other_teacher = teaches(other_window.teacher, self.level)
-        students = [StudentFactory(), StudentFactory()]
+        students = [self.student(), self.student()]
         barrier = threading.Barrier(2, timeout=THREAD_TIMEOUT)
         results = [None, None]
 
@@ -260,7 +271,7 @@ class BookingConcurrencyTests(TransactionTestCase):
         leave a pile of duplicate rows behind — the OneToOneField is what
         guarantees that, and this is the test that would notice it being relaxed.
         """
-        self.book_concurrently([StudentFactory() for _ in range(CONTENDERS)])
+        self.book_concurrently([self.student() for _ in range(CONTENDERS)])
 
         self.assertEqual(
             TeacherBookingLock.objects.filter(teacher=self.teacher).count(), 1
@@ -298,8 +309,14 @@ class RoutingConcurrencyTests(TransactionTestCase):
             start_time_utc=DEFAULT_WINDOW_START,
             end_time_utc=DEFAULT_WINDOW_END,
         )
+        self.organization = self.window.organization
         self.teacher = self.window.teacher
         self.slot = slot_at(self.window, 120)
+
+    def student(self, org=None):
+        student = StudentFactory()
+        admit(student, org or self.organization)
+        return student
 
     def route_concurrently(self, students, level):
         """Have every student ask routing for the same slot at the same instant.
@@ -319,6 +336,7 @@ class RoutingConcurrencyTests(TransactionTestCase):
                     student=student,
                     level=level,
                     start_time_utc=self.slot,
+                    organization=self.organization,
                 )
                 results[index] = ("routed", routed)
             except (ValidationError, NoCapacity) as exc:
@@ -358,9 +376,10 @@ class RoutingConcurrencyTests(TransactionTestCase):
         contenders all pass the overlap check against a database that still shows
         the slot free, and all commit.
         """
-        level = LevelFactory()
+        level = LevelFactory(track__organization=self.organization)
         lead = teaches(BookableLeadTeacherFactory(), level)
         Availability.objects.create(
+            organization=self.organization,
             teacher=lead,
             weekday=self.slot.weekday(),
             start_time_utc=time(0, 0),
@@ -368,7 +387,7 @@ class RoutingConcurrencyTests(TransactionTestCase):
         )
 
         results = self.route_concurrently(
-            [StudentFactory() for _ in range(CONTENDERS)], level
+            [self.student() for _ in range(CONTENDERS)], level
         )
 
         self.assert_no_crashes(results)
@@ -392,12 +411,18 @@ class RoutingConcurrencyTests(TransactionTestCase):
         be accepted. Nothing else is eligible, so any third booking would be the
         check-then-write race the lock exists to close.
         """
-        level = LevelFactory()
+        level = LevelFactory(track__organization=self.organization)
         lead = teaches(BookableLeadTeacherFactory(), level)
+        from accounts.models import OrganizationTeacherConfiguration
+
         profile = lead.teacher_profile
         profile.max_weekly_hours = 1
         profile.save()
+        OrganizationTeacherConfiguration.objects.filter(
+            membership__user=lead, membership__organization=self.organization
+        ).update(max_weekly_hours=1)
         Availability.objects.create(
+            organization=self.organization,
             teacher=lead,
             weekday=self.slot.weekday(),
             start_time_utc=time(0, 0),
@@ -405,12 +430,12 @@ class RoutingConcurrencyTests(TransactionTestCase):
         )
 
         results = self.route_concurrently(
-            [StudentFactory() for _ in range(CONTENDERS)], level
+            [self.student() for _ in range(CONTENDERS)], level
         )
 
         self.assert_no_crashes(results)
         self.assertLessEqual(
-            weekly_committed_minutes(lead.pk, self.slot),
+            weekly_committed_minutes(lead.pk, self.slot, organization=self.organization),
             60,
             "the cap must hold under contention, not only in single-file writes",
         )
@@ -423,7 +448,7 @@ class RoutingConcurrencyTests(TransactionTestCase):
         the teacher's lock inside routing's transaction, keeps a one-seat class from
         taking four students.
         """
-        level = GroupEligibleLevelFactory()
+        level = GroupEligibleLevelFactory(track__organization=self.organization)
         cohort_teacher = teaches(self.teacher, level)
         cohort = CohortFactory(
             availability=self.window,
@@ -434,7 +459,7 @@ class RoutingConcurrencyTests(TransactionTestCase):
         )
 
         results = self.route_concurrently(
-            [StudentFactory() for _ in range(CONTENDERS)], level
+            [self.student() for _ in range(CONTENDERS)], level
         )
 
         self.assert_no_crashes(results)
@@ -457,16 +482,17 @@ class RoutingConcurrencyTests(TransactionTestCase):
         ``Booking.save()`` — which is precisely what a ``bulk_create`` of seats
         would skip.
         """
-        level = LevelFactory()
+        level = LevelFactory(track__organization=self.organization)
         lead = teaches(BookableLeadTeacherFactory(), level)
         Availability.objects.create(
+            organization=self.organization,
             teacher=lead,
             weekday=self.slot.weekday(),
             start_time_utc=time(0, 0),
             end_time_utc=time.max,
         )
 
-        self.route_concurrently([StudentFactory(), StudentFactory()], level)
+        self.route_concurrently([self.student(), self.student()], level)
 
         self.assertEqual(
             TeacherBookingLock.objects.filter(teacher=lead).count(),
@@ -503,10 +529,16 @@ class LockIsStillRequiredOnPostgresTests(TransactionTestCase):
             start_time_utc=DEFAULT_WINDOW_START,
             end_time_utc=DEFAULT_WINDOW_END,
         )
+        self.organization = self.window.organization
         self.teacher = self.window.teacher
-        self.level = LevelFactory()
+        self.level = LevelFactory(track__organization=self.organization)
         teaches(self.teacher, self.level)
         self.slot = slot_at(self.window, 120)
+
+    def student(self, org=None):
+        student = StudentFactory()
+        admit(student, org or self.organization)
+        return student
 
     def test_the_backend_provides_the_row_lock_the_mechanism_needs(self):
         """The single fact that made the SQLite implementation different.
@@ -596,7 +628,7 @@ class LockIsStillRequiredOnPostgresTests(TransactionTestCase):
             both_have_read.wait()
             return clashes
 
-        students = [StudentFactory(), StudentFactory()]
+        students = [self.student(), self.student()]
         outcomes = [None, None]
 
         def attempt(index, student):
@@ -675,7 +707,7 @@ class LockIsStillRequiredOnPostgresTests(TransactionTestCase):
                 connection.close()
 
         threads = [
-            threading.Thread(target=attempt, args=(StudentFactory(),))
+            threading.Thread(target=attempt, args=(self.student(),))
             for _ in range(2)
         ]
         for thread in threads:

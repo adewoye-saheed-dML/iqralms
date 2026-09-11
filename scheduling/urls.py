@@ -18,33 +18,63 @@ from .views import (
 
 app_name = "scheduling"
 
+ACADEMY = "organizations/<int:organization_pk>/"
+
 urlpatterns = [
-    path("availability/", AvailabilityListView.as_view(), name="availability-list"),
-    path("bookings/", BookingCreateView.as_view(), name="booking-create"),
-    path("bookings/mine/", MyBookingListView.as_view(), name="booking-mine"),
     path(
-        "bookings/teaching/",
+        f"{ACADEMY}availability/",
+        AvailabilityListView.as_view(),
+        name="availability-list",
+    ),
+    path(
+        f"{ACADEMY}bookings/",
+        BookingCreateView.as_view(),
+        name="booking-create",
+    ),
+    path(
+        f"{ACADEMY}bookings/mine/",
+        MyBookingListView.as_view(),
+        name="booking-mine",
+    ),
+    path(
+        f"{ACADEMY}bookings/teaching/",
         TeachingBookingListView.as_view(),
         name="booking-teaching",
     ),
     path(
-        "bookings/<int:pk>/cancel/",
+        f"{ACADEMY}bookings/<int:pk>/cancel/",
         BookingCancelView.as_view(),
         name="booking-cancel",
     ),
     # Phase 4 — the system picks the teacher, and group classes exist.
-    path("route/", RouteView.as_view(), name="route"),
-    path("cohorts/", CohortCreateView.as_view(), name="cohort-create"),
-    path("cohorts/open/", OpenCohortListView.as_view(), name="cohort-open"),
-    # Phase 5 — a named teacher who is full becomes a tracked promise.
-    path("waitlist/mine/", MyWaitlistListView.as_view(), name="waitlist-mine"),
     path(
-        "waitlist/for-teacher/",
+        f"{ACADEMY}route/",
+        RouteView.as_view(),
+        name="route",
+    ),
+    path(
+        f"{ACADEMY}cohorts/",
+        CohortCreateView.as_view(),
+        name="cohort-create",
+    ),
+    path(
+        f"{ACADEMY}cohorts/open/",
+        OpenCohortListView.as_view(),
+        name="cohort-open",
+    ),
+    # Phase 5 — a named teacher who is full becomes a tracked promise.
+    path(
+        f"{ACADEMY}waitlist/mine/",
+        MyWaitlistListView.as_view(),
+        name="waitlist-mine",
+    ),
+    path(
+        f"{ACADEMY}waitlist/for-teacher/",
         TeacherWaitlistListView.as_view(),
         name="waitlist-for-teacher",
     ),
     path(
-        "waitlist/<int:pk>/promote/",
+        f"{ACADEMY}waitlist/<int:pk>/promote/",
         WaitlistPromoteView.as_view(),
         name="waitlist-promote",
     ),

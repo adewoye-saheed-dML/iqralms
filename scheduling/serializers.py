@@ -43,6 +43,49 @@ def viewer_timezone(context, fallback_user):
     return fallback_user.timezone
 
 
+def levels_in(organization):
+    """Levels belonging to tracks owned by ``organization``."""
+    return Level.objects.filter(track__organization=organization)
+
+
+def teachers_in(organization):
+    """Active teachers and lead teachers in ``organization``."""
+    from organizations.models import MembershipStatus
+
+    return User.objects.filter(
+        organization_memberships__organization=organization,
+        organization_memberships__status=MembershipStatus.ACTIVE,
+        role__in=[Role.SUB, Role.LEAD],
+    ).distinct()
+
+
+class AcademyScopedSerializerMixin:
+    """Base mixin for scheduling write shapes: relations resolve inside one academy only.
+
+    ``scoped_querysets`` names the related fields to narrow and the queryset to
+    narrow each to. It is applied in ``get_fields()`` rather than ``__init__``
+    because the context — and therefore the organization — is attached to the
+    serializer after construction.
+    """
+
+    scoped_querysets = {}
+
+    @property
+    def organization(self):
+        """The tenant the view has verified the caller into, or ``None``."""
+        return self.context.get("organization")
+
+    def get_fields(self):
+        fields = super().get_fields()
+        organization = self.organization
+        if organization is None:
+            return fields
+        for name, build in self.scoped_querysets.items():
+            if name in fields:
+                fields[name].queryset = build(organization)
+        return fields
+
+
 def resolve_requested_student(caller, student, organization=None):
     """Which student a request is for, given the caller, an optional id, and optional organization.
 
@@ -181,7 +224,7 @@ class BookingSerializer(serializers.ModelSerializer):
         return local.isoformat() if local else None
 
 
-class BookingCreateSerializer(serializers.Serializer):
+class BookingCreateSerializer(AcademyScopedSerializerMixin, serializers.Serializer):
     """A student books themselves, or a parent books a linked child.
 
     Everything about *whether* the slot is legal — declared hours, overlap, an
@@ -194,8 +237,13 @@ class BookingCreateSerializer(serializers.Serializer):
     three reasons are the routing engine's to record.
     """
 
-    teacher = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
-    level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.all())
+    scoped_querysets = {
+        "level": levels_in,
+        "teacher": teachers_in,
+    }
+
+    teacher = serializers.PrimaryKeyRelatedField(queryset=User.objects.none())
+    level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.none())
     start_time_utc = serializers.DateTimeField()
     duration_minutes = serializers.IntegerField(
         required=False, default=DEFAULT_DURATION_MINUTES, min_value=1
@@ -209,9 +257,8 @@ class BookingCreateSerializer(serializers.Serializer):
     def validate(self, attrs):
         level = attrs.get("level")
         organization = (
-            level.track.organization
-            if level and hasattr(level, "track") and level.track
-            else None
+            self.organization
+            or (level.track.organization if level and hasattr(level, "track") and level.track else None)
         )
         attrs["student"] = resolve_requested_student(
             self.context["request"].user,
@@ -275,7 +322,7 @@ class CohortSerializer(serializers.ModelSerializer):
         return local.isoformat() if local else None
 
 
-class CohortCreateSerializer(serializers.ModelSerializer):
+class CohortCreateSerializer(AcademyScopedSerializerMixin, serializers.ModelSerializer):
     """The lead teacher opens a group class.
 
     ``students`` is deliberately not writable: seats are given by routing or by
@@ -283,6 +330,14 @@ class CohortCreateSerializer(serializers.ModelSerializer):
     cohort that could be created with students already in it would have members
     holding no session.
     """
+
+    scoped_querysets = {
+        "level": levels_in,
+        "teacher": teachers_in,
+    }
+
+    teacher = serializers.PrimaryKeyRelatedField(queryset=User.objects.none())
+    level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.none())
 
     class Meta:
         model = Cohort
@@ -319,7 +374,7 @@ class TimeWindowSerializer(serializers.Serializer):
     )
 
 
-class RouteRequestSerializer(serializers.Serializer):
+class RouteRequestSerializer(AcademyScopedSerializerMixin, serializers.Serializer):
     """``POST /route/`` — let the system decide who teaches this.
 
     ...unless ``preferred_teacher`` is given, which is Phase 5's addition: naming
@@ -330,7 +385,11 @@ class RouteRequestSerializer(serializers.Serializer):
     it was not asked to honour.
     """
 
-    level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.all())
+    scoped_querysets = {
+        "level": levels_in,
+    }
+
+    level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.none())
     requested_time_window = TimeWindowSerializer()
     student = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.filter(role=Role.STUDENT),
@@ -355,19 +414,26 @@ class RouteRequestSerializer(serializers.Serializer):
     )
 
     def validate_preferred_teacher(self, value):
-        if value is not None and not value.is_teacher:
-            raise serializers.ValidationError(
-                "Only a lead or sub teacher can be asked for by name (got "
-                f"'{value.role}')."
-            )
+        if value is not None:
+            if not value.is_teacher:
+                raise serializers.ValidationError(
+                    "Only a lead or sub teacher can be asked for by name (got "
+                    f"'{value.role}')."
+                )
+            if self.organization is not None:
+                from organizations.models import active_membership
+
+                if not active_membership(user=value, organization=self.organization):
+                    raise serializers.ValidationError(
+                        "That teacher is not an active member of this organization."
+                    )
         return value
 
     def validate(self, attrs):
         level = attrs.get("level")
         organization = (
-            level.track.organization
-            if level and hasattr(level, "track") and level.track
-            else None
+            self.organization
+            or (level.track.organization if level and hasattr(level, "track") and level.track else None)
         )
         attrs["student"] = resolve_requested_student(
             self.context["request"].user,
