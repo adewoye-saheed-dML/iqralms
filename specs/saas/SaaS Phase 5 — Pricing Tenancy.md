@@ -2,7 +2,7 @@
 
 ## Status
 
-**PLANNED**
+**COMPLETED**
 
 ## Objective
 
@@ -50,15 +50,15 @@ Payments, billing, invoices, subscriptions, wallets, teacher payouts, teacher wa
 
 ## Tasks
 
-| Task | Purpose |
-|---|---|
-| 5.1 | Pricing ownership audit |
-| 5.2 | Pricing model integrity |
-| 5.3 | Pricing API tenancy |
-| 5.4 | Pricing permissions and privacy |
-| 5.5 | Tenant-isolation tests |
-| 5.6 | Legacy data and migrations |
-| 5.7 | Acceptance and documentation |
+| Task | Purpose | Status |
+|---|---|---|
+| 5.1 | Pricing ownership audit | COMPLETED |
+| 5.2 | Pricing model integrity | COMPLETED |
+| 5.3 | Pricing API tenancy | COMPLETED |
+| 5.4 | Pricing permissions and privacy | COMPLETED |
+| 5.5 | Tenant-isolation tests | COMPLETED |
+| 5.6 | Legacy data and migrations | COMPLETED |
+| 5.7 | Acceptance and documentation | COMPLETED |
 
 ## Phase gate
 

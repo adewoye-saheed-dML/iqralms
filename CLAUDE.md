@@ -11,23 +11,22 @@
 - Serializers and permissions enforce tenant isolation server-side.
 - Adversarial tenant-isolation tests are required.
 
-## Current Phase — SaaS Phase 5 Pricing Tenancy
+## Accepted SaaS Phase 5 Decisions
 
-The current phase makes the existing pricing agreement domain tenant-safe. Do not introduce payments, billing, invoices, subscriptions, wallets, or teacher payouts in this phase.
+- `PricingAgreement` derives organization ownership through `level.track.organization`. No redundant `organization` column is added.
+- `PricingAgreement.clean()` validates that both the student and the approver hold active memberships in `level.track.organization`.
+- `PricingAgreement.save()` calls `full_clean()` to guarantee invariant enforcement across ORM, admin, and API writes.
+- Pricing APIs are mounted under `/api/pricing/organizations/<organization_pk>/agreements/` and `/api/pricing/organizations/<organization_pk>/agreements/mine/`.
+- Legacy unscoped routes (`/api/pricing/agreements/` and `.../mine/`) are retired and return 404 to eliminate tenant bypass.
+- Write serializers declare foreign relations with `Model.objects.none()` and scope them only in `get_fields()` with request context, failing closed and allowing clean OpenAPI schema inspection.
+- Legacy data is remediated non-destructively by backfilling active memberships for unadmitted historical students/approvers and deactivating older duplicate active agreements.
+- Multi-academy boundary isolation is verified through an adversarial test suite (`test_tenant_isolation.py`).
 
-Specification: `specs/saas/SaaS Phase 5 — Pricing Tenancy.md`
+## SaaS Phase 5 Complete — Next Phase: SaaS Phase 6 Assessment Tenancy
 
-Task files:
-- `specs/saas/phase-5/00-core.md`
-- `specs/saas/phase-5/01-pricing-ownership-audit.md`
-- `specs/saas/phase-5/02-pricing-model-integrity.md`
-- `specs/saas/phase-5/03-pricing-api-tenancy.md`
-- `specs/saas/phase-5/04-pricing-permissions-and-privacy.md`
-- `specs/saas/phase-5/05-pricing-tenant-isolation-tests.md`
-- `specs/saas/phase-5/06-legacy-data-and-migrations.md`
-- `specs/saas/phase-5/07-acceptance-and-documentation.md`
+SaaS Phase 5 is COMPLETE. All 7 tasks, 98 pricing tests, 1180 multi-app tests, migrations, tenant isolation tests, and OpenAPI schema validation pass against PostgreSQL.
 
-Do not start SaaS Phase 6 until Phase 5 implementation, tests, migrations, tenant isolation, manual/API acceptance, OpenAPI verification, documentation, and commit are complete.
+Do not start SaaS Phase 6 until Phase 6 specifications and development tasks are planned and approved.
 
 ## Working Session Discipline
 

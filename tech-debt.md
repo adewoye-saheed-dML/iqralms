@@ -892,7 +892,7 @@ Format:
   `Track.objects.filter(organization=...)` / `Level.objects.filter(track__organization=...)`
   — the two helpers `curriculum/serializers.py` already exposes as `tracks_in()` and
   `levels_in()`.
-- **Revisit when:** SaaS Phase 5 (pricing) and 6 (assessment). The
+- **Revisit when:** SaaS Phase 5 (pricing — resolved 2026-09-11) and SaaS Phase 6 (assessment). The
   tenant security audit should confirm none were missed.
 
 ## 2026-09-05 — Curriculum authoring is owner/admin only, which may be too narrow
@@ -928,3 +928,16 @@ Format:
 - **Why:** Out of scope for Phase 4; notification infrastructure, background task queue (Celery/RQ), and email templates have not yet been introduced.
 - **Real fix:** Add a background worker triggered by booking cancellation or availability expansion that scans `TeacherWaitlist.open_for_teacher()` in the corresponding organization and sends email/push alerts.
 - **Revisit when:** Notification / communications infrastructure phase.
+
+## 2026-09-11 — Parent view of student pricing agreements is deferred
+- **What was skipped:** Allowing parents to view pricing agreements for their linked children under `/api/pricing/organizations/<organization_pk>/agreements/mine/` (or a dedicated `/children/` pricing endpoint).
+- **Why:** In MVP Phase 5, `/mine/` strictly serves the student user. Parents can link to students across academies, and adding family hierarchy pricing lookup requires family billing permissions and guardian-scope authorization.
+- **Real fix:** Add a dedicated guardian-facing pricing view `/api/pricing/organizations/<organization_pk>/agreements/children/` verifying `ParentLink`, active student membership, and active parent membership in that academy.
+- **Revisit when:** Family portal & guardian accounts phase or SaaS Phase 8 (Billing).
+
+## 2026-09-11 — Billing, subscriptions, wallets, invoices, and payouts deferred
+- **What was skipped:** Any monetary transactions, payment processing, invoice generation, subscription management, student wallets, or teacher payout calculation based on agreed rates.
+- **Why:** SaaS Phase 5 is strictly scoped to rate negotiation and pricing tenancy. Financial integrations are explicitly separated into SaaS Phase 7 (payouts) and SaaS Phase 8 (billing/payments).
+- **Real fix:** Introduce Stripe / payment gateway webhooks, invoice generation, balance accounting, and payout reconciliation in dedicated financial phases.
+- **Revisit when:** SaaS Phase 7 (Teacher Payouts) and SaaS Phase 8 (Billing & Payments).
+

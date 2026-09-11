@@ -1059,3 +1059,19 @@ Format:
 - **What happened:** Previously, scheduling routes were global (e.g. `/api/scheduling/bookings/`, `/api/scheduling/route/`).
 - **What we decided:** All scheduling endpoints were moved under `/api/scheduling/organizations/<organization_pk>/...` using `AcademyScopedView(OrganizationScopedMixin)` and `AcademyScopedSerializerMixin`. Scoped serializers validate `level`, `student`, and `teacher` querysets against the active organization, returning a 400 "does not exist" on foreign IDs (preventing information leakage). Legacy unscoped scheduling routes were retired completely.
 - **Why it matters for later phases:** Consistency across the platform: all domain-specific APIs follow the `/api/<domain>/organizations/<organization_pk>/...` pattern established in Phase 2 and Phase 3.
+
+## 2026-09-11 — Derived tenancy via `Level -> Track -> Organization` avoids duplicate columns on `PricingAgreement`
+- **What happened:** In SaaS Phase 5, pricing agreements needed to be scoped to the owning academy. `PricingAgreement.level` is non-nullable and protected (`PROTECT`). Every `Level` points to a `Track`, and every `Track` has a non-nullable `Organization` (enforced in SaaS Phase 3).
+- **What we decided:** Do not add an `organization` column to `PricingAgreement`. The derived relationship `agreement.level.track.organization` is unambiguous, prevents data drift, and provides an authoritative single source of truth. Query filtering is encapsulated in `PricingAgreementQuerySet.in_organization(org)` and the model exposes `@property def organization(self)`.
+- **Why it matters for later phases:** Normalized schemas avoid synchronisation bugs. Whenever an entity's parent hierarchy already has an immutable tenant anchor, deriving tenancy is cleaner than denormalizing.
+
+## 2026-09-11 — `PricingAgreement.clean()` enforces active membership for student and approver
+- **What happened:** A pricing agreement establishes rates between a student and an academy, approved by a lead teacher. If a student or approver belongs to Academy B while the level belongs to Academy A, cross-tenant leaks occur.
+- **What we decided:** Enforce active memberships at the model layer in `clean()`. Both `student` and `approved_by` must hold active memberships in `self.organization` (`OrganizationMembership.status == ACTIVE`). Suspended members are rejected. `PricingAgreement.save()` calls `full_clean()`, guaranteeing that ORM writes, admin saves, and API endpoints are strictly guarded.
+- **Why it matters for later phases:** Cross-tenant protection must not rely exclusively on API serializer querysets. Having database model-level `clean()` validation guarantees data integrity even when rows are created via management commands or background jobs.
+
+## 2026-09-11 — Non-destructive legacy pricing remediation and partial unique constraints
+- **What happened:** Legacy pricing agreements created prior to SaaS Phase 5 might have students or approvers without `OrganizationMembership` rows. Furthermore, `PricingAgreement` defines a database-level partial unique constraint (`unique_active_pricing_per_student_level` where `active=True`).
+- **What we decided:** Data migration `0002_remediate_legacy_pricing` runs `remediate_legacy_pricing()` which admits unadmitted students as `STAFF` and approvers as `TEACHER` with `ACTIVE` status. Existing suspended memberships are left untouched. Duplicate active agreements (if any) are resolved non-destructively: the newest agreement remains active, while older agreements are deactivated (`active=False`), preserving complete historical audit trails without deleting data.
+- **Why it matters for later phases:** Zero data loss during tenancy backfills. Historical negotiations and pricing records remain intact and queryable by leads.
+
