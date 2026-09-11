@@ -35,11 +35,12 @@ from assessment.models import (
     ProgressSnapshot,
     SessionAssessment,
 )
-from curriculum.tests.factories import LevelFactory, TrackFactory
+from curriculum.tests.factories import LevelFactory, TrackFactory, admit
 from scheduling.tests.factories import (
     AvailabilityFactory,
     BookableTeacherFactory,
     CompletedBookingFactory,
+    ensure_teacher_configured,
 )
 
 #: The score a factory-built assessment gives every criterion unless told
@@ -158,6 +159,17 @@ class SessionAssessmentFactory(factory.django.DjangoModelFactory):
         """
         booking = kwargs.pop("booking")
         rubric = kwargs.pop("rubric", None) or rubric_for(booking.level.track)
+        org = booking.level.track.organization if booking.level_id and booking.level.track_id else None
+        if org is not None:
+            if booking.student and not kwargs.get("_skip_admit_student"):
+                admit(booking.student, org)
+            assessor = kwargs.get("assessed_by") or booking.teacher
+            if assessor and not kwargs.get("_skip_admit_teacher"):
+                admit(assessor, org)
+                ensure_teacher_configured(assessor, org)
+        kwargs.pop("_skip_admit_student", None)
+        kwargs.pop("_skip_admit_teacher", None)
+
         score_value = kwargs.pop("score_value", DEFAULT_SCORE)
         scores = kwargs.pop("scores", None)
         if scores is None:
@@ -194,8 +206,11 @@ class ReviewedAssessmentFactory(FlaggedAssessmentFactory):
     def lead_review(obj, create, extracted, **kwargs):
         if not create:
             return
+        reviewer = extracted or LeadTeacherFactory()
+        if obj.organization is not None and not kwargs.get("_skip_admit_reviewer"):
+            admit(reviewer, obj.organization)
         obj.record_lead_review(
-            reviewed_by=extracted or LeadTeacherFactory(),
+            reviewed_by=reviewer,
             note=kwargs.get("note", "Agreed — worth another week on madd."),
         )
 
@@ -217,13 +232,25 @@ class ProgressSnapshotFactory(factory.django.DjangoModelFactory):
 
     @classmethod
     def _create(cls, model_class, *args, **kwargs):
+        student = kwargs["student"]
+        track = kwargs["track"]
+        generated_by = kwargs.get("generated_by")
+        org = track.organization if track and hasattr(track, "organization") else None
+        if org is not None:
+            if student and not kwargs.get("_skip_admit_student"):
+                admit(student, org)
+            if generated_by and not kwargs.get("_skip_admit_generator"):
+                admit(generated_by, org)
+        kwargs.pop("_skip_admit_student", None)
+        kwargs.pop("_skip_admit_generator", None)
+
         # generate() computes every number and refuses to duplicate a period.
         snapshot, _ = model_class.generate(
-            student=kwargs["student"],
-            track=kwargs["track"],
+            student=student,
+            track=track,
             period_start=kwargs["period_start"],
             period_end=kwargs["period_end"],
-            generated_by=kwargs.get("generated_by"),
+            generated_by=generated_by,
             summary=kwargs.get("summary", ""),
             visible_to_family=kwargs.get("visible_to_family", False),
         )
@@ -244,7 +271,11 @@ def assessed_teacher_world(*, level=None, weeks_ago=1, student=None):
     submitted assessment. Returns ``(assessment, booking)``.
     """
     level = level or LevelFactory()
-    window = AvailabilityFactory(teacher=BookableTeacherFactory())
+    org = level.track.organization
+    window = AvailabilityFactory(
+        teacher=BookableTeacherFactory(),
+        organization=org,
+    )
     booking = past_completed_booking(
         availability=window,
         level=level,

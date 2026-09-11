@@ -45,7 +45,9 @@ from django.db.models import Q
 from django.utils import timezone as dj_timezone
 
 from accounts.models import Role, User
+from accounts.tenancy import active_student_membership
 from curriculum.models import Track
+from organizations.models import active_membership
 from scheduling.models import Booking, BookingStatus, bookable_teacher_error
 
 #: The spec's scale. 1 = needs significant improvement, 5 = excellent.
@@ -96,6 +98,14 @@ def average_of(values):
     )
 
 
+class AssessmentRubricQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        if organization is None:
+            return self.none()
+        org_id = getattr(organization, "pk", organization)
+        return self.filter(track__organization_id=org_id)
+
+
 class AssessmentRubric(models.Model):
     """The shared scoring sheet for one track. Live configuration, lead-owned.
 
@@ -126,6 +136,8 @@ class AssessmentRubric(models.Model):
         ),
     )
 
+    objects = AssessmentRubricQuerySet.as_manager()
+
     class Meta:
         ordering = ["track", "-pk"]
         constraints = [
@@ -138,6 +150,11 @@ class AssessmentRubric(models.Model):
                 ),
             )
         ]
+
+    @property
+    def organization(self):
+        """The academy that owns this rubric."""
+        return self.track.organization if self.track_id and hasattr(self, "track") and self.track else None
 
     # --- Behaviour ----------------------------------------------------------
 
@@ -235,6 +252,11 @@ class AssessmentCriterion(models.Model):
         ]
         verbose_name_plural = "assessment criteria"
 
+    @property
+    def organization(self):
+        """The academy that owns this criterion."""
+        return self.rubric.organization if self.rubric_id and hasattr(self, "rubric") and self.rubric else None
+
     def snapshot(self):
         """This criterion as an assessment records it: identity, name, order."""
         return {"id": self.pk, "name": self.name, "order": self.order}
@@ -248,6 +270,14 @@ class AssessmentCriterion(models.Model):
         # only for the API serializer.
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class SessionAssessmentQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        if organization is None:
+            return self.none()
+        org_id = getattr(organization, "pk", organization)
+        return self.filter(track__organization_id=org_id)
 
 
 class SessionAssessment(models.Model):
@@ -339,10 +369,29 @@ class SessionAssessment(models.Model):
         ),
     )
 
+    objects = SessionAssessmentQuerySet.as_manager()
+
     class Meta:
         # Newest first: a review queue and an assessment history both read that
         # way. There is no created_at — assessed_at is the submission stamp.
         ordering = ["-assessed_at", "-pk"]
+
+    @property
+    def organization(self):
+        """The academy that owns this assessment."""
+        if self.track_id and hasattr(self, "track") and self.track:
+            return getattr(self.track, "organization", None)
+        if self.booking_id and hasattr(self, "booking") and self.booking:
+            level = getattr(self.booking, "level", None)
+            if level and getattr(level, "track", None):
+                return getattr(level.track, "organization", None)
+        return None
+
+    def _is_active_here(self, user):
+        """Is user an active member of the academy that owns this assessment?"""
+        if not self.organization or not user:
+            return False
+        return active_membership(user=user, organization=self.organization) is not None
 
     # --- Behaviour ----------------------------------------------------------
 
@@ -480,9 +529,12 @@ class SessionAssessment(models.Model):
         return self
 
     @classmethod
-    def pending_lead_review(cls):
+    def pending_lead_review(cls, organization=None):
         """Flagged and not yet reviewed — the lead's queue, one definition of it."""
-        return cls.objects.filter(flagged_for_review=True, lead_reviewed_at__isnull=True)
+        qs = cls.objects.filter(flagged_for_review=True, lead_reviewed_at__isnull=True)
+        if organization is not None:
+            qs = qs.in_organization(organization)
+        return qs
 
     @property
     def is_lead_reviewed(self) -> bool:
@@ -533,15 +585,41 @@ class SessionAssessment(models.Model):
                 code="not_the_booking_teacher",
             )
 
+        if (
+            self.track_id
+            and booking.level_id
+            and booking.level.track_id
+            and self.organization is not None
+            and booking.level.track.organization_id != self.organization.id
+        ):
+            errors["booking"] = ValidationError(
+                "The booking belongs to a different academy than the assessment track.",
+                code="cross_academy_booking_mismatch",
+            )
+
     def _validate_assessor(self, errors):
         if not self.assessed_by_id or "assessed_by" in errors:
             return
         # The same gate booking uses, reused rather than restated: role is lead
-        # or sub, a teacher profile exists, and a lead has approved it. A student
-        # or parent fails on the first clause, which is criterion 7.
-        problem = bookable_teacher_error(self.assessed_by)
+        # or sub, a teacher profile exists, and a lead has approved it in this academy.
+        problem = bookable_teacher_error(self.assessed_by, organization=self.organization)
         if problem is not None:
             errors["assessed_by"] = problem
+
+    def _validate_student(self, errors):
+        if not self.student_id or "student" in errors:
+            return
+        if self.student.role != Role.STUDENT:
+            errors["student"] = ValidationError(
+                "Only a user with role 'student' can be assessed (got '%(role)s').",
+                code="invalid_student_role",
+                params={"role": self.student.role},
+            )
+        elif self.organization is not None and not self._is_active_here(self.student):
+            errors["student"] = ValidationError(
+                "That student is not an active member of the academy that owns this assessment.",
+                code="student_not_in_organization",
+            )
 
     def _validate_flag(self, errors):
         if self.flag_reason and not self.flagged_for_review:
@@ -552,16 +630,22 @@ class SessionAssessment(models.Model):
             )
 
     def _validate_lead_review(self, errors):
-        if self.lead_reviewed_by_id and self.lead_reviewed_by.role != Role.LEAD:
-            # The same restriction placement review and pricing approval carry:
-            # enforced here as well as in the permission class, so a direct ORM
-            # write cannot hand a sub-teacher the lead's annotation.
-            errors["lead_reviewed_by"] = ValidationError(
-                "Only the lead teacher can review an assessment (got "
-                "'%(role)s').",
-                code="invalid_reviewer_role",
-                params={"role": self.lead_reviewed_by.role},
-            )
+        if self.lead_reviewed_by_id:
+            if self.lead_reviewed_by.role != Role.LEAD:
+                # The same restriction placement review and pricing approval carry:
+                # enforced here as well as in the permission class, so a direct ORM
+                # write cannot hand a sub-teacher the lead's annotation.
+                errors["lead_reviewed_by"] = ValidationError(
+                    "Only the lead teacher can review an assessment (got "
+                    "'%(role)s').",
+                    code="invalid_reviewer_role",
+                    params={"role": self.lead_reviewed_by.role},
+                )
+            elif self.organization is not None and not self._is_active_here(self.lead_reviewed_by):
+                errors["lead_reviewed_by"] = ValidationError(
+                    "That reviewer is not an active member of the academy that owns this assessment.",
+                    code="reviewer_not_in_organization",
+                )
         if (self.lead_reviewed_at is None) != (self.lead_reviewed_by_id is None):
             errors.setdefault(
                 NON_FIELD_ERRORS,
@@ -608,6 +692,7 @@ class SessionAssessment(models.Model):
         self._validate_teacher_data_unchanged(errors)
         self._validate_booking(errors)
         self._validate_assessor(errors)
+        self._validate_student(errors)
         self._validate_flag(errors)
         self._validate_lead_review(errors)
         if errors:
@@ -680,6 +765,13 @@ class AssessmentScore(models.Model):
             ),
         ]
 
+    @property
+    def organization(self):
+        """The academy that owns this score."""
+        if self.assessment_id and hasattr(self, "assessment") and self.assessment:
+            return self.assessment.organization
+        return None
+
     def clean(self):
         errors = {}
         if self.criterion_id and self.assessment_id:
@@ -691,6 +783,20 @@ class AssessmentScore(models.Model):
                     "That criterion is not one this assessment was submitted "
                     "against.",
                     code="criterion_not_in_snapshot",
+                )
+            if (
+                hasattr(self, "criterion")
+                and self.criterion
+                and hasattr(self.criterion, "rubric")
+                and self.criterion.rubric
+                and hasattr(self, "assessment")
+                and self.assessment
+                and self.assessment.track_id
+                and self.criterion.rubric.track_id != self.assessment.track_id
+            ):
+                errors["criterion"] = ValidationError(
+                    "That criterion belongs to a different track.",
+                    code="cross_track_criterion",
                 )
         if errors:
             raise ValidationError(errors)
@@ -803,6 +909,14 @@ def criterion_averages_for(scores):
     return rows
 
 
+class ProgressSnapshotQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        if organization is None:
+            return self.none()
+        org_id = getattr(organization, "pk", organization)
+        return self.filter(track__organization_id=org_id)
+
+
 class ProgressSnapshot(models.Model):
     """A frozen reading of one student's progress in one track over one period.
 
@@ -886,6 +1000,8 @@ class ProgressSnapshot(models.Model):
         help_text="Off until the lead publishes it. A family reads only published snapshots.",
     )
 
+    objects = ProgressSnapshotQuerySet.as_manager()
+
     class Meta:
         ordering = ["-period_end", "-pk"]
         constraints = [
@@ -897,6 +1013,19 @@ class ProgressSnapshot(models.Model):
                 ),
             )
         ]
+
+    @property
+    def organization(self):
+        """The academy that owns this snapshot."""
+        if self.track_id and hasattr(self, "track") and self.track:
+            return getattr(self.track, "organization", None)
+        return None
+
+    def _is_active_here(self, user):
+        """Is user an active member of the academy that owns this track?"""
+        if not self.organization or not user:
+            return False
+        return active_membership(user=user, organization=self.organization) is not None
 
     # --- Behaviour ----------------------------------------------------------
 
@@ -1003,21 +1132,33 @@ class ProgressSnapshot(models.Model):
                 code="inverted_period",
             )
 
-        if self.student_id and self.student.role != Role.STUDENT:
-            errors["student"] = ValidationError(
-                "Only a user with role 'student' has progress to snapshot (got "
-                "'%(role)s').",
-                code="invalid_student_role",
-                params={"role": self.student.role},
-            )
+        if self.student_id:
+            if self.student.role != Role.STUDENT:
+                errors["student"] = ValidationError(
+                    "Only a user with role 'student' has progress to snapshot (got "
+                    "'%(role)s').",
+                    code="invalid_student_role",
+                    params={"role": self.student.role},
+                )
+            elif self.track_id and self.organization is not None and not self._is_active_here(self.student):
+                errors["student"] = ValidationError(
+                    "That student is not an active member of the academy that owns this track.",
+                    code="student_not_in_organization",
+                )
 
-        if self.generated_by_id and self.generated_by.role != Role.LEAD:
-            errors["generated_by"] = ValidationError(
-                "Only the lead teacher generates progress snapshots (got "
-                "'%(role)s').",
-                code="invalid_generator_role",
-                params={"role": self.generated_by.role},
-            )
+        if self.generated_by_id:
+            if self.generated_by.role != Role.LEAD:
+                errors["generated_by"] = ValidationError(
+                    "Only the lead teacher generates progress snapshots (got "
+                    "'%(role)s').",
+                    code="invalid_generator_role",
+                    params={"role": self.generated_by.role},
+                )
+            elif self.track_id and self.organization is not None and not self._is_active_here(self.generated_by):
+                errors["generated_by"] = ValidationError(
+                    "That generator is not an active member of the academy that owns this track.",
+                    code="generator_not_in_organization",
+                )
 
         # The reporting rule, as a stored invariant: an average exists exactly
         # when something was assessed. Neither a null on an assessed period nor a

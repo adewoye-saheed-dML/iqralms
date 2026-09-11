@@ -39,7 +39,7 @@ def scores_for(assessments):
     return AssessmentScore.objects.filter(assessment__in=assessments)
 
 
-def teacher_report(*, start=None, end=None, track=None):
+def teacher_report(*, start=None, end=None, track=None, organization=None):
     """One row per teacher who assessed a session in scope. Lead-only data.
 
     ``[{teacher, assessed_sessions, overall_average, by_track, flagged,
@@ -50,8 +50,15 @@ def teacher_report(*, start=None, end=None, track=None):
     assessment data, and inventing a row of zeroes for a teacher with none would
     put a 0.00 next to their name for work they may have done perfectly well.
     """
+    if organization is not None:
+        base_qs = SessionAssessment.objects.in_organization(organization)
+    elif track is not None and getattr(track, "organization", None) is not None:
+        base_qs = SessionAssessment.objects.in_organization(track.organization)
+    else:
+        base_qs = SessionAssessment.objects.all()
+
     assessments = assessments_in_period(
-        SessionAssessment.objects.all(), start=start, end=end
+        base_qs, start=start, end=end
     )
     if track is not None:
         assessments = assessments.filter(track=getattr(track, "pk", track))

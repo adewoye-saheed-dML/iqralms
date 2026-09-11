@@ -1,40 +1,37 @@
 # Quran Academy SaaS Development Rules
 
-## Accepted SaaS Phase 4 Decisions
+## Accepted SaaS Phase 6 Decisions
 
-- `Availability.organization` is an explicit FK.
-- `Booking`, `Cohort`, and `TeacherWaitlist` derive organization through `level.track.organization`.
-- `OrganizationTeacherConfiguration` handles tenant capacity.
-- Global physical overlap/locking remains global; tenant capacity is organization-scoped.
-- Scheduling requires active membership, teacher configuration, and curriculum eligibility.
-- Scheduling APIs are organization-scoped; legacy unscoped scheduling routes are retired/blocked.
-- Serializers and permissions enforce tenant isolation server-side.
-- Adversarial tenant-isolation tests are required.
+- Assessment domain models (`AssessmentRubric`, `AssessmentCriterion`, `SessionAssessment`, `AssessmentScore`, `ProgressSnapshot`) derive organization ownership through `Track -> Organization` or `Booking -> Level -> Track -> Organization`. No redundant tenant columns added.
+- Custom QuerySets provide `.in_organization(org)` and all assessment models expose `@property def organization`.
+- `SessionAssessment.clean()` validates student and teacher active memberships in `self.organization`, teacher configuration, booking organization match, and lead reviewer membership.
+- `AssessmentScore.clean()` validates criterion and assessment belong to the same organization.
+- `ProgressSnapshot.clean()` validates active memberships for student and generator in `track.organization`.
+- `save()` calls `full_clean()` across all assessment models.
+- All 16 assessment endpoints are mounted under `/api/assessment/organizations/<organization_pk>/...` and guarded by `IsAuthenticated, IsOrganizationMember`.
+- Scoped serializers validate related fields against `self.organization`.
+- Legacy unscoped routes are retired completely.
+- Privacy boundaries strictly enforced: families cannot view internal QC fields (flags, flag reasons, lead notes); teachers cannot view other teachers' submissions or lead review notes.
+- Non-destructive legacy assessment audit and remediation implemented via migration `0002_remediate_legacy_assessment`.
+- Adversarial tenant-isolation suite (`test_tenant_isolation.py`) verifies complete cross-academy isolation.
 
-## Accepted SaaS Phase 5 Decisions
+## SaaS Phase 6 Complete — Next Phase: SaaS Phase 7 Teacher Payout Tenancy
 
-- `PricingAgreement` derives organization ownership through `level.track.organization`. No redundant `organization` column is added.
-- `PricingAgreement.clean()` validates that both the student and the approver hold active memberships in `level.track.organization`.
-- `PricingAgreement.save()` calls `full_clean()` to guarantee invariant enforcement across ORM, admin, and API writes.
-- Pricing APIs are mounted under `/api/pricing/organizations/<organization_pk>/agreements/` and `/api/pricing/organizations/<organization_pk>/agreements/mine/`.
-- Legacy unscoped routes (`/api/pricing/agreements/` and `.../mine/`) are retired and return 404 to eliminate tenant bypass.
-- Write serializers declare foreign relations with `Model.objects.none()` and scope them only in `get_fields()` with request context, failing closed and allowing clean OpenAPI schema inspection.
-- Legacy data is remediated non-destructively by backfilling active memberships for unadmitted historical students/approvers and deactivating older duplicate active agreements.
-- Multi-academy boundary isolation is verified through an adversarial test suite (`test_tenant_isolation.py`).
+SaaS Phase 6 is complete. Its implementation, tests, migrations, PostgreSQL verification, tenant-isolation checks, API acceptance, OpenAPI verification, documentation, and commit have been completed.
 
-## SaaS Phase 5 Complete — Next Phase: SaaS Phase 6 Assessment Tenancy
+SaaS Phase 7 is now the next phase.
 
-SaaS Phase 5 is COMPLETE. All 7 tasks, 98 pricing tests, 1180 multi-app tests, migrations, tenant isolation tests, and OpenAPI schema validation pass against PostgreSQL.
-
-Do not start SaaS Phase 6 until Phase 6 specifications and development tasks are planned and approved.
+Do not begin SaaS Phase 7 until explicitly requested.
 
 ## Working Session Discipline
 
 - Work on one numbered task at a time.
 - Start with an audit before changing schema or behavior.
-- Use focused tests during development; run the full gate at the phase boundary.
+- Use focused tests during development.
+- Run the full gate at the phase boundary.
 - Commit after each completed task or coherent implementation unit.
 - Keep phase documentation split into a core file and one file per numbered task.
+- Do not introduce unrelated frontend, payment, billing, or infrastructure changes during this phase.
 
 ## Phase Completion Rule
 

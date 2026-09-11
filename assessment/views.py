@@ -21,7 +21,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from accounts.models import ParentLink, User
+from accounts.tenancy import children_in_organization
 from curriculum.models import Track
+from organizations.permissions import IsOrganizationMember
+from organizations.views import OrganizationScopedMixin
 from scheduling.models import Booking
 
 from .models import AssessmentRubric, ProgressSnapshot, SessionAssessment
@@ -110,7 +113,7 @@ def report_period(request):
     return start, end
 
 
-def requested_track(request, *, required=True):
+def requested_track(request, organization=None, *, required=True):
     """The ``track_id`` a progress request is about.
 
     An unknown id is a 400 rather than an empty progress response: "how is my
@@ -124,34 +127,63 @@ def requested_track(request, *, required=True):
     )
     if track_id is None:
         return None
-    track = Track.objects.filter(pk=track_id).first()
+    qs = Track.objects.filter(pk=track_id)
+    if organization is not None:
+        qs = qs.filter(organization=organization)
+    track = qs.first()
     if track is None:
         raise ValidationError({"track_id": ["No such track."]})
     return track
 
 
-def linked_child(parent, student_id):
+def linked_child(parent, student_id, organization=None):
     """The parent's own child with that id, or 403.
 
     A 403 rather than the 404 this project prefers elsewhere, because there is
     nothing to conceal: the caller supplied the id, so a refusal tells them only
-    that this child is not theirs — which they already knew. The check is
-    ``ParentLink``, the same relation booking and cancellation use, so a parent's
-    reach over assessment data is exactly their reach over scheduling data.
+    that this child is not theirs — which they already knew. When an organization is
+    passed, the child must also have an active student membership in that academy.
     """
-    student = (
-        User.objects.filter(pk=student_id, parent_links__parent=parent).distinct().first()
-    )
+    if organization is not None:
+        student = (
+            children_in_organization(parent=parent, organization=organization)
+            .filter(pk=student_id)
+            .first()
+        )
+    else:
+        student = (
+            User.objects.filter(pk=student_id, parent_links__parent=parent)
+            .distinct()
+            .first()
+        )
     if student is None:
         raise PermissionDenied("No linked student found for that id.")
     return student
 
 
+class AcademyScopedView(OrganizationScopedMixin):
+    """Shared plumbing for the academy-scoped assessment views.
+
+    The organization comes from the URL kwarg ``organization_pk`` and is resolved
+    to the caller's membership by the parent mixin; and it is put into the
+    serializer context, which is how write serializers narrow their querysets
+    to one tenant.
+    """
+
+    organization_url_kwarg = "organization_pk"
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.caller_membership:
+            context["organization"] = self.organization
+        return context
+
+
 # --- Rubric configuration ----------------------------------------------------
 
 
-class AssessmentRubricListCreateView(generics.ListCreateAPIView):
-    """/api/assessment/rubrics/ — the lead configures what teachers score against.
+class AssessmentRubricListCreateView(AcademyScopedView, generics.ListCreateAPIView):
+    """/api/assessment/organizations/<organization_pk>/rubrics/ — the lead configures what teachers score against.
 
     * **GET ?track_id=** lists rubrics, newest first, superseded ones included:
       "what do we score Tajweed on, and what did we score it on before" is one
@@ -164,7 +196,7 @@ class AssessmentRubricListCreateView(generics.ListCreateAPIView):
     measured on, so it is not something a sub-teacher configures for themselves.
     """
 
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -172,12 +204,14 @@ class AssessmentRubricListCreateView(generics.ListCreateAPIView):
         return AssessmentRubricSerializer
 
     def get_queryset(self):
-        queryset = AssessmentRubric.objects.select_related("track").prefetch_related(
-            "criteria"
+        queryset = (
+            AssessmentRubric.objects.in_organization(self.organization)
+            .select_related("track")
+            .prefetch_related("criteria")
         )
-        track_id = optional_int_param(self.request, "track_id")
-        if track_id is not None:
-            queryset = queryset.filter(track_id=track_id)
+        track = requested_track(self.request, organization=self.organization, required=False)
+        if track is not None:
+            queryset = queryset.filter(track=track)
         return queryset
 
     @extend_schema(
@@ -227,8 +261,8 @@ class AssessmentRubricListCreateView(generics.ListCreateAPIView):
         return Response(body, status=status.HTTP_201_CREATED)
 
 
-class AssessmentRubricDetailView(generics.RetrieveUpdateAPIView):
-    """/api/assessment/rubrics/{id}/ — read one rubric, or edit it in place.
+class AssessmentRubricDetailView(AcademyScopedView, generics.RetrieveUpdateAPIView):
+    """/api/assessment/organizations/<organization_pk>/rubrics/{id}/ — read one rubric, or edit it in place.
 
     PATCH is the operation the historical-data rule is about: renaming or retiring
     a criterion changes what *future* assessments look like and leaves every
@@ -241,12 +275,14 @@ class AssessmentRubricDetailView(generics.RetrieveUpdateAPIView):
     replacing a rubric wholesale is a POST to the collection, which supersedes.
     """
 
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
     http_method_names = ["get", "patch", "head", "options"]
 
     def get_queryset(self):
-        return AssessmentRubric.objects.select_related("track").prefetch_related(
-            "criteria"
+        return (
+            AssessmentRubric.objects.in_organization(self.organization)
+            .select_related("track")
+            .prefetch_related("criteria")
         )
 
     def get_serializer_class(self):
@@ -278,8 +314,8 @@ class AssessmentRubricDetailView(generics.RetrieveUpdateAPIView):
 # --- Submitting and reading assessments --------------------------------------
 
 
-class SessionAssessmentCreateView(generics.GenericAPIView):
-    """POST /api/assessment/bookings/{booking_id}/ — the teacher who taught it scores it.
+class SessionAssessmentCreateView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/assessment/organizations/<organization_pk>/bookings/{booking_id}/ — the teacher who taught it scores it.
 
     Two layers keep this to the right teacher and the right booking. The queryset
     is scoped to ``teacher=request.user``, so another teacher's session is a **404**
@@ -294,12 +330,14 @@ class SessionAssessmentCreateView(generics.GenericAPIView):
     """
 
     serializer_class = SessionAssessmentCreateSerializer
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsTeacher]
 
     def get_booking(self):
         booking = (
             Booking.objects.filter(
-                pk=self.kwargs["booking_id"], teacher=self.request.user
+                pk=self.kwargs["booking_id"],
+                teacher=self.request.user,
+                level__track__organization=self.organization,
             )
             .select_related("student", "level", "level__track", "teacher")
             .first()
@@ -341,8 +379,8 @@ class SessionAssessmentCreateView(generics.GenericAPIView):
         return Response(body, status=status.HTTP_201_CREATED)
 
 
-class MyAssessmentListView(generics.ListAPIView):
-    """GET /api/assessment/mine/ — the student's own assessment history.
+class MyAssessmentListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/mine/ — the student's own assessment history.
 
     Family shape: the teacher's summary, the criterion scores and comments, and no
     internal quality-control field at all. Scoped to ``student=request.user``, so
@@ -350,13 +388,16 @@ class MyAssessmentListView(generics.ListAPIView):
     """
 
     serializer_class = FamilyAssessmentSerializer
-    permission_classes = [IsAuthenticated, IsStudent]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsStudent]
 
     def get_queryset(self):
-        queryset = SessionAssessment.objects.filter(
-            student=self.request.user
-        ).select_related(*ASSESSMENT_RELATED).prefetch_related(*ASSESSMENT_PREFETCH)
-        track = requested_track(self.request, required=False)
+        queryset = (
+            SessionAssessment.objects.in_organization(self.organization)
+            .filter(student=self.request.user)
+            .select_related(*ASSESSMENT_RELATED)
+            .prefetch_related(*ASSESSMENT_PREFETCH)
+        )
+        track = requested_track(self.request, organization=self.organization, required=False)
         if track is not None:
             queryset = queryset.filter(track=track)
         return queryset
@@ -376,8 +417,8 @@ class MyAssessmentListView(generics.ListAPIView):
         return super().get(request, *args, **kwargs)
 
 
-class MyChildAssessmentListView(generics.ListAPIView):
-    """GET /api/assessment/child/?student_id= — a linked child's assessment history.
+class MyChildAssessmentListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/child/?student_id= — a linked child's assessment history.
 
     Same family shape as ``/mine/``, reached through the ``ParentLink`` check.
     Not in the spec's endpoint list, but the spec's visibility table gives a parent
@@ -385,16 +426,21 @@ class MyChildAssessmentListView(generics.ListAPIView):
     """
 
     serializer_class = FamilyAssessmentSerializer
-    permission_classes = [IsAuthenticated, IsParent]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsParent]
 
     def get_queryset(self):
         student = linked_child(
-            self.request.user, required_int_param(self.request, "student_id")
+            self.request.user,
+            required_int_param(self.request, "student_id"),
+            organization=self.organization,
         )
-        queryset = SessionAssessment.objects.filter(student=student).select_related(
-            *ASSESSMENT_RELATED
-        ).prefetch_related(*ASSESSMENT_PREFETCH)
-        track = requested_track(self.request, required=False)
+        queryset = (
+            SessionAssessment.objects.in_organization(self.organization)
+            .filter(student=student)
+            .select_related(*ASSESSMENT_RELATED)
+            .prefetch_related(*ASSESSMENT_PREFETCH)
+        )
+        track = requested_track(self.request, organization=self.organization, required=False)
         if track is not None:
             queryset = queryset.filter(track=track)
         return queryset
@@ -417,8 +463,8 @@ class MyChildAssessmentListView(generics.ListAPIView):
         return super().get(request, *args, **kwargs)
 
 
-class TeacherAssessmentListView(generics.ListAPIView):
-    """GET /api/assessment/teacher/mine/ — what this teacher has submitted.
+class TeacherAssessmentListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/teacher/mine/ — what this teacher has submitted.
 
     Their own rows only, including their own flags. Not the lead's review notes:
     the spec gives a sub-teacher no access to those in this phase. The lead sees
@@ -427,18 +473,19 @@ class TeacherAssessmentListView(generics.ListAPIView):
     """
 
     serializer_class = TeacherAssessmentSerializer
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsTeacher]
 
     def get_queryset(self):
         return (
-            SessionAssessment.objects.filter(assessed_by=self.request.user)
+            SessionAssessment.objects.in_organization(self.organization)
+            .filter(assessed_by=self.request.user)
             .select_related(*ASSESSMENT_RELATED)
             .prefetch_related(*ASSESSMENT_PREFETCH)
         )
 
 
-class LeadAssessmentDetailView(generics.RetrieveAPIView):
-    """GET /api/assessment/{id}/ — the lead opens one assessment in full.
+class LeadAssessmentDetailView(AcademyScopedView, generics.RetrieveAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/{id}/ — the lead opens one assessment in full.
 
     The drill-down from the review queue: booking, student, teacher, rubric
     snapshot, scores, flag reason and any review note. Lead-only, and reading it
@@ -447,16 +494,18 @@ class LeadAssessmentDetailView(generics.RetrieveAPIView):
     """
 
     serializer_class = LeadAssessmentSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     def get_queryset(self):
-        return SessionAssessment.objects.select_related(
-            *ASSESSMENT_RELATED
-        ).prefetch_related(*ASSESSMENT_PREFETCH)
+        return (
+            SessionAssessment.objects.in_organization(self.organization)
+            .select_related(*ASSESSMENT_RELATED)
+            .prefetch_related(*ASSESSMENT_PREFETCH)
+        )
 
 
-class LeadReviewQueueView(generics.ListAPIView):
-    """GET /api/assessment/review/queue/ — flagged and not yet reviewed.
+class LeadReviewQueueView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/review/queue/ — flagged and not yet reviewed.
 
     One definition of the queue, ``SessionAssessment.pending_lead_review()``, so
     the count in the teacher report and the list here cannot disagree. A reviewed
@@ -465,18 +514,18 @@ class LeadReviewQueueView(generics.ListAPIView):
     """
 
     serializer_class = LeadAssessmentSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     def get_queryset(self):
         return (
-            SessionAssessment.pending_lead_review()
+            SessionAssessment.pending_lead_review(organization=self.organization)
             .select_related(*ASSESSMENT_RELATED)
             .prefetch_related(*ASSESSMENT_PREFETCH)
         )
 
 
-class LeadReviewView(generics.GenericAPIView):
-    """POST /api/assessment/{id}/review/ — the lead annotates and marks reviewed.
+class LeadReviewView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/assessment/organizations/<organization_pk>/{id}/review/ — the lead annotates and marks reviewed.
 
     Writes three fields and no others. The teacher's scores, summary and flag are
     untouched, and the model refuses to change them on an existing row, so "review
@@ -484,12 +533,14 @@ class LeadReviewView(generics.GenericAPIView):
     """
 
     serializer_class = LeadReviewSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     def get_queryset(self):
-        return SessionAssessment.objects.select_related(
-            *ASSESSMENT_RELATED
-        ).prefetch_related(*ASSESSMENT_PREFETCH)
+        return (
+            SessionAssessment.objects.in_organization(self.organization)
+            .select_related(*ASSESSMENT_RELATED)
+            .prefetch_related(*ASSESSMENT_PREFETCH)
+        )
 
     @extend_schema(
         responses={
@@ -533,8 +584,8 @@ PERIOD_PARAMS = [
 ]
 
 
-class TeacherQualityReportView(generics.GenericAPIView):
-    """GET /api/assessment/reports/teachers/ — lead-only quality visibility.
+class TeacherQualityReportView(AcademyScopedView, generics.GenericAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/reports/teachers/ — lead-only quality visibility.
 
     Optionally narrowed by ``from``/``to`` and ``track_id``. Per teacher: how many
     sessions they assessed, the overall average, the average per track, how many
@@ -548,7 +599,7 @@ class TeacherQualityReportView(generics.GenericAPIView):
     """
 
     serializer_class = TeacherReportSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     @extend_schema(
         parameters=PERIOD_PARAMS
@@ -571,8 +622,10 @@ class TeacherQualityReportView(generics.GenericAPIView):
     )
     def get(self, request, *args, **kwargs):
         start, end = report_period(request)
-        track = requested_track(request, required=False)
-        rows = teacher_report(start=start, end=end, track=track)
+        track = requested_track(request, organization=self.organization, required=False)
+        rows = teacher_report(
+            start=start, end=end, track=track, organization=self.organization
+        )
         return Response(
             TeacherReportSerializer(
                 rows, many=True, context=self.get_serializer_context()
@@ -580,7 +633,7 @@ class TeacherQualityReportView(generics.GenericAPIView):
         )
 
 
-class ProgressView(generics.GenericAPIView):
+class ProgressView(AcademyScopedView, generics.GenericAPIView):
     """Shared body of the two progress endpoints, so one shape serves both.
 
     Subclasses differ only in *whose* progress they resolve. Everything about what
@@ -595,7 +648,7 @@ class ProgressView(generics.GenericAPIView):
 
     def get(self, request, *args, **kwargs):
         student = self.resolve_student(request)
-        track = requested_track(request)
+        track = requested_track(request, organization=self.organization)
         start, end = report_period(request)
         progress = student_progress(
             student=student, track=track, start=start, end=end
@@ -608,9 +661,9 @@ class ProgressView(generics.GenericAPIView):
 
 
 class MyProgressView(ProgressView):
-    """GET /api/assessment/progress/mine/?track_id= — the student's own progress."""
+    """GET /api/assessment/organizations/<organization_pk>/progress/mine/?track_id= — the student's own progress."""
 
-    permission_classes = [IsAuthenticated, IsStudent]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsStudent]
 
     def resolve_student(self, request):
         return request.user
@@ -637,17 +690,21 @@ class MyProgressView(ProgressView):
 
 
 class ChildProgressView(ProgressView):
-    """GET /api/assessment/progress/child/?student_id=&track_id= — a linked child's.
+    """GET /api/assessment/organizations/<organization_pk>/progress/child/?student_id=&track_id= — a linked child's.
 
     The ``ParentLink`` check is the whole endpoint: an unrelated parent asking about
     somebody else's child is refused, and the refusal happens before any progress is
     computed, not by omitting fields from a response that was built anyway.
     """
 
-    permission_classes = [IsAuthenticated, IsParent]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsParent]
 
     def resolve_student(self, request):
-        return linked_child(request.user, required_int_param(request, "student_id"))
+        return linked_child(
+            request.user,
+            required_int_param(request, "student_id"),
+            organization=self.organization,
+        )
 
     @extend_schema(
         parameters=PERIOD_PARAMS
@@ -675,8 +732,8 @@ class ChildProgressView(ProgressView):
         return super().get(request, *args, **kwargs)
 
 
-class ProgressSnapshotCreateView(generics.CreateAPIView):
-    """POST /api/assessment/snapshots/ — the lead freezes a period.
+class ProgressSnapshotCreateView(AcademyScopedView, generics.CreateAPIView):
+    """POST /api/assessment/organizations/<organization_pk>/snapshots/ — the lead freezes a period.
 
     An explicit lead action, deliberately: automatic snapshot jobs are out of scope
     for this phase. Repeating a request for the same student, track and period
@@ -686,7 +743,7 @@ class ProgressSnapshotCreateView(generics.CreateAPIView):
     """
 
     serializer_class = ProgressSnapshotCreateSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     @extend_schema(
         responses={
@@ -726,24 +783,25 @@ class ProgressSnapshotCreateView(generics.CreateAPIView):
         )
 
 
-class LeadSnapshotListView(generics.ListAPIView):
-    """GET /api/assessment/snapshots/?student_id=&track_id= — the lead's own view.
+class LeadSnapshotListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/snapshots/?student_id=&track_id= — the lead's own view.
 
     Unpublished rows included: the lead generated them, and needs to see what is
     waiting to be released.
     """
 
     serializer_class = ProgressSnapshotSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     def get_queryset(self):
-        queryset = ProgressSnapshot.objects.select_related(
-            "student", "track", "generated_by"
+        queryset = (
+            ProgressSnapshot.objects.in_organization(self.organization)
+            .select_related("student", "track", "generated_by")
         )
         student_id = optional_int_param(self.request, "student_id")
         if student_id is not None:
             queryset = queryset.filter(student_id=student_id)
-        track = requested_track(self.request, required=False)
+        track = requested_track(self.request, organization=self.organization, required=False)
         if track is not None:
             queryset = queryset.filter(track=track)
         return queryset
@@ -762,7 +820,7 @@ class LeadSnapshotListView(generics.ListAPIView):
         return super().get(request, *args, **kwargs)
 
 
-class FamilySnapshotListView(generics.ListAPIView):
+class FamilySnapshotListView(AcademyScopedView, generics.ListAPIView):
     """Shared body of the two family snapshot endpoints.
 
     ``visible_to_family=True`` is applied in the queryset, not by a serializer
@@ -776,19 +834,21 @@ class FamilySnapshotListView(generics.ListAPIView):
 
     def get_queryset(self):
         student = self.resolve_student(self.request)
-        queryset = ProgressSnapshot.objects.filter(
-            student=student, visible_to_family=True
-        ).select_related("track")
-        track = requested_track(self.request, required=False)
+        queryset = (
+            ProgressSnapshot.objects.in_organization(self.organization)
+            .filter(student=student, visible_to_family=True)
+            .select_related("track")
+        )
+        track = requested_track(self.request, organization=self.organization, required=False)
         if track is not None:
             queryset = queryset.filter(track=track)
         return queryset
 
 
 class MySnapshotListView(FamilySnapshotListView):
-    """GET /api/assessment/snapshots/mine/?track_id= — the student's published snapshots."""
+    """GET /api/assessment/organizations/<organization_pk>/snapshots/mine/?track_id= — the student's published snapshots."""
 
-    permission_classes = [IsAuthenticated, IsStudent]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsStudent]
 
     def resolve_student(self, request):
         return request.user
@@ -805,12 +865,16 @@ class MySnapshotListView(FamilySnapshotListView):
 
 
 class ChildSnapshotListView(FamilySnapshotListView):
-    """GET /api/assessment/snapshots/child/?student_id=&track_id= — a linked child's."""
+    """GET /api/assessment/organizations/<organization_pk>/snapshots/child/?student_id=&track_id= — a linked child's."""
 
-    permission_classes = [IsAuthenticated, IsParent]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsParent]
 
     def resolve_student(self, request):
-        return linked_child(request.user, required_int_param(request, "student_id"))
+        return linked_child(
+            request.user,
+            required_int_param(request, "student_id"),
+            organization=self.organization,
+        )
 
     @extend_schema(
         parameters=[
@@ -828,3 +892,4 @@ class ChildSnapshotListView(FamilySnapshotListView):
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
+

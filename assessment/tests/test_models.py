@@ -38,13 +38,16 @@ from curriculum.tests.factories import (
     LevelFactory,
     ReviewedPlacementFactory,
     TrackFactory,
+    admit,
 )
+from organizations.tests.factories import OrganizationFactory
 from scheduling.models import BookingStatus
 from scheduling.tests.factories import (
     AvailabilityFactory,
     BookableTeacherFactory,
     BookingFactory,
     CancelledBookingFactory,
+    ensure_teacher_configured,
     teaches,
 )
 
@@ -616,6 +619,7 @@ class LeadReviewTests(TestCase):
     def setUp(self):
         self.lead = LeadTeacherFactory()
         self.assessment = FlaggedAssessmentFactory()
+        admit(self.lead, self.assessment.organization)
 
     def test_a_flagged_assessment_starts_in_the_pending_queue(self):
         self.assertIn(
@@ -692,6 +696,7 @@ class LeadReviewTests(TestCase):
     def test_an_unflagged_assessment_may_still_be_reviewed(self):
         """The spec lets the lead monitor; only a flag *requires* review state."""
         unflagged = SessionAssessmentFactory()
+        admit(self.lead, unflagged.organization)
         unflagged.record_lead_review(reviewed_by=self.lead, note="Spot check.")
 
         unflagged.refresh_from_db()
@@ -826,11 +831,16 @@ class ProgressSnapshotTests(TestCase):
     """A snapshot is a measurement that stops moving. Everything here is that."""
 
     def setUp(self):
-        self.lead = LeadTeacherFactory()
-        self.student = StudentFactory()
         self.level = LevelFactory()
         self.track = self.level.track
-        self.window = AvailabilityFactory(teacher=BookableTeacherFactory())
+        self.lead = LeadTeacherFactory()
+        self.student = StudentFactory()
+        admit(self.lead, self.track.organization)
+        admit(self.student, self.track.organization)
+        self.window = AvailabilityFactory(
+            teacher=BookableTeacherFactory(),
+            organization=self.track.organization,
+        )
         self.rubric = RubricWithCriteriaFactory(track=self.track)
         self.period_start = dj_timezone.now() - timedelta(weeks=4)
         self.period_end = dj_timezone.now()
@@ -1087,3 +1097,100 @@ class AssessmentDoesNotTouchPlacementTests(TestCase):
 
         placement.refresh_from_db()
         self.assertEqual(placement.recommended_level, booking.level)
+
+
+class AssessmentTenancyModelTests(TestCase):
+    """Model-level tenant invariant tests for SaaS Phase 6."""
+
+    def test_assessment_rejects_student_not_in_organization(self):
+        assessment = SessionAssessmentFactory()
+        foreign_student = StudentFactory()  # not admitted to assessment.organization
+        assessment.student = foreign_student
+        with self.assertRaises(ValidationError) as ctx:
+            assessment.clean()
+        self.assertIn("student", ctx.exception.message_dict)
+
+    def test_assessment_rejects_teacher_not_active_in_organization(self):
+        assessment = SessionAssessmentFactory()
+        foreign_teacher = BookableTeacherFactory()  # not admitted/configured in assessment.organization
+        assessment.assessed_by = foreign_teacher
+        with self.assertRaises(ValidationError) as ctx:
+            assessment.clean()
+        self.assertIn("assessed_by", ctx.exception.message_dict)
+
+    def test_assessment_rejects_lead_reviewer_not_in_organization(self):
+        assessment = FlaggedAssessmentFactory()
+        foreign_lead = LeadTeacherFactory()
+        with self.assertRaises(ValidationError) as ctx:
+            assessment.record_lead_review(reviewed_by=foreign_lead)
+        self.assertIn("lead_reviewed_by", ctx.exception.message_dict)
+
+    def test_assessment_rejects_cross_academy_booking_and_track(self):
+        assessment = SessionAssessmentFactory()
+        foreign_track = TrackFactory()  # in a different organization
+        assessment.track = foreign_track
+        with self.assertRaises(ValidationError) as ctx:
+            assessment.clean()
+        self.assertIn("booking", ctx.exception.message_dict)
+
+    def test_assessment_score_rejects_cross_academy_criterion(self):
+        assessment = SessionAssessmentFactory()
+        foreign_rubric = RubricWithCriteriaFactory()  # different organization
+        foreign_criterion = foreign_rubric.criteria.first()
+        score = AssessmentScore(
+            assessment=assessment,
+            criterion=foreign_criterion,
+            score=Decimal("4.00"),
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            score.clean()
+        self.assertIn("criterion", ctx.exception.message_dict)
+
+    def test_progress_snapshot_rejects_student_not_in_organization(self):
+        snapshot = ProgressSnapshotFactory()
+        foreign_student = StudentFactory()
+        snapshot.student = foreign_student
+        with self.assertRaises(ValidationError) as ctx:
+            snapshot.clean()
+        self.assertIn("student", ctx.exception.message_dict)
+
+    def test_progress_snapshot_rejects_generator_not_in_organization(self):
+        snapshot = ProgressSnapshotFactory()
+        foreign_user = StudentFactory()
+        snapshot.generated_by = foreign_user
+        with self.assertRaises(ValidationError) as ctx:
+            snapshot.clean()
+        self.assertIn("generated_by", ctx.exception.message_dict)
+
+    def test_querysets_in_organization_filtering(self):
+        org1 = OrganizationFactory()
+        org2 = OrganizationFactory()
+
+        track1 = TrackFactory(organization=org1)
+        track2 = TrackFactory(organization=org2)
+
+        rubric1 = RubricWithCriteriaFactory(track=track1)
+        rubric2 = RubricWithCriteriaFactory(track=track2)
+
+        self.assertIn(rubric1, AssessmentRubric.objects.in_organization(org1))
+        self.assertNotIn(rubric2, AssessmentRubric.objects.in_organization(org1))
+        self.assertIn(rubric2, AssessmentRubric.objects.in_organization(org2))
+        self.assertNotIn(rubric1, AssessmentRubric.objects.in_organization(org2))
+
+        booking1 = past_completed_booking(level=LevelFactory(track=track1))
+        booking2 = past_completed_booking(level=LevelFactory(track=track2))
+        assessment1 = SessionAssessmentFactory(booking=booking1)
+        assessment2 = SessionAssessmentFactory(booking=booking2)
+
+        self.assertIn(assessment1, SessionAssessment.objects.in_organization(org1))
+        self.assertNotIn(assessment2, SessionAssessment.objects.in_organization(org1))
+        self.assertIn(assessment2, SessionAssessment.objects.in_organization(org2))
+        self.assertNotIn(assessment1, SessionAssessment.objects.in_organization(org2))
+
+        snapshot1 = ProgressSnapshotFactory(track=track1, student=booking1.student)
+        snapshot2 = ProgressSnapshotFactory(track=track2, student=booking2.student)
+        self.assertIn(snapshot1, ProgressSnapshot.objects.in_organization(org1))
+        self.assertNotIn(snapshot2, ProgressSnapshot.objects.in_organization(org1))
+        self.assertIn(snapshot2, ProgressSnapshot.objects.in_organization(org2))
+        self.assertNotIn(snapshot1, ProgressSnapshot.objects.in_organization(org2))
+

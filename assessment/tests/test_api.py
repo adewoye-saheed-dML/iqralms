@@ -48,6 +48,7 @@ from curriculum.tests.factories import (
     LevelFactory,
     ReviewedPlacementFactory,
     TrackFactory,
+    admit,
 )
 from scheduling.models import BookingStatus
 from scheduling.tests.factories import (
@@ -55,6 +56,7 @@ from scheduling.tests.factories import (
     BookableTeacherFactory,
     BookingFactory,
     CancelledBookingFactory,
+    ensure_teacher_configured,
     slot_at,
 )
 
@@ -70,34 +72,103 @@ from .factories import (
     past_completed_booking,
 )
 
-RUBRICS_URL = reverse("assessment:rubric-list")
-MY_ASSESSMENTS_URL = reverse("assessment:assessment-mine")
-CHILD_ASSESSMENTS_URL = reverse("assessment:assessment-child")
-TEACHER_ASSESSMENTS_URL = reverse("assessment:assessment-teacher-mine")
-REVIEW_QUEUE_URL = reverse("assessment:review-queue")
-TEACHER_REPORT_URL = reverse("assessment:report-teachers")
-MY_PROGRESS_URL = reverse("assessment:progress-mine")
-CHILD_PROGRESS_URL = reverse("assessment:progress-child")
-SNAPSHOTS_URL = reverse("assessment:snapshot-create")
-LEAD_SNAPSHOTS_URL = reverse("assessment:snapshot-list")
-MY_SNAPSHOTS_URL = reverse("assessment:snapshot-mine")
-CHILD_SNAPSHOTS_URL = reverse("assessment:snapshot-child")
+
+def _url(name, organization, **kwargs):
+    return reverse(
+        f"assessment:{name}",
+        kwargs={"organization_pk": getattr(organization, "pk", organization), **kwargs},
+    )
 
 
-def rubric_url(rubric):
-    return reverse("assessment:rubric-detail", args=[rubric.pk])
+def rubrics_url(organization):
+    return _url("rubric-list", organization)
 
 
-def submit_url(booking):
-    return reverse("assessment:assessment-create", args=[booking.pk])
+def rubric_url(rubric_or_pk, organization=None):
+    if hasattr(rubric_or_pk, "organization"):
+        org = rubric_or_pk.organization
+        pk = rubric_or_pk.pk
+    else:
+        org = organization
+        pk = rubric_or_pk
+    return _url("rubric-detail", org, pk=pk)
 
 
-def detail_url(assessment):
-    return reverse("assessment:assessment-detail", args=[assessment.pk])
+def submit_url(booking_or_pk, organization=None):
+    if hasattr(booking_or_pk, "organization"):
+        org = booking_or_pk.organization
+        pk = booking_or_pk.pk
+    elif hasattr(booking_or_pk, "level"):
+        org = booking_or_pk.level.track.organization
+        pk = booking_or_pk.pk
+    else:
+        org = organization
+        pk = booking_or_pk
+    return _url("assessment-create", org, booking_id=pk)
 
 
-def review_url(assessment):
-    return reverse("assessment:assessment-review", args=[assessment.pk])
+def my_assessments_url(organization):
+    return _url("assessment-mine", organization)
+
+
+def child_assessments_url(organization):
+    return _url("assessment-child", organization)
+
+
+def teacher_assessments_url(organization):
+    return _url("assessment-teacher-mine", organization)
+
+
+def review_queue_url(organization):
+    return _url("review-queue", organization)
+
+
+def teacher_report_url(organization):
+    return _url("report-teachers", organization)
+
+
+def my_progress_url(organization):
+    return _url("progress-mine", organization)
+
+
+def child_progress_url(organization):
+    return _url("progress-child", organization)
+
+
+def snapshots_url(organization):
+    return _url("snapshot-create", organization)
+
+
+def lead_snapshots_url(organization):
+    return _url("snapshot-list", organization)
+
+
+def my_snapshots_url(organization):
+    return _url("snapshot-mine", organization)
+
+
+def child_snapshots_url(organization):
+    return _url("snapshot-child", organization)
+
+
+def detail_url(assessment_or_pk, organization=None):
+    if hasattr(assessment_or_pk, "organization"):
+        org = assessment_or_pk.organization
+        pk = assessment_or_pk.pk
+    else:
+        org = organization
+        pk = assessment_or_pk
+    return _url("assessment-detail", org, pk=pk)
+
+
+def review_url(assessment_or_pk, organization=None):
+    if hasattr(assessment_or_pk, "organization"):
+        org = assessment_or_pk.organization
+        pk = assessment_or_pk.pk
+    else:
+        org = organization
+        pk = assessment_or_pk
+    return _url("assessment-review", org, pk=pk)
 
 
 def iso(moment):
@@ -113,16 +184,89 @@ class AssessmentAPIWorld(APITestCase):
     being built separately, because a booking's teacher always does.
     """
 
-    def setUp(self):
-        self.lead = LeadTeacherFactory()
-        self.sub = SubTeacherFactory()
-        self.student = StudentFactory()
-        self.parent = ParentFactory()
+    @property
+    def rubrics_url(self):
+        return rubrics_url(self.organization)
 
+    @property
+    def my_assessments_url(self):
+        return my_assessments_url(self.organization)
+
+    @property
+    def child_assessments_url(self):
+        return child_assessments_url(self.organization)
+
+    @property
+    def teacher_assessments_url(self):
+        return teacher_assessments_url(self.organization)
+
+    @property
+    def review_queue_url(self):
+        return review_queue_url(self.organization)
+
+    @property
+    def teacher_report_url(self):
+        return teacher_report_url(self.organization)
+
+    @property
+    def my_progress_url(self):
+        return my_progress_url(self.organization)
+
+    @property
+    def child_progress_url(self):
+        return child_progress_url(self.organization)
+
+    @property
+    def snapshots_url(self):
+        return snapshots_url(self.organization)
+
+    @property
+    def lead_snapshots_url(self):
+        return lead_snapshots_url(self.organization)
+
+    @property
+    def my_snapshots_url(self):
+        return my_snapshots_url(self.organization)
+
+    @property
+    def child_snapshots_url(self):
+        return child_snapshots_url(self.organization)
+
+    def link(self, parent=None, student=None):
+        link = ParentLinkFactory(
+            **({"parent": parent} if parent else {}),
+            **({"student": student} if student else {}),
+        )
+        admit(link.parent, self.organization)
+        admit(link.student, self.organization)
+        return link
+
+    def setUp(self):
         self.level = LevelFactory()
         self.track = self.level.track
-        self.window = AvailabilityFactory(teacher=BookableTeacherFactory())
+        self.organization = self.track.organization
+
+        self.window = AvailabilityFactory(
+            organization=self.organization,
+            teacher=BookableTeacherFactory(),
+        )
         self.teacher = self.window.teacher
+        ensure_teacher_configured(self.teacher, self.organization)
+
+        self.lead = LeadTeacherFactory()
+        admit(self.lead, self.organization)
+        ensure_teacher_configured(self.lead, self.organization)
+
+        self.sub = SubTeacherFactory()
+        admit(self.sub, self.organization)
+        ensure_teacher_configured(self.sub, self.organization)
+
+        self.student = StudentFactory()
+        admit(self.student, self.organization)
+
+        self.parent = ParentFactory()
+        admit(self.parent, self.organization)
+
         self.rubric = RubricWithCriteriaFactory(track=self.track)
         self.criteria = list(self.rubric.active_criteria())
 
@@ -160,7 +304,7 @@ class RubricConfigurationAPITests(AssessmentAPIWorld):
 
     def payload(self, **overrides):
         body = {
-            "track": TrackFactory().pk,
+            "track": overrides.pop("track", None) or TrackFactory(organization=self.organization).pk,
             "name": "Tajweed sheet 2026",
             "description": "What we score a tajweed lesson on.",
             "criteria": [
@@ -174,7 +318,7 @@ class RubricConfigurationAPITests(AssessmentAPIWorld):
 
     def post_rubric(self, user=None, **overrides):
         return self.as_(user or self.lead).post(
-            RUBRICS_URL, self.payload(**overrides), format="json"
+            self.rubrics_url, self.payload(**overrides), format="json"
         )
 
     def test_the_lead_creates_a_rubric_with_ordered_criteria(self):
@@ -222,7 +366,7 @@ class RubricConfigurationAPITests(AssessmentAPIWorld):
         )
 
     def test_an_anonymous_caller_cannot_configure_a_rubric(self):
-        response = self.client.post(RUBRICS_URL, self.payload(), format="json")
+        response = self.client.post(self.rubrics_url, self.payload(), format="json")
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(AssessmentRubric.objects.count(), 1)
@@ -278,7 +422,7 @@ class RubricConfigurationAPITests(AssessmentAPIWorld):
     def test_the_lead_lists_a_tracks_rubrics_newest_first(self):
         self.post_rubric(track=self.track.pk, name="2027 sheet")
 
-        response = self.as_(self.lead).get(RUBRICS_URL, {"track_id": self.track.pk})
+        response = self.as_(self.lead).get(self.rubrics_url, {"track_id": self.track.pk})
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([row["name"] for row in response.data][0], "2027 sheet")
@@ -287,20 +431,20 @@ class RubricConfigurationAPITests(AssessmentAPIWorld):
     def test_the_list_can_be_narrowed_to_one_track(self):
         elsewhere = RubricWithCriteriaFactory()
 
-        response = self.as_(self.lead).get(RUBRICS_URL, {"track_id": self.track.pk})
+        response = self.as_(self.lead).get(self.rubrics_url, {"track_id": self.track.pk})
 
         self.assertEqual([row["id"] for row in response.data], [self.rubric.pk])
         self.assertNotIn(elsewhere.pk, [row["id"] for row in response.data])
 
     def test_a_non_numeric_track_id_is_a_400(self):
-        response = self.as_(self.lead).get(RUBRICS_URL, {"track_id": "tajweed"})
+        response = self.as_(self.lead).get(self.rubrics_url, {"track_id": "tajweed"})
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("track_id", response.data)
 
     def test_a_sub_teacher_cannot_read_rubric_configuration(self):
         """Acceptance criterion 2 — reading configuration is gated too."""
-        response = self.as_(self.sub).get(RUBRICS_URL)
+        response = self.as_(self.sub).get(self.rubrics_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_the_lead_reads_one_rubric(self):
@@ -330,7 +474,7 @@ class RubricConfigurationAPITests(AssessmentAPIWorld):
 
     def test_an_unknown_rubric_is_a_404(self):
         response = self.as_(self.lead).get(
-            reverse("assessment:rubric-detail", args=[999999])
+            rubric_url(999999, organization=self.organization)
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
@@ -617,6 +761,7 @@ class AssessmentSubmissionAPITests(AssessmentAPIWorld):
     def test_another_teachers_session_is_a_404_not_a_403(self):
         """Acceptance criterion 7. A 403 would confirm the booking exists."""
         stranger = BookableTeacherFactory()
+        ensure_teacher_configured(stranger, self.organization)
 
         response = self.submit(self.booking, user=stranger)
 
@@ -632,7 +777,7 @@ class AssessmentSubmissionAPITests(AssessmentAPIWorld):
 
     def test_a_parent_cannot_assess(self):
         """Acceptance criterion 7."""
-        link = ParentLinkFactory()
+        link = self.link()
         booking = self.taught(student=link.student, weeks_ago=2)
 
         response = self.submit(booking, user=link.parent)
@@ -650,7 +795,7 @@ class AssessmentSubmissionAPITests(AssessmentAPIWorld):
 
     def test_an_unknown_booking_is_a_404(self):
         response = self.as_(self.teacher).post(
-            reverse("assessment:assessment-create", args=[999999]),
+            submit_url(999999, organization=self.organization),
             {"scores": self.score_payload()},
             format="json",
         )
@@ -773,7 +918,7 @@ class AssessmentSubmissionAPITests(AssessmentAPIWorld):
         self.assertEqual(SessionAssessment.objects.count(), 1)
 
     def test_a_track_with_no_active_rubric_cannot_be_assessed(self):
-        elsewhere = LevelFactory()
+        elsewhere = LevelFactory(track__organization=self.organization)
         booking = self.taught(level=elsewhere, weeks_ago=3)
 
         response = self.submit(booking, scores=self.score_payload())
@@ -784,7 +929,7 @@ class AssessmentSubmissionAPITests(AssessmentAPIWorld):
 
     def test_submitting_does_not_touch_the_placement_recommended_level(self):
         """Acceptance criterion 24 — Phase 7 does not move a student's level."""
-        placement = ReviewedPlacementFactory()
+        placement = ReviewedPlacementFactory(track__organization=self.organization)
         RubricWithCriteriaFactory(track=placement.track)
         booking = self.taught(
             student=placement.student, level=placement.recommended_level, weeks_ago=2
@@ -816,7 +961,7 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
 
     def setUp(self):
         super().setUp()
-        self.link = ParentLinkFactory()
+        self.link = self.link()
         self.child = self.link.student
         self.assessment = FlaggedAssessmentFactory(
             booking=self.taught(student=self.student, weeks_ago=1),
@@ -827,7 +972,7 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
         )
 
     def test_a_student_reads_their_own_assessments(self):
-        response = self.as_(self.student).get(MY_ASSESSMENTS_URL)
+        response = self.as_(self.student).get(self.my_assessments_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([row["id"] for row in response.data], [self.assessment.pk])
@@ -838,7 +983,7 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
 
     def test_the_family_shape_carries_the_scores_and_the_average(self):
         """Acceptance criterion 13 — they see the teaching content."""
-        payload = self.as_(self.student).get(MY_ASSESSMENTS_URL).data[0]
+        payload = self.as_(self.student).get(self.my_assessments_url).data[0]
 
         self.assertEqual(len(payload["scores"]), 3)
         self.assertEqual(Decimal(payload["overall_average"]), Decimal("4.00"))
@@ -847,7 +992,7 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
 
     def test_no_internal_quality_control_field_reaches_a_student(self):
         """Acceptance criterion 13."""
-        payload = self.as_(self.student).get(MY_ASSESSMENTS_URL).data[0]
+        payload = self.as_(self.student).get(self.my_assessments_url).data[0]
 
         for field in (
             "flagged_for_review",
@@ -861,7 +1006,7 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
 
     def test_the_flag_reason_text_appears_nowhere_in_the_family_response(self):
         """Belt and braces: not merely a missing key, but absent content."""
-        response = self.as_(self.student).get(MY_ASSESSMENTS_URL)
+        response = self.as_(self.student).get(self.my_assessments_url)
 
         body = str(response.data)
         self.assertNotIn(self.assessment.flag_reason, body)
@@ -870,12 +1015,12 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
     def test_another_students_assessment_is_not_listed(self):
         SessionAssessmentFactory(booking=self.taught(weeks_ago=3))
 
-        response = self.as_(self.student).get(MY_ASSESSMENTS_URL)
+        response = self.as_(self.student).get(self.my_assessments_url)
         self.assertEqual([row["id"] for row in response.data], [self.assessment.pk])
 
     def test_track_id_narrows_a_students_list(self):
         response = self.as_(self.student).get(
-            MY_ASSESSMENTS_URL, {"track_id": TrackFactory().pk}
+            self.my_assessments_url, {"track_id": TrackFactory(organization=self.organization).pk}
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -884,16 +1029,16 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
     def test_a_teacher_cannot_use_the_student_endpoint(self):
         for user in (self.teacher, self.lead):
             with self.subTest(role=user.role):
-                response = self.as_(user).get(MY_ASSESSMENTS_URL)
+                response = self.as_(user).get(self.my_assessments_url)
                 self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_parent_cannot_use_the_student_endpoint(self):
-        response = self.as_(self.link.parent).get(MY_ASSESSMENTS_URL)
+        response = self.as_(self.link.parent).get(self.my_assessments_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_an_anonymous_caller_cannot_read_assessments(self):
         self.assertEqual(
-            self.client.get(MY_ASSESSMENTS_URL).status_code,
+            self.client.get(self.my_assessments_url).status_code,
             status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -906,7 +1051,7 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
         )
 
         response = self.as_(self.link.parent).get(
-            CHILD_ASSESSMENTS_URL, {"student_id": self.child.pk}
+            self.child_assessments_url, {"student_id": self.child.pk}
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -917,7 +1062,7 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
         FlaggedAssessmentFactory(booking=self.taught(student=self.child, weeks_ago=2))
 
         payload = self.as_(self.link.parent).get(
-            CHILD_ASSESSMENTS_URL, {"student_id": self.child.pk}
+            self.child_assessments_url, {"student_id": self.child.pk}
         ).data[0]
 
         self.assertNotIn("flagged_for_review", payload)
@@ -927,32 +1072,32 @@ class FamilyAssessmentReadAPITests(AssessmentAPIWorld):
     def test_an_unrelated_parent_is_denied(self):
         """Acceptance criterion 22."""
         response = self.as_(self.parent).get(
-            CHILD_ASSESSMENTS_URL, {"student_id": self.child.pk}
+            self.child_assessments_url, {"student_id": self.child.pk}
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_parent_cannot_ask_about_a_student_who_is_not_theirs(self):
         """Acceptance criterion 22 — the link, not merely the role, is checked."""
         response = self.as_(self.link.parent).get(
-            CHILD_ASSESSMENTS_URL, {"student_id": self.student.pk}
+            self.child_assessments_url, {"student_id": self.student.pk}
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_student_id_is_required_on_the_child_endpoint(self):
-        response = self.as_(self.link.parent).get(CHILD_ASSESSMENTS_URL)
+        response = self.as_(self.link.parent).get(self.child_assessments_url)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("student_id", response.data)
 
     def test_a_student_cannot_use_the_child_endpoint(self):
         response = self.as_(self.student).get(
-            CHILD_ASSESSMENTS_URL, {"student_id": self.child.pk}
+            self.child_assessments_url, {"student_id": self.child.pk}
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_teacher_cannot_use_the_child_endpoint(self):
         response = self.as_(self.teacher).get(
-            CHILD_ASSESSMENTS_URL, {"student_id": self.child.pk}
+            self.child_assessments_url, {"student_id": self.child.pk}
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
@@ -968,21 +1113,21 @@ class TeacherAssessmentReadAPITests(AssessmentAPIWorld):
         )
 
     def test_a_teacher_reads_their_own_submissions(self):
-        response = self.as_(self.teacher).get(TEACHER_ASSESSMENTS_URL)
+        response = self.as_(self.teacher).get(self.teacher_assessments_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([row["id"] for row in response.data], [self.assessment.pk])
         self.assertEqual(len(response.data[0]["scores"]), 3)
 
     def test_a_teacher_sees_their_own_flag_and_reason(self):
-        payload = self.as_(self.teacher).get(TEACHER_ASSESSMENTS_URL).data[0]
+        payload = self.as_(self.teacher).get(self.teacher_assessments_url).data[0]
 
         self.assertTrue(payload["flagged_for_review"])
         self.assertEqual(payload["flag_reason"], self.assessment.flag_reason)
 
     def test_a_teacher_can_see_that_the_lead_reviewed_but_not_what_they_wrote(self):
         """The spec's visibility table: no lead review notes for a sub-teacher."""
-        payload = self.as_(self.teacher).get(TEACHER_ASSESSMENTS_URL).data[0]
+        payload = self.as_(self.teacher).get(self.teacher_assessments_url).data[0]
 
         self.assertIsNotNone(payload["lead_reviewed_at"])
         self.assertNotIn("lead_review_note", payload)
@@ -997,25 +1142,25 @@ class TeacherAssessmentReadAPITests(AssessmentAPIWorld):
             )
         )
 
-        response = self.as_(self.teacher).get(TEACHER_ASSESSMENTS_URL)
+        response = self.as_(self.teacher).get(self.teacher_assessments_url)
         self.assertEqual([row["id"] for row in response.data], [self.assessment.pk])
 
     def test_a_student_cannot_read_the_teacher_list(self):
-        response = self.as_(self.student).get(TEACHER_ASSESSMENTS_URL)
+        response = self.as_(self.student).get(self.teacher_assessments_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_parent_cannot_read_the_teacher_list(self):
-        response = self.as_(self.parent).get(TEACHER_ASSESSMENTS_URL)
+        response = self.as_(self.parent).get(self.teacher_assessments_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_an_anonymous_caller_cannot_read_the_teacher_list(self):
         self.assertEqual(
-            self.client.get(TEACHER_ASSESSMENTS_URL).status_code,
+            self.client.get(self.teacher_assessments_url).status_code,
             status.HTTP_401_UNAUTHORIZED,
         )
 
     def test_a_teacher_with_nothing_submitted_gets_an_empty_list(self):
-        response = self.as_(self.sub).get(TEACHER_ASSESSMENTS_URL)
+        response = self.as_(self.sub).get(self.teacher_assessments_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(list(response.data), [])
@@ -1036,13 +1181,13 @@ class LeadReviewAPITests(AssessmentAPIWorld):
 
     def test_a_flagged_assessment_appears_in_the_lead_queue(self):
         """Acceptance criterion 14."""
-        response = self.as_(self.lead).get(REVIEW_QUEUE_URL)
+        response = self.as_(self.lead).get(self.review_queue_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([row["id"] for row in response.data], [self.flagged.pk])
 
     def test_the_queue_carries_the_context_the_lead_needs(self):
-        payload = self.as_(self.lead).get(REVIEW_QUEUE_URL).data[0]
+        payload = self.as_(self.lead).get(self.review_queue_url).data[0]
 
         self.assertEqual(payload["student"]["id"], self.flagged.student_id)
         self.assertEqual(payload["assessed_by"]["id"], self.teacher.pk)
@@ -1051,20 +1196,20 @@ class LeadReviewAPITests(AssessmentAPIWorld):
         self.assertEqual(payload["flag_reason"], self.flagged.flag_reason)
 
     def test_an_unflagged_assessment_is_not_in_the_queue(self):
-        ids = [row["id"] for row in self.as_(self.lead).get(REVIEW_QUEUE_URL).data]
+        ids = [row["id"] for row in self.as_(self.lead).get(self.review_queue_url).data]
         self.assertNotIn(self.unflagged.pk, ids)
 
     def test_a_sub_teacher_cannot_read_the_review_queue(self):
-        response = self.as_(self.teacher).get(REVIEW_QUEUE_URL)
+        response = self.as_(self.teacher).get(self.review_queue_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_student_cannot_read_the_review_queue(self):
-        response = self.as_(self.student).get(REVIEW_QUEUE_URL)
+        response = self.as_(self.student).get(self.review_queue_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_an_anonymous_caller_cannot_read_the_review_queue(self):
         self.assertEqual(
-            self.client.get(REVIEW_QUEUE_URL).status_code,
+            self.client.get(self.review_queue_url).status_code,
             status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -1098,7 +1243,7 @@ class LeadReviewAPITests(AssessmentAPIWorld):
 
     def test_an_unknown_assessment_detail_is_a_404(self):
         response = self.as_(self.lead).get(
-            reverse("assessment:assessment-detail", args=[999999])
+            detail_url(999999, organization=self.organization)
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
@@ -1140,7 +1285,7 @@ class LeadReviewAPITests(AssessmentAPIWorld):
         """Acceptance criterion 16."""
         self.review(self.flagged, lead_review_note="Done.")
 
-        response = self.as_(self.lead).get(REVIEW_QUEUE_URL)
+        response = self.as_(self.lead).get(self.review_queue_url)
         self.assertEqual(list(response.data), [])
 
     def test_review_does_not_clear_the_flag(self):
@@ -1195,7 +1340,7 @@ class LeadReviewAPITests(AssessmentAPIWorld):
 
     def test_reviewing_an_unknown_assessment_is_a_404(self):
         response = self.as_(self.lead).post(
-            reverse("assessment:assessment-review", args=[999999]),
+            review_url(999999, organization=self.organization),
             {"lead_review_note": "Nobody."},
             format="json",
         )
@@ -1230,7 +1375,7 @@ class TeacherQualityReportAPITests(AssessmentAPIWorld):
         self.other_teacher = self.other_window.teacher
 
     def report(self, user=None, **params):
-        return self.as_(user or self.lead).get(TEACHER_REPORT_URL, params)
+        return self.as_(user or self.lead).get(self.teacher_report_url, params)
 
     def rows_by_username(self, response):
         return {row["teacher"]["username"]: row for row in response.data}
@@ -1258,7 +1403,7 @@ class TeacherQualityReportAPITests(AssessmentAPIWorld):
 
     def test_the_report_breaks_down_by_track(self):
         """Acceptance criterion 17."""
-        elsewhere = LevelFactory()
+        elsewhere = LevelFactory(track__organization=self.organization)
         RubricWithCriteriaFactory(track=elsewhere.track)
         self.assessed(score=5, weeks_ago=1)
         self.assessed(score=1, weeks_ago=2, level=elsewhere)
@@ -1300,7 +1445,7 @@ class TeacherQualityReportAPITests(AssessmentAPIWorld):
 
     def test_the_report_can_be_narrowed_to_a_track(self):
         """Acceptance criterion 17."""
-        elsewhere = LevelFactory()
+        elsewhere = LevelFactory(track__organization=self.organization)
         RubricWithCriteriaFactory(track=elsewhere.track)
         self.assessed(score=5, weeks_ago=1)
         self.assessed(score=1, weeks_ago=2, level=elsewhere)
@@ -1388,7 +1533,7 @@ class TeacherQualityReportAPITests(AssessmentAPIWorld):
 
     def test_an_anonymous_caller_cannot_read_the_report(self):
         self.assertEqual(
-            self.client.get(TEACHER_REPORT_URL).status_code,
+            self.client.get(self.teacher_report_url).status_code,
             status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -1428,13 +1573,14 @@ class ProgressAPITests(AssessmentAPIWorld):
 
     def setUp(self):
         super().setUp()
-        self.placement = ReviewedPlacementFactory(student=self.student)
+        self.placement = ReviewedPlacementFactory(student=self.student, track__organization=self.organization)
         self.placed_level = self.placement.recommended_level
         self.placed_track = self.placement.track
         self.placed_rubric = RubricWithCriteriaFactory(track=self.placed_track)
         self.placed_criteria = list(self.placed_rubric.active_criteria())
 
-    def progress(self, user=None, url=MY_PROGRESS_URL, **params):
+    def progress(self, user=None, url=None, **params):
+        url = url or self.my_progress_url
         params.setdefault("track_id", self.placed_track.pk)
         return self.as_(user or self.student).get(url, params)
 
@@ -1491,7 +1637,7 @@ class ProgressAPITests(AssessmentAPIWorld):
         self.assertEqual(self.placement.recommended_level, self.placed_level)
 
     def test_progress_has_no_placed_level_when_there_is_no_placement(self):
-        elsewhere = LevelFactory()
+        elsewhere = LevelFactory(track__organization=self.organization)
         RubricWithCriteriaFactory(track=elsewhere.track)
 
         response = self.progress(track_id=elsewhere.track.pk)
@@ -1582,7 +1728,7 @@ class ProgressAPITests(AssessmentAPIWorld):
 
     def test_another_tracks_sessions_are_not_counted(self):
         self.assessed(score=5, weeks_ago=1)
-        elsewhere = LevelFactory()
+        elsewhere = LevelFactory(track__organization=self.organization)
         RubricWithCriteriaFactory(track=elsewhere.track)
         SessionAssessmentFactory(
             booking=past_completed_booking(
@@ -1600,7 +1746,7 @@ class ProgressAPITests(AssessmentAPIWorld):
         self.assertEqual(Decimal(response.data["overall_average"]), Decimal("5.00"))
 
     def test_track_id_is_required(self):
-        response = self.as_(self.student).get(MY_PROGRESS_URL)
+        response = self.as_(self.student).get(self.my_progress_url)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("track_id", response.data)
@@ -1620,18 +1766,18 @@ class ProgressAPITests(AssessmentAPIWorld):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_an_anonymous_caller_cannot_read_progress(self):
-        response = self.client.get(MY_PROGRESS_URL, {"track_id": self.placed_track.pk})
+        response = self.client.get(self.my_progress_url, {"track_id": self.placed_track.pk})
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     # --- the parent side ----------------------------------------------------
 
     def test_a_linked_parent_reads_their_childs_progress(self):
         """Acceptance criterion 21."""
-        link = ParentLinkFactory()
+        link = self.link()
         self.assessed(student=link.student, score=4, weeks_ago=1)
 
         response = self.progress(
-            user=link.parent, url=CHILD_PROGRESS_URL, student_id=link.student.pk
+            user=link.parent, url=self.child_progress_url, student_id=link.student.pk
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -1640,53 +1786,53 @@ class ProgressAPITests(AssessmentAPIWorld):
 
     def test_an_unrelated_parent_is_denied(self):
         """Acceptance criterion 22."""
-        link = ParentLinkFactory()
+        link = self.link()
         self.assessed(student=link.student, weeks_ago=1)
 
         response = self.progress(
-            user=self.parent, url=CHILD_PROGRESS_URL, student_id=link.student.pk
+            user=self.parent, url=self.child_progress_url, student_id=link.student.pk
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_parent_cannot_read_a_student_who_is_not_their_child(self):
         """Acceptance criterion 22 — the link is checked, not just the role."""
-        link = ParentLinkFactory()
+        link = self.link()
         self.assessed(weeks_ago=1)
 
         response = self.progress(
-            user=link.parent, url=CHILD_PROGRESS_URL, student_id=self.student.pk
+            user=link.parent, url=self.child_progress_url, student_id=self.student.pk
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_the_child_endpoint_requires_a_student_id(self):
-        link = ParentLinkFactory()
+        link = self.link()
 
         response = self.as_(link.parent).get(
-            CHILD_PROGRESS_URL, {"track_id": self.placed_track.pk}
+            self.child_progress_url, {"track_id": self.placed_track.pk}
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("student_id", response.data)
 
     def test_a_student_cannot_use_the_child_progress_endpoint(self):
-        link = ParentLinkFactory()
+        link = self.link()
 
         response = self.progress(
-            user=self.student, url=CHILD_PROGRESS_URL, student_id=link.student.pk
+            user=self.student, url=self.child_progress_url, student_id=link.student.pk
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_teacher_cannot_use_the_child_progress_endpoint(self):
-        link = ParentLinkFactory()
+        link = self.link()
 
         response = self.progress(
-            user=self.teacher, url=CHILD_PROGRESS_URL, student_id=link.student.pk
+            user=self.teacher, url=self.child_progress_url, student_id=link.student.pk
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_childs_progress_hides_the_internal_fields_too(self):
         """Acceptance criterion 23."""
-        link = ParentLinkFactory()
+        link = self.link()
         flagged = FlaggedAssessmentFactory(
             booking=past_completed_booking(
                 availability=self.window,
@@ -1698,7 +1844,7 @@ class ProgressAPITests(AssessmentAPIWorld):
         flagged.record_lead_review(reviewed_by=self.lead, note="Internal only.")
 
         response = self.progress(
-            user=link.parent, url=CHILD_PROGRESS_URL, student_id=link.student.pk
+            user=link.parent, url=self.child_progress_url, student_id=link.student.pk
         )
 
         self.assertNotIn("flag_reason", response.data)
@@ -1731,7 +1877,7 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
 
     def generate(self, user=None, **overrides):
         return self.as_(user or self.lead).post(
-            SNAPSHOTS_URL, self.payload(**overrides), format="json"
+            self.snapshots_url, self.payload(**overrides), format="json"
         )
 
     def assessed(self, *, student=None, score=DEFAULT_SCORE, weeks_ago=1):
@@ -1782,8 +1928,10 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
         composed = self.generate()
         self.assertIn("1 of 1", composed.data["summary"])
 
+        other_student = StudentFactory()
+        admit(other_student, self.organization)
         written = self.generate(
-            student=StudentFactory().pk, summary="Ready to move up after Ramadan."
+            student=other_student.pk, summary="Ready to move up after Ramadan."
         )
         self.assertEqual(written.data["summary"], "Ready to move up after Ramadan.")
 
@@ -1820,7 +1968,7 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
         self.assessed(score=1, weeks_ago=2)
 
         row = self.as_(self.lead).get(
-            LEAD_SNAPSHOTS_URL, {"student_id": self.student.pk}
+            self.lead_snapshots_url, {"student_id": self.student.pk}
         ).data[0]
         self.assertEqual(row["id"], created.data["id"])
         self.assertEqual(Decimal(row["overall_average"]), Decimal("5.00"))
@@ -1844,7 +1992,7 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
 
         for method in ("get", "patch", "put", "delete"):
             with self.subTest(method=method):
-                response = getattr(self.as_(self.lead), method)(SNAPSHOTS_URL)
+                response = getattr(self.as_(self.lead), method)(self.snapshots_url)
                 self.assertEqual(
                     response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED
                 )
@@ -1868,7 +2016,7 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
         )
 
     def test_an_anonymous_caller_cannot_generate_a_snapshot(self):
-        response = self.client.post(SNAPSHOTS_URL, self.payload(), format="json")
+        response = self.client.post(self.snapshots_url, self.payload(), format="json")
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertFalse(ProgressSnapshot.objects.exists())
@@ -1924,7 +2072,7 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
             period_end=self.period_start,
         )
 
-        response = self.as_(self.student).get(MY_SNAPSHOTS_URL)
+        response = self.as_(self.student).get(self.my_snapshots_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([row["id"] for row in response.data], [published.pk])
@@ -1934,13 +2082,13 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
         mine = PublishedSnapshotFactory(student=self.student, track=self.track)
         PublishedSnapshotFactory(track=self.track)
 
-        response = self.as_(self.student).get(MY_SNAPSHOTS_URL)
+        response = self.as_(self.student).get(self.my_snapshots_url)
         self.assertEqual([row["id"] for row in response.data], [mine.pk])
 
     def test_the_family_snapshot_shape_omits_the_lead_only_fields(self):
         PublishedSnapshotFactory(student=self.student, track=self.track)
 
-        payload = self.as_(self.student).get(MY_SNAPSHOTS_URL).data[0]
+        payload = self.as_(self.student).get(self.my_snapshots_url).data[0]
 
         self.assertNotIn("generated_by", payload)
         self.assertNotIn("visible_to_family", payload)
@@ -1949,19 +2097,19 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
 
     def test_a_student_snapshot_list_can_be_narrowed_to_a_track(self):
         mine = PublishedSnapshotFactory(student=self.student, track=self.track)
-        elsewhere = TrackFactory()
+        elsewhere = TrackFactory(organization=self.organization)
         PublishedSnapshotFactory(student=self.student, track=elsewhere)
 
-        response = self.as_(self.student).get(MY_SNAPSHOTS_URL, {"track_id": self.track.pk})
+        response = self.as_(self.student).get(self.my_snapshots_url, {"track_id": self.track.pk})
         self.assertEqual([row["id"] for row in response.data], [mine.pk])
 
     def test_a_teacher_cannot_read_the_student_snapshot_list(self):
-        response = self.as_(self.teacher).get(MY_SNAPSHOTS_URL)
+        response = self.as_(self.teacher).get(self.my_snapshots_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_linked_parent_reads_their_childs_published_snapshots(self):
         """Acceptance criterion 28."""
-        link = ParentLinkFactory()
+        link = self.link()
         published = PublishedSnapshotFactory(student=link.student, track=self.track)
         ProgressSnapshotFactory(
             student=link.student,
@@ -1971,7 +2119,7 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
         )
 
         response = self.as_(link.parent).get(
-            CHILD_SNAPSHOTS_URL, {"student_id": link.student.pk}
+            self.child_snapshots_url, {"student_id": link.student.pk}
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -1979,18 +2127,18 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
 
     def test_an_unrelated_parent_cannot_read_a_childs_snapshots(self):
         """Acceptance criteria 22 and 28."""
-        link = ParentLinkFactory()
+        link = self.link()
         PublishedSnapshotFactory(student=link.student, track=self.track)
 
         response = self.as_(self.parent).get(
-            CHILD_SNAPSHOTS_URL, {"student_id": link.student.pk}
+            self.child_snapshots_url, {"student_id": link.student.pk}
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_the_child_snapshot_endpoint_requires_a_student_id(self):
-        link = ParentLinkFactory()
+        link = self.link()
 
-        response = self.as_(link.parent).get(CHILD_SNAPSHOTS_URL)
+        response = self.as_(link.parent).get(self.child_snapshots_url)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("student_id", response.data)
@@ -1998,7 +2146,7 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
     def test_the_lead_list_includes_unpublished_rows(self):
         unpublished = ProgressSnapshotFactory(student=self.student, track=self.track)
 
-        response = self.as_(self.lead).get(LEAD_SNAPSHOTS_URL)
+        response = self.as_(self.lead).get(self.lead_snapshots_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([row["id"] for row in response.data], [unpublished.pk])
@@ -2009,18 +2157,18 @@ class ProgressSnapshotAPITests(AssessmentAPIWorld):
         ProgressSnapshotFactory(track=self.track)
 
         response = self.as_(self.lead).get(
-            LEAD_SNAPSHOTS_URL, {"student_id": self.student.pk, "track_id": self.track.pk}
+            self.lead_snapshots_url, {"student_id": self.student.pk, "track_id": self.track.pk}
         )
         self.assertEqual([row["id"] for row in response.data], [mine.pk])
 
     def test_a_sub_teacher_cannot_read_the_lead_snapshot_list(self):
         ProgressSnapshotFactory(student=self.student, track=self.track)
 
-        response = self.as_(self.teacher).get(LEAD_SNAPSHOTS_URL)
+        response = self.as_(self.teacher).get(self.lead_snapshots_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_student_cannot_read_the_lead_snapshot_list(self):
-        response = self.as_(self.student).get(LEAD_SNAPSHOTS_URL)
+        response = self.as_(self.student).get(self.lead_snapshots_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
@@ -2033,22 +2181,22 @@ class AssessmentSchemaTests(APITestCase):
         paths = SchemaGenerator().get_schema(request=None, public=True)["paths"]
 
         for path in (
-            "/api/assessment/rubrics/",
-            "/api/assessment/rubrics/{id}/",
-            "/api/assessment/bookings/{booking_id}/",
-            "/api/assessment/mine/",
-            "/api/assessment/child/",
-            "/api/assessment/teacher/mine/",
-            "/api/assessment/review/queue/",
-            "/api/assessment/reports/teachers/",
-            "/api/assessment/progress/mine/",
-            "/api/assessment/progress/child/",
-            "/api/assessment/snapshots/",
-            "/api/assessment/snapshots/all/",
-            "/api/assessment/snapshots/mine/",
-            "/api/assessment/snapshots/child/",
-            "/api/assessment/{id}/",
-            "/api/assessment/{id}/review/",
+            "/api/assessment/organizations/{organization_pk}/rubrics/",
+            "/api/assessment/organizations/{organization_pk}/rubrics/{id}/",
+            "/api/assessment/organizations/{organization_pk}/bookings/{booking_id}/",
+            "/api/assessment/organizations/{organization_pk}/mine/",
+            "/api/assessment/organizations/{organization_pk}/child/",
+            "/api/assessment/organizations/{organization_pk}/teacher/mine/",
+            "/api/assessment/organizations/{organization_pk}/review/queue/",
+            "/api/assessment/organizations/{organization_pk}/reports/teachers/",
+            "/api/assessment/organizations/{organization_pk}/progress/mine/",
+            "/api/assessment/organizations/{organization_pk}/progress/child/",
+            "/api/assessment/organizations/{organization_pk}/snapshots/",
+            "/api/assessment/organizations/{organization_pk}/snapshots/all/",
+            "/api/assessment/organizations/{organization_pk}/snapshots/mine/",
+            "/api/assessment/organizations/{organization_pk}/snapshots/child/",
+            "/api/assessment/organizations/{organization_pk}/{id}/",
+            "/api/assessment/organizations/{organization_pk}/{id}/review/",
         ):
             with self.subTest(path=path):
                 self.assertIn(path, paths)

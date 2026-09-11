@@ -1075,3 +1075,25 @@ Format:
 - **What we decided:** Data migration `0002_remediate_legacy_pricing` runs `remediate_legacy_pricing()` which admits unadmitted students as `STAFF` and approvers as `TEACHER` with `ACTIVE` status. Existing suspended memberships are left untouched. Duplicate active agreements (if any) are resolved non-destructively: the newest agreement remains active, while older agreements are deactivated (`active=False`), preserving complete historical audit trails without deleting data.
 - **Why it matters for later phases:** Zero data loss during tenancy backfills. Historical negotiations and pricing records remain intact and queryable by leads.
 
+## 2026-09-11 — Assessment tenancy derived through Track and Booking hierarchy without denormalized columns
+- **What happened:** Assessment domain models (`AssessmentRubric`, `AssessmentCriterion`, `SessionAssessment`, `AssessmentScore`, `ProgressSnapshot`) all possess deterministic, non-nullable relationships to either `Track` (`AssessmentRubric.track`, `ProgressSnapshot.track`) or `Booking -> Level -> Track` (`SessionAssessment.booking`).
+- **What we decided:** We did not add a redundant `organization` foreign key column to any of the 5 models. Instead, we implemented `.in_organization(org)` on Custom QuerySets and `@property def organization(self)` on each model.
+- **Why it matters for later phases:** Single source of truth. Denormalized organization columns would risk drifting from `booking.level.track.organization` or `track.organization`.
+
+## 2026-09-11 — Defense-in-depth model invariants on `SessionAssessment.clean()` and `ProgressSnapshot.clean()`
+- **What happened:** Cross-tenant assessment leakage can happen if a teacher in Academy A assesses a booking in Academy B, or if an assessment references a student or reviewer not admitted to that academy.
+- **What we decided:** `SessionAssessment.clean()` strictly validates that:
+  1. The student is an active member of `self.organization`.
+  2. The teacher (`assessed_by`) is an active member and configured in `self.organization`.
+  3. The booking belongs to the assessment's track's organization.
+  4. Any lead reviewer (`lead_reviewed_by`) is an active lead member in `self.organization`.
+  `AssessmentScore.clean()` validates that the score's criterion belongs to the same organization as the assessment.
+  `ProgressSnapshot.clean()` validates active memberships for the student and generator.
+  `save()` calls `full_clean()`.
+- **Why it matters for later phases:** Direct ORM writes, background jobs, and management commands cannot bypass tenant boundaries.
+
+## 2026-09-11 — Assessment routes mounted under `/api/assessment/organizations/<organization_pk>/...` and legacy routes retired
+- **What happened:** Pre-SaaS assessment routes were flat and unscoped (e.g. `/api/assessment/rubrics/`, `/api/assessment/mine/`).
+- **What we decided:** All 16 assessment endpoints were prefixed with `organizations/<organization_pk>/` and protected with `IsAuthenticated, IsOrganizationMember`. Scoped serializers validate related fields against `self.organization`. Foreign resource lookups return 404 (not 403) to prevent existence leakage.
+- **Why it matters for later phases:** Unscoped endpoints cannot provide a cross-tenant bypass vector.
+

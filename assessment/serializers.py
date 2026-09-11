@@ -28,7 +28,7 @@ from django.db import transaction
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from accounts.models import User
+from accounts.models import Role, User
 from accounts.utils import to_user_timezone
 from curriculum.models import Track
 from curriculum.serializers import LevelSerializer
@@ -42,6 +42,46 @@ from .models import (
     ProgressSnapshot,
     SessionAssessment,
 )
+
+
+def students_in(organization):
+    """Active student users in ``organization``."""
+    from organizations.models import MembershipStatus
+
+    if organization is None:
+        return User.objects.none()
+    return User.objects.filter(
+        role=Role.STUDENT,
+        organization_memberships__organization=organization,
+        organization_memberships__status=MembershipStatus.ACTIVE,
+    ).distinct()
+
+
+class AcademyScopedSerializerMixin:
+    """Base mixin for assessment write shapes: relations resolve inside one academy only.
+
+    ``scoped_querysets`` names the related fields to narrow and the queryset to
+    narrow each to. It is applied in ``get_fields()`` rather than ``__init__``
+    because the context — and therefore the organization — is attached to the
+    serializer after construction.
+    """
+
+    scoped_querysets = {}
+
+    @property
+    def organization(self):
+        """The tenant the view has verified the caller into, or ``None``."""
+        return self.context.get("organization")
+
+    def get_fields(self):
+        fields = super().get_fields()
+        organization = self.organization
+        if organization is None:
+            return fields
+        for name, build in self.scoped_querysets.items():
+            if name in fields:
+                fields[name].queryset = build(organization)
+        return fields
 
 
 def as_drf_error(exc):
@@ -140,7 +180,7 @@ class AssessmentCriterionWriteSerializer(serializers.Serializer):
         return attrs
 
 
-class AssessmentRubricCreateSerializer(serializers.Serializer):
+class AssessmentRubricCreateSerializer(AcademyScopedSerializerMixin, serializers.Serializer):
     """The lead configures a track's rubric.
 
     Creating one for a track that already has a live rubric **supersedes** the old
@@ -150,7 +190,11 @@ class AssessmentRubricCreateSerializer(serializers.Serializer):
     *other* operation, and it is a PATCH on the rubric detail.
     """
 
-    track = serializers.PrimaryKeyRelatedField(queryset=Track.objects.all())
+    scoped_querysets = {
+        "track": lambda org: Track.objects.filter(organization=org),
+    }
+
+    track = serializers.PrimaryKeyRelatedField(queryset=Track.objects.none())
     name = serializers.CharField(max_length=80)
     description = serializers.CharField(
         max_length=2000, required=False, allow_blank=True
@@ -421,9 +465,15 @@ class SessionAssessmentCreateSerializer(serializers.Serializer):
     )
 
     def create(self, validated_data):
+        booking = self.context["booking"]
+        org = self.context.get("organization")
+        if org and booking.level.track.organization_id != getattr(org, "pk", org):
+            raise serializers.ValidationError(
+                {"booking": ["The booking belongs to a different academy than this endpoint."]}
+            )
         try:
             return SessionAssessment.submit(
-                booking=self.context["booking"],
+                booking=booking,
                 assessed_by=self.context["request"].user,
                 scores=validated_data["scores"],
                 teacher_summary=validated_data.get("teacher_summary", ""),
@@ -592,7 +642,7 @@ class FamilyProgressSnapshotSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ProgressSnapshotCreateSerializer(serializers.Serializer):
+class ProgressSnapshotCreateSerializer(AcademyScopedSerializerMixin, serializers.Serializer):
     """The lead generates a snapshot for one student, track and period.
 
     Every number in the result is computed here, not supplied: a snapshot a caller
@@ -600,11 +650,16 @@ class ProgressSnapshotCreateSerializer(serializers.Serializer):
     request returns the existing row and a 200 rather than creating a second one.
     """
 
+    scoped_querysets = {
+        "student": lambda org: students_in(org),
+        "track": lambda org: Track.objects.filter(organization=org),
+    }
+
     student = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(),
+        queryset=User.objects.none(),
         help_text="Must be a student account; the model enforces the role.",
     )
-    track = serializers.PrimaryKeyRelatedField(queryset=Track.objects.all())
+    track = serializers.PrimaryKeyRelatedField(queryset=Track.objects.none())
     period_start = serializers.DateTimeField()
     period_end = serializers.DateTimeField()
     summary = serializers.CharField(max_length=2000, required=False, allow_blank=True)
@@ -626,3 +681,4 @@ class ProgressSnapshotCreateSerializer(serializers.Serializer):
         # The view needs to know which it was, to answer 201 or 200.
         self.created = created
         return snapshot
+

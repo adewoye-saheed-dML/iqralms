@@ -29,44 +29,95 @@ from .views import (
 
 app_name = "assessment"
 
+ACADEMY = "organizations/<int:organization_pk>/"
+
 urlpatterns = [
     # Rubric configuration — lead only.
-    path("rubrics/", AssessmentRubricListCreateView.as_view(), name="rubric-list"),
     path(
-        "rubrics/<int:pk>/",
+        f"{ACADEMY}rubrics/",
+        AssessmentRubricListCreateView.as_view(),
+        name="rubric-list",
+    ),
+    path(
+        f"{ACADEMY}rubrics/<int:pk>/",
         AssessmentRubricDetailView.as_view(),
         name="rubric-detail",
     ),
     # Submission — the teacher who taught the session.
     path(
-        "bookings/<int:booking_id>/",
+        f"{ACADEMY}bookings/<int:booking_id>/",
         SessionAssessmentCreateView.as_view(),
         name="assessment-create",
     ),
     # Reading assessments, one audience per path.
-    path("mine/", MyAssessmentListView.as_view(), name="assessment-mine"),
-    path("child/", MyChildAssessmentListView.as_view(), name="assessment-child"),
     path(
-        "teacher/mine/",
+        f"{ACADEMY}mine/",
+        MyAssessmentListView.as_view(),
+        name="assessment-mine",
+    ),
+    path(
+        f"{ACADEMY}child/",
+        MyChildAssessmentListView.as_view(),
+        name="assessment-child",
+    ),
+    path(
+        f"{ACADEMY}teacher/mine/",
         TeacherAssessmentListView.as_view(),
         name="assessment-teacher-mine",
     ),
     # Lead review.
-    path("review/queue/", LeadReviewQueueView.as_view(), name="review-queue"),
+    path(
+        f"{ACADEMY}review/queue/",
+        LeadReviewQueueView.as_view(),
+        name="review-queue",
+    ),
     # Reporting and progress.
     path(
-        "reports/teachers/",
+        f"{ACADEMY}reports/teachers/",
         TeacherQualityReportView.as_view(),
         name="report-teachers",
     ),
-    path("progress/mine/", MyProgressView.as_view(), name="progress-mine"),
-    path("progress/child/", ChildProgressView.as_view(), name="progress-child"),
+    path(
+        f"{ACADEMY}progress/mine/",
+        MyProgressView.as_view(),
+        name="progress-mine",
+    ),
+    path(
+        f"{ACADEMY}progress/child/",
+        ChildProgressView.as_view(),
+        name="progress-child",
+    ),
     # Snapshots.
-    path("snapshots/", ProgressSnapshotCreateView.as_view(), name="snapshot-create"),
-    path("snapshots/all/", LeadSnapshotListView.as_view(), name="snapshot-list"),
-    path("snapshots/mine/", MySnapshotListView.as_view(), name="snapshot-mine"),
-    path("snapshots/child/", ChildSnapshotListView.as_view(), name="snapshot-child"),
+    path(
+        f"{ACADEMY}snapshots/",
+        ProgressSnapshotCreateView.as_view(),
+        name="snapshot-create",
+    ),
+    path(
+        f"{ACADEMY}snapshots/all/",
+        LeadSnapshotListView.as_view(),
+        name="snapshot-list",
+    ),
+    path(
+        f"{ACADEMY}snapshots/mine/",
+        MySnapshotListView.as_view(),
+        name="snapshot-mine",
+    ),
+    path(
+        f"{ACADEMY}snapshots/child/",
+        ChildSnapshotListView.as_view(),
+        name="snapshot-child",
+    ),
     # Numeric routes last: they would otherwise shadow the literals above.
-    path("<int:pk>/review/", LeadReviewView.as_view(), name="assessment-review"),
-    path("<int:pk>/", LeadAssessmentDetailView.as_view(), name="assessment-detail"),
+    path(
+        f"{ACADEMY}<int:pk>/review/",
+        LeadReviewView.as_view(),
+        name="assessment-review",
+    ),
+    path(
+        f"{ACADEMY}<int:pk>/",
+        LeadAssessmentDetailView.as_view(),
+        name="assessment-detail",
+    ),
 ]
+

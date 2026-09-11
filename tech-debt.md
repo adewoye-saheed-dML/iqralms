@@ -941,3 +941,16 @@ Format:
 - **Real fix:** Introduce Stripe / payment gateway webhooks, invoice generation, balance accounting, and payout reconciliation in dedicated financial phases.
 - **Revisit when:** SaaS Phase 7 (Teacher Payouts) and SaaS Phase 8 (Billing & Payments).
 
+## 2026-09-11 — Sub-teacher access to lead review feedback notes deferred
+- **What was skipped:** Allowing assessing teachers to read `lead_review_note` and `lead_reviewed_by` on assessments they submitted.
+- **Why:** The Phase 6 specification explicitly rules out sub-teachers reading lead review notes in this phase; sub-teachers only see `lead_reviewed_at` so they know review occurred.
+- **Real fix:** In a future teacher feedback/coaching iteration, provide a granular toggle or explicit shared comment channel between leads and teachers.
+- **Revisit when:** Teacher coaching or performance review features are developed.
+
+## 2026-09-11 — Automated snapshot scheduling and publication jobs deferred
+- **What was skipped:** Background cron jobs to automatically compute and publish periodic `ProgressSnapshot` rows.
+- **Why:** Phase 6 explicitly defines snapshot generation as an intentional lead action via API; automated periodic background jobs require task worker infrastructure (Celery/RQ) not yet introduced.
+- **Real fix:** Scheduled worker that executes `ProgressSnapshot.generate` at month-end or term-end for all active students in active tracks.
+- **Revisit when:** Background worker / scheduler infrastructure phase.
+
+
