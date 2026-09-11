@@ -18,7 +18,7 @@ from decimal import Decimal
 import factory
 
 from accounts.tests.factories import LeadTeacherFactory, StudentFactory
-from curriculum.tests.factories import LevelFactory
+from curriculum.tests.factories import LevelFactory, admit
 from pricing.models import PricingAgreement, PricingReason
 
 #: A plausible per-session rate, in whatever currency the academy bills in — the
@@ -42,6 +42,25 @@ class PricingAgreementFactory(factory.django.DjangoModelFactory):
     approved_by = factory.SubFactory(LeadTeacherFactory)
     notes = "Family asked for help after a job loss; revisit in six months."
     active = True
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        # Before the row is validated in save(): PricingAgreement.clean()
+        # enforces that the student and the approver are active members of the
+        # academy that owns the level.
+        level = kwargs.get("level")
+        if level is not None and getattr(level, "track", None) is not None:
+            org = level.track.organization
+            student = kwargs.get("student")
+            approved_by = kwargs.get("approved_by")
+            if student is not None and not kwargs.get("_skip_admit_student"):
+                admit(student, org)
+            if approved_by is not None and not kwargs.get("_skip_admit_approver"):
+                admit(approved_by, org)
+        kwargs.pop("_skip_admit_student", None)
+        kwargs.pop("_skip_admit_approver", None)
+        return super()._create(model_class, *args, **kwargs)
+
 
 
 class PremiumAgreementFactory(PricingAgreementFactory):

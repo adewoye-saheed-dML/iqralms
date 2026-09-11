@@ -37,10 +37,21 @@ from django.db.models import Q
 
 from accounts.models import Role, User
 from curriculum.models import Level
+from organizations.models import active_membership
 
 #: Rates are money, so nothing below zero is meaningful. Zero *is* — a full
 #: scholarship is a legitimate hardship arrangement.
 MINIMUM_RATE = Decimal("0")
+
+
+class PricingAgreementQuerySet(models.QuerySet):
+    """QuerySet for PricingAgreement with multi-tenant filtering."""
+
+    def in_organization(self, organization):
+        """Agreements that belong to one academy through their curriculum level."""
+        organization_id = getattr(organization, "pk", organization)
+        return self.filter(level__track__organization_id=organization_id)
+
 
 
 class PricingReason(models.TextChoices):
@@ -126,6 +137,8 @@ class PricingAgreement(models.Model):
         ),
     )
 
+    objects = PricingAgreementQuerySet.as_manager()
+
     class Meta:
         # Newest first, which is what a pricing history reads as. There is no
         # created_at — the spec's field list does not include one and this phase
@@ -149,6 +162,31 @@ class PricingAgreement(models.Model):
         ]
 
     # --- Behaviour ----------------------------------------------------------
+
+    @property
+    def organization(self):
+        """The academy this agreement belongs to, reached through its level's track.
+
+        A property rather than a column, deliberately. The Phase 5 audit proved
+        that derived ownership through level -> track -> organization is
+        sufficient and avoids redundant tenant fields.
+        """
+        if self.level_id:
+            return self.level.track.organization
+        return None
+
+    def _is_active_here(self, user):
+        """Is ``user`` an active member of the academy that owns this level?
+
+        Goes through ``organizations.active_membership()`` rather than querying
+        memberships directly.
+        """
+        if not self.organization or not user:
+            return False
+        return (
+            active_membership(user=user, organization=self.organization)
+            is not None
+        )
 
     @classmethod
     def active_for(cls, student, level):
@@ -195,29 +233,44 @@ class PricingAgreement(models.Model):
     def clean(self):
         errors = {}
 
-        if self.student_id and self.student.role != Role.STUDENT:
-            errors["student"] = ValidationError(
-                "Only a user with role 'student' can have a pricing agreement "
-                "(got '%(role)s').",
-                code="invalid_student_role",
-                params={"role": self.student.role},
-            )
+        if self.student_id:
+            if self.student.role != Role.STUDENT:
+                errors["student"] = ValidationError(
+                    "Only a user with role 'student' can have a pricing agreement "
+                    "(got '%(role)s').",
+                    code="invalid_student_role",
+                    params={"role": self.student.role},
+                )
+            elif self.level_id and self.organization is not None and not self._is_active_here(self.student):
+                errors["student"] = ValidationError(
+                    "That student is not an active member of the academy that "
+                    "owns this level.",
+                    code="student_not_in_organization",
+                )
 
-        if self.approved_by_id and self.approved_by.role != Role.LEAD:
-            # The same gate PlacementResult.clean() puts on reviewed_by, and for
-            # a stronger reason: pricing is the one lever that moves the lead's
-            # own margin, so a well-meaning sub-teacher must not be able to grant
-            # it (mvp-spec section 3). Enforced here as well as in the permission
-            # class so a direct ORM write cannot bypass it either.
-            errors["approved_by"] = ValidationError(
-                "Only the lead teacher can approve a pricing agreement (got "
-                "'%(role)s').",
-                code="invalid_approver_role",
-                params={"role": self.approved_by.role},
-            )
+        if self.approved_by_id:
+            if self.approved_by.role != Role.LEAD:
+                # The same gate PlacementResult.clean() puts on reviewed_by, and for
+                # a stronger reason: pricing is the one lever that moves the lead's
+                # own margin, so a well-meaning sub-teacher must not be able to grant
+                # it (mvp-spec section 3). Enforced here as well as in the permission
+                # class so a direct ORM write cannot bypass it either.
+                errors["approved_by"] = ValidationError(
+                    "Only the lead teacher can approve a pricing agreement (got "
+                    "'%(role)s').",
+                    code="invalid_approver_role",
+                    params={"role": self.approved_by.role},
+                )
+            elif self.level_id and self.organization is not None and not self._is_active_here(self.approved_by):
+                errors["approved_by"] = ValidationError(
+                    "That approver is not an active member of the academy that "
+                    "owns this level.",
+                    code="approver_not_in_organization",
+                )
 
         if errors:
             raise ValidationError(errors)
+
 
     def save(self, *args, **kwargs):
         with transaction.atomic():

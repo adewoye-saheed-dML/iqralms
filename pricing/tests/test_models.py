@@ -19,7 +19,9 @@ from accounts.tests.factories import (
     StudentFactory,
     SubTeacherFactory,
 )
-from curriculum.tests.factories import LevelFactory, TrackFactory
+from curriculum.tests.factories import LevelFactory, TrackFactory, admit
+from organizations.models import MembershipStatus, OrganizationRole
+from organizations.tests.factories import OrganizationFactory
 from pricing.models import PricingAgreement, PricingReason
 
 from .factories import (
@@ -353,3 +355,185 @@ class ThisPhaseChargesNobodyTests(TestCase):
             for rel in PricingAgreement._meta.related_objects
         }
         self.assertEqual(related, set(), "nothing should point at an agreement yet")
+
+
+class PricingAgreementTenancyTests(TestCase):
+    """Task 5.2: Model-layer multi-tenant invariants for PricingAgreement."""
+
+    def setUp(self):
+        self.org_a = OrganizationFactory(name="Academy A")
+        self.org_b = OrganizationFactory(name="Academy B")
+
+        self.track_a = TrackFactory(
+            organization=self.org_a, name="Track A", slug="track-a"
+        )
+        self.level_a = LevelFactory(track=self.track_a)
+
+        self.track_b = TrackFactory(
+            organization=self.org_b, name="Track B", slug="track-b"
+        )
+        self.level_b = LevelFactory(track=self.track_b)
+
+        self.student_a = StudentFactory(username="student_a")
+        self.lead_a = LeadTeacherFactory(username="lead_a")
+        self.student_a_membership = admit(self.student_a, self.org_a)
+        self.lead_a_membership = admit(
+            self.lead_a, self.org_a, role=OrganizationRole.OWNER
+        )
+
+        self.student_b = StudentFactory(username="student_b")
+        self.lead_b = LeadTeacherFactory(username="lead_b")
+        self.student_b_membership = admit(self.student_b, self.org_b)
+        self.lead_b_membership = admit(
+            self.lead_b, self.org_b, role=OrganizationRole.OWNER
+        )
+
+    def test_same_academy_agreement_succeeds(self):
+        agreement = PricingAgreement.objects.create(
+            student=self.student_a,
+            level=self.level_a,
+            standard_rate=STANDARD_RATE,
+            agreed_rate=HARDSHIP_RATE,
+            reason=PricingReason.DISCOUNT_HARDSHIP,
+            approved_by=self.lead_a,
+            notes="Valid same-academy agreement.",
+        )
+        self.assertTrue(agreement.pk)
+        self.assertEqual(agreement.organization, self.org_a)
+
+    def test_agreement_derived_organization_property(self):
+        agreement = PricingAgreementFactory(
+            student=self.student_a,
+            level=self.level_a,
+            approved_by=self.lead_a,
+        )
+        self.assertEqual(agreement.organization, self.org_a)
+        self.assertEqual(agreement.organization.pk, self.org_a.pk)
+
+    def test_in_organization_queryset_filtering(self):
+        agreement_a = PricingAgreementFactory(
+            student=self.student_a,
+            level=self.level_a,
+            approved_by=self.lead_a,
+        )
+        agreement_b = PricingAgreementFactory(
+            student=self.student_b,
+            level=self.level_b,
+            approved_by=self.lead_b,
+        )
+
+        qs_a = PricingAgreement.objects.in_organization(self.org_a)
+        qs_b = PricingAgreement.objects.in_organization(self.org_b)
+
+        self.assertIn(agreement_a, qs_a)
+        self.assertNotIn(agreement_b, qs_a)
+        self.assertIn(agreement_b, qs_b)
+        self.assertNotIn(agreement_a, qs_b)
+
+    def test_cross_academy_student_is_rejected(self):
+        """Student in Academy B cannot have an agreement for Level in Academy A."""
+        agreement = PricingAgreement(
+            student=self.student_b,
+            level=self.level_a,
+            standard_rate=STANDARD_RATE,
+            agreed_rate=HARDSHIP_RATE,
+            reason=PricingReason.DISCOUNT_HARDSHIP,
+            approved_by=self.lead_a,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            agreement.full_clean()
+        self.assertIn("student", ctx.exception.error_dict)
+        self.assertEqual(
+            ctx.exception.error_dict["student"][0].code,
+            "student_not_in_organization",
+        )
+
+    def test_cross_academy_approver_is_rejected(self):
+        """Lead in Academy B cannot approve an agreement for Level in Academy A."""
+        agreement = PricingAgreement(
+            student=self.student_a,
+            level=self.level_a,
+            standard_rate=STANDARD_RATE,
+            agreed_rate=HARDSHIP_RATE,
+            reason=PricingReason.DISCOUNT_HARDSHIP,
+            approved_by=self.lead_b,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            agreement.full_clean()
+        self.assertIn("approved_by", ctx.exception.error_dict)
+        self.assertEqual(
+            ctx.exception.error_dict["approved_by"][0].code,
+            "approver_not_in_organization",
+        )
+
+    def test_suspended_student_in_same_academy_is_rejected(self):
+        self.student_a_membership.status = MembershipStatus.SUSPENDED
+        self.student_a_membership.save()
+
+        agreement = PricingAgreement(
+            student=self.student_a,
+            level=self.level_a,
+            standard_rate=STANDARD_RATE,
+            agreed_rate=HARDSHIP_RATE,
+            reason=PricingReason.DISCOUNT_HARDSHIP,
+            approved_by=self.lead_a,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            agreement.full_clean()
+        self.assertIn("student", ctx.exception.error_dict)
+        self.assertEqual(
+            ctx.exception.error_dict["student"][0].code,
+            "student_not_in_organization",
+        )
+
+    def test_suspended_approver_in_same_academy_is_rejected(self):
+        self.lead_a_membership.status = MembershipStatus.SUSPENDED
+        self.lead_a_membership.save()
+
+        agreement = PricingAgreement(
+            student=self.student_a,
+            level=self.level_a,
+            standard_rate=STANDARD_RATE,
+            agreed_rate=HARDSHIP_RATE,
+            reason=PricingReason.DISCOUNT_HARDSHIP,
+            approved_by=self.lead_a,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            agreement.full_clean()
+        self.assertIn("approved_by", ctx.exception.error_dict)
+        self.assertEqual(
+            ctx.exception.error_dict["approved_by"][0].code,
+            "approver_not_in_organization",
+        )
+
+    def test_historical_superseded_agreements_remain_queryable_in_organization(self):
+        first = PricingAgreement.objects.create(
+            student=self.student_a,
+            level=self.level_a,
+            standard_rate=STANDARD_RATE,
+            agreed_rate=HARDSHIP_RATE,
+            reason=PricingReason.DISCOUNT_HARDSHIP,
+            approved_by=self.lead_a,
+        )
+        second = PricingAgreement.objects.create(
+            student=self.student_a,
+            level=self.level_a,
+            standard_rate=STANDARD_RATE,
+            agreed_rate=Decimal("30.00"),
+            reason=PricingReason.PREMIUM_DIRECT,
+            approved_by=self.lead_a,
+        )
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+
+        self.assertFalse(first.active)
+        self.assertTrue(second.active)
+
+        all_agreements = list(
+            PricingAgreement.objects.in_organization(self.org_a)
+        )
+        self.assertEqual(len(all_agreements), 2)
+        self.assertIn(first, all_agreements)
+        self.assertIn(second, all_agreements)
+
