@@ -35,8 +35,8 @@ specs/
 - SaaS Phase 1 Organization foundation — DONE / ACCEPTED
 - SaaS Phase 2 Accounts tenancy — DONE / ACCEPTED
 - SaaS Phase 3 Curriculum tenancy — DONE / ACCEPTED
-- SaaS Phase 4 Scheduling tenancy — NEXT
-- SaaS Phase 5 Pricing tenancy
+- SaaS Phase 4 Scheduling tenancy — DONE / ACCEPTED
+- SaaS Phase 5 Pricing tenancy — NEXT
 - SaaS Phase 6 Assessment tenancy
 - SaaS Phase 7 Payout tenancy
 - SaaS Phase 8 Academy onboarding
@@ -48,12 +48,10 @@ specs/
 The specification for the current phase is:
 
 ```text
-specs/saas/SaaS Phase 4 — Scheduling Tenancy.md
+specs/saas/SaaS Phase 5 — Pricing Tenancy.md
 ```
 
-Read the entire specification before changing scheduling code.
-
-Do not start SaaS Phase 5 until Phase 4 implementation, tests, API/manual acceptance, documentation, migrations, and commit are complete.
+Do not start SaaS Phase 6 until Phase 5 implementation, tests, API/manual acceptance, documentation, migrations, and commit are complete.
 
 ---
 
@@ -262,55 +260,91 @@ Do not remove the legacy field until all remaining consumers have been audited.
 
 ---
 
-# Current Phase — SaaS Phase 4 Scheduling Tenancy
+---
 
-Full detail moved out of this file for token efficiency. Read:
+# Accepted SaaS Phase 4 Decisions
 
-```text
-specs/saas/phase-4/00-core.md          <- read every Phase 4 session
-specs/saas/phase-4/4.<N>-*.md          <- read only the one file matching the task you are doing
-```
+SaaS Phase 4 established:
 
-The unabridged original spec is kept at `specs/saas/SaaS Phase 4 — Scheduling Tenancy (full).md` for reference only — do not load it wholesale during normal task work; the split files above cover every task.
+- `Availability.organization` explicit foreign key
+- `Booking`, `Cohort`, and `TeacherWaitlist` tenant derivation via `level.track.organization`
+- Model `@property` helpers for read-only organization access (`booking.organization`, `cohort.organization`, `waitlist.organization`)
+- Separation of tenant capacity (`OrganizationTeacherConfiguration.max_weekly_hours`) and global physical session overlap
+- Global `TeacherBookingLock` race-proof double-booking prevention on PostgreSQL
+- Teacher authority and eligibility through `active_membership()`, `OrganizationTeacherConfiguration.approved`, and `curriculum.TeacherTrack`
+- Deprecation of `TeacherProfile.specialties`, `approved`, and `max_weekly_hours` as authority for scheduling
+- Student and linked-parent tenant boundary validation on bookings and routing
+- Organization-scoped scheduling API: `/api/scheduling/organizations/<organization_pk>/...`
+- Retirement of legacy unscoped scheduling API endpoints
+- Tenant-scoped scheduling permissions (`AcademyScopedView(OrganizationScopedMixin)`) and serializers (`AcademyScopedSerializerMixin`)
+- Comprehensive adversarial tenant isolation test suite (`scheduling.tests.test_tenant_isolation`)
+- Non-ambiguous legacy scheduling data migration (`scheduling.legacy`)
 
-Do not start SaaS Phase 5 until Phase 4 implementation, tests, API/manual acceptance, documentation, migrations, and commit are complete (`specs/saas/phase-4/00-core.md` has the full Definition of Done).
+Important settled rules:
 
-## Hard constraints (violating any of these fails the phase regardless of task)
+## Stored vs Derived Tenancy
+- `Availability` has no curriculum relation, so it carries an explicit `organization` foreign key.
+- `Booking`, `Cohort`, and `TeacherWaitlist` point to `Level`, whose organization is derived through:
+  ```text
+  Booking / Cohort / TeacherWaitlist
+      -> Level
+          -> Track
+              -> Organization
+  ```
+  Redundant `organization` columns must never be added to these models.
+- Model `@property` helpers `booking.organization`, `cohort.organization`, and `waitlist.organization` provide convenient read-only access.
 
-- `Booking`, `Cohort`, and `TeacherWaitlist` derive their organization through `level.track.organization` — never add a redundant `organization` column to them.
-- `Availability` has no curriculum relation, so it alone gets an explicit `organization` field.
-- `TeacherBookingLock` stays global per teacher, permanently — a human teacher cannot double-book across academies even though capacity is academy-specific.
-- After this phase, scheduling must stop reading `TeacherProfile.approved`, `TeacherProfile.max_weekly_hours`, and `TeacherProfile.specialties` as authority — those become `OrganizationTeacherConfiguration` and `TeacherTrack`. Do not remove the legacy fields; other consumers may still exist.
-- Never trust a client-supplied `organization_id` — every scheduling request needs `request.user` + verified organization + active membership + tenant-scoped queryset.
-- `hourly_payout_rate` is not migrated in this phase — that's SaaS Phase 7.
+## Global Physical Time vs Tenant Capacity
+- A human teacher cannot physically be in two places at once. Session time overlap checks (`clashing_bookings()`) and concurrency control (`TeacherBookingLock`) are **global** across all organizations.
+- Weekly workload capacity (`max_weekly_hours`) is **tenant-scoped** and evaluated per organization via `OrganizationTeacherConfiguration`. Cancelling gives capacity back. Cohort sessions count once toward capacity regardless of student count.
 
-## Out of scope for Phase 4
+## Concurrency and Race Protection
+- `TeacherBookingLock` is keyed globally on `teacher_id` (`User`) with `SELECT ... FOR UPDATE` in PostgreSQL.
+- Overlap validation and booking writes must always run inside `transaction.atomic()` after acquiring the teacher lock.
 
-Pricing tenancy, assessment tenancy, payout tenancy, academy onboarding, invitations, notifications, billing, frontend, recurring-class redesign, new organization roles, lead/owner role unification, AI routing.
+## Teacher Curriculum Eligibility
+- A teacher may only be booked, routed, or assigned to a cohort for levels belonging to tracks they are explicitly permitted to teach in that organization via `curriculum.TeacherTrack`.
+- The teacher must also have an active membership in that organization and `approved=True` on `OrganizationTeacherConfiguration`.
+- `TeacherProfile.specialties` is no longer read by scheduling logic.
+
+## Student and Parent Tenancy
+- A booking can only be made for a student who is an active member of the booking's organization.
+- A parent can only book, route, cancel, or view waitlists for a child if both parent and child have active memberships in that organization, and are linked via `ParentLink`.
+
+## URL and API Structure
+- All scheduling API endpoints are scoped under:
+  `/api/scheduling/organizations/<organization_pk>/...`
+- Scoped serializers reject foreign level, teacher, and student IDs as non-existent (400 "does not exist").
+- Legacy unscoped endpoints (`/api/scheduling/bookings/`, `/api/scheduling/availability/`, `/api/scheduling/route/`, `/api/scheduling/cohorts/`, `/api/scheduling/waitlist/`) are retired.
 
 ---
 
-# Working Session Discipline (applies to every phase from here on, not only Phase 4)
+# Current Phase — SaaS Phase 5 Pricing Tenancy
 
-Large tenancy migrations burn hours and tokens when run as one unbroken session. Follow this for Phase 4 and every phase after it:
+The specification for the current phase will live under:
 
-- **One numbered task per session.** Start a new session per `4.<N>` task rather than carrying one long session through the whole phase — old audit/read output sitting in context is dead weight once you move to a different task.
+```text
+specs/saas/SaaS Phase 5 — Pricing Tenancy.md
+```
+
+Do not start SaaS Phase 6 until Phase 5 implementation, tests, API/manual acceptance, documentation, migrations, and commit are complete.
+
+---
+
+# Working Session Discipline (applies to every phase from here on)
+
+Large tenancy migrations burn hours and tokens when run as one unbroken session. Follow this for all phases:
+
+- **One numbered task per session.** Start a new session per task rather than carrying one long session through the whole phase — old audit/read output sitting in context is dead weight once you move to a different task.
 - **Stop after an audit task.** When a task says "no code changes" / "report the plan," hold to it literally — review the report before opening a coding session for the next task.
 - **Don't run the full gate after every edit.** `manage.py check` / `makemigrations --check` / `migrate` / full `pytest` against PostgreSQL belong at the Acceptance task only. During development tasks, run just the relevant test module.
 - **Commit after each task**, not only at the end of the phase. Small commits give a rollback point and a natural place to end a session.
-- **For future phases (5–11): split their spec the same way this one was split** — a short `00-core.md` with the goal/architecture/invariants/out-of-scope/definition-of-done, plus one file per numbered task in the "Recommended Implementation Sequence." Do not let a phase spec live only as one large file that every session reloads in full.
+- **For future phases: split their spec the same way Phase 4 was split** — a short `00-core.md` with the goal/architecture/invariants/out-of-scope/definition-of-done, plus one file per numbered task in the "Recommended Implementation Sequence." Do not let a phase spec live only as one large file that every session reloads in full.
 
 ---
 
 # Phase Completion Rule
 
-Phase 4 is complete only when implementation + tests + fresh migrations + tenant isolation + manual/API acceptance + OpenAPI verification + documentation + commit are all done (full checklist in `specs/saas/phase-4/00-core.md`).
+A phase is complete only when implementation + tests + fresh migrations + tenant isolation + manual/API acceptance + OpenAPI verification + documentation + commit are all done.
 
-Only then update this file to:
-
-```text
-SaaS Phase 4 Scheduling tenancy — DONE / ACCEPTED
-SaaS Phase 5 Pricing tenancy — NEXT
-```
-
-And condense this phase's settled decisions into a new `# Accepted SaaS Phase 4 Decisions` section, the same way Phases 1–3 are recorded above — not by leaving the task files in place as the permanent record.
+Only then update this file to mark the phase DONE / ACCEPTED and advance to the next phase, condensing settled decisions into a new `# Accepted SaaS Phase <N> Decisions` section.

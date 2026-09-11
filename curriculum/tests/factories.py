@@ -56,9 +56,12 @@ def admit(user, organization, role=None):
     """
     if user is None or organization is None:
         return None
-    organization_id = getattr(organization, "pk", organization)
+    from organizations.models import Organization
+
+    if isinstance(organization, int):
+        organization = Organization.objects.get(pk=organization)
     existing = OrganizationMembership.objects.filter(
-        organization_id=organization_id, user=user
+        organization=organization, user=user
     ).first()
     if existing is not None:
         return existing
@@ -66,8 +69,8 @@ def admit(user, organization, role=None):
         role = (
             OrganizationRole.TEACHER if user.is_teacher else OrganizationRole.STAFF
         )
-    return OrganizationMembershipFactory(
-        organization_id=organization_id, user=user, role=role
+    return OrganizationMembership.objects.create(
+        organization=organization, user=user, role=role
     )
 
 

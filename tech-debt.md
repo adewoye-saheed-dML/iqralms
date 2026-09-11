@@ -800,6 +800,12 @@ Format:
   (`CURRICULUM_MANAGER_ROLES`). The other four modules are untouched.
 
 ## 2026-09-05 — Teacher eligibility lives in two relations and only the old one is enforced
+- **Resolved 2026-09-11 (SaaS Phase 4).** All scheduling logic (`Booking.clean()`,
+  `Cohort.clean()`, `scheduling.routing.matching_sub_teachers`, and `route_session()`)
+  now resolves teacher track eligibility exclusively through `curriculum.TeacherTrack`
+  scoped to the booking's organization. `TeacherProfile.specialties` is no longer
+  consulted for scheduling decisions. The legacy field is retained only for backwards
+  compatibility until all consumers across remaining apps are audited.
 - **What was skipped:** Retiring `TeacherProfile.specialties`. SaaS Phase 3 added
   `curriculum.TeacherTrack` — academy-scoped, keyed on `OrganizationMembership` — and
   left the global many-to-many in place beside it. Nothing reads the new one yet:
@@ -865,6 +871,10 @@ Format:
   destructive action anywhere near an `Organization` row.
 
 ## 2026-09-05 — Assessment, pricing and scheduling still resolve curriculum globally
+- **Partly resolved 2026-09-11 (SaaS Phase 4).** Scheduling endpoints and serializers
+  now scope all curriculum references (`Level`) to the organization resolved from the URL
+  via `AcademyScopedSerializerMixin` (`levels_in(organization)`). Pricing and assessment
+  remain global until SaaS Phase 5 and SaaS Phase 6 respectively.
 - **What was skipped:** Narrowing the curriculum lookups those apps make.
   `scheduling/serializers.py` and `pricing/serializers.py` accept
   `Level.objects.all()`, and `assessment/serializers.py` and `assessment/views.py`
@@ -882,7 +892,7 @@ Format:
   `Track.objects.filter(organization=...)` / `Level.objects.filter(track__organization=...)`
   — the two helpers `curriculum/serializers.py` already exposes as `tracks_in()` and
   `levels_in()`.
-- **Revisit when:** SaaS Phase 4 (scheduling), 5 (pricing) and 6 (assessment). The
+- **Revisit when:** SaaS Phase 5 (pricing) and 6 (assessment). The
   tenant security audit should confirm none were missed.
 
 ## 2026-09-05 — Curriculum authoring is owner/admin only, which may be too narrow
@@ -900,3 +910,21 @@ Format:
   (SaaS Phase 9) so each academy chooses. The tests assert the current answer, so
   widening it has to be deliberate.
 - **Revisit when:** The first academy onboards a lead teacher who is not its owner.
+
+## 2026-09-11 — `TeacherProfile` retains legacy fields while waiting for Payout tenancy
+- **What was skipped:** Removing `TeacherProfile` entirely or dropping its legacy fields (`approved`, `max_weekly_hours`, `specialties`, `hourly_payout_rate`).
+- **Why:** SaaS Phase 4 migrated scheduling authority to `OrganizationTeacherConfiguration` and `TeacherTrack`. However, `hourly_payout_rate` is still read by `payouts` (SaaS Phase 7), and removing legacy fields prematurely would break unmigrated apps and existing database fixtures.
+- **Real fix:** In SaaS Phase 7 (payout tenancy), migrate `hourly_payout_rate` to `OrganizationTeacherConfiguration`. Afterwards, audit remaining consumers (e.g. `bio`, which is personal and global) and deprecate or remove unused columns.
+- **Revisit when:** SaaS Phase 7 (payout tenancy).
+
+## 2026-09-11 — No teacher-facing multi-tenant availability editor
+- **What was skipped:** Any teacher-facing API or UI to view and edit availability across multiple academies.
+- **Why:** Phase 4 focused on backend tenancy, data integrity, and scoping existing endpoints. Availability write endpoints were already out of scope in Phase 3/3.5, and multi-academy availability editing requires handling timezone conversions, midnight-splitting, and cross-academy conflict visualization.
+- **Real fix:** A teacher-authenticated multi-tenant availability API that accepts local teacher windows, displays commitments across all joined academies, and automatically splits and stores UTC windows per academy.
+- **Revisit when:** Academy settings (SaaS Phase 9) or teacher dashboard frontend.
+
+## 2026-09-11 — Automated multi-tenant waitlist notification is deferred
+- **What was skipped:** Background worker to automatically notify waitlisted students across academies when a teacher's slot opens up or when new availability is created.
+- **Why:** Out of scope for Phase 4; notification infrastructure, background task queue (Celery/RQ), and email templates have not yet been introduced.
+- **Real fix:** Add a background worker triggered by booking cancellation or availability expansion that scans `TeacherWaitlist.open_for_teacher()` in the corresponding organization and sends email/push alerts.
+- **Revisit when:** Notification / communications infrastructure phase.

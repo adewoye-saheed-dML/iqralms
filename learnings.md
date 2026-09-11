@@ -1029,3 +1029,33 @@ Format:
   be "nothing matches", never "everything matches". `queryset=Model.objects.all()` as
   a declared default would have looked identical in every test and been a
   platform-wide lookup the first time a view was written without the context.
+
+## 2026-09-11 — Availability has an explicit tenant column because it has no curriculum relation
+- **What happened:** In SaaS Phase 3, curriculum established that `Track.organization` is the single stored curriculum tenant boundary and `Level` derives its organization through its track. For scheduling, `Booking`, `Cohort`, and `TeacherWaitlist` all point directly or indirectly to `Level`, so they derive their organization through `level.track.organization`. However, `Availability` specifies a recurring weekly UTC window for a teacher and has no relationship with `Track` or `Level`.
+- **What we decided:** `Availability` alone gets an explicit `organization = models.ForeignKey(Organization, on_delete=models.CASCADE)`. The local-to-UTC conversion (`Availability.create_from_local`) takes the organization, and windows that wrap past midnight UTC are created with that organization. To prevent foreign user leakage, `Availability.clean()` enforces that the teacher has an active membership in `self.organization`.
+- **Why it matters for later phases:** Having a stored `organization` only on `Availability` keeps the schema normalized without redundant organization columns on `Booking`, `Cohort`, or `TeacherWaitlist`. If an availability editing API is introduced later, it filters and validates on `self.organization`.
+
+## 2026-09-11 — Human physical time is global while workload capacity is tenant-scoped
+- **What happened:** In a multi-tenant platform, a teacher can belong to multiple academies (e.g. Academy A and Academy B). Each academy manages its own terms: weekly cap (`max_weekly_hours`), approved status, and track permissions. However, a human teacher cannot physically teach in two places at once. If Academy A books a teacher for Monday 10:00–11:00 UTC, that teacher cannot simultaneously teach a student from Academy B at Monday 10:30–11:30 UTC.
+- **What we decided:** Overlap detection (`clashing_bookings()`) and concurrency control (`TeacherBookingLock`) remain **globally scoped to the teacher**, ignoring organization boundaries. In contrast, weekly capacity counters (`OrganizationTeacherConfiguration.max_weekly_hours` / `weekly_committed_minutes`) are **tenant-scoped**, counting only bookings within the same organization. A cancelled booking yields capacity back in that organization. Cohort deduplication remains intact: a cohort session counts once toward the teacher's weekly capacity in that organization, regardless of how many seats are booked.
+- **Why it matters for later phases:** Never attempt to scope the session overlap check or `TeacherBookingLock` by organization. Cross-tenant double booking would immediately occur if `clashing_bookings()` filtered by `level__track__organization`.
+
+## 2026-09-11 — `TeacherBookingLock` is permanently global per teacher
+- **What happened:** Phase 3.5 and Phase 6 introduced `TeacherBookingLock` to serialize booking writes and prevent race conditions (double bookings). During tenancy design, the question arose whether the lock should be per-(teacher, organization) or per-teacher.
+- **What we decided:** Global per teacher (`models.OneToOneField(User, ...)`). When a booking is being validated and inserted for teacher $T$ under Academy A, acquiring the lock serializes against any concurrent booking for teacher $T$ under Academy B as well. Acquisition uses `SELECT ... FOR UPDATE` on PostgreSQL inside `transaction.atomic()`.
+- **Why it matters for later phases:** The physical human cannot double-book across tenants. Locking at the tenant level would allow two concurrent booking attempts in different academies to interleave, pass `clashing_bookings()`, and commit overlapping sessions.
+
+## 2026-09-11 — Deprecating `TeacherProfile` authority in favor of `OrganizationTeacherConfiguration` and `TeacherTrack`
+- **What happened:** In legacy single-tenant phases, `TeacherProfile.approved`, `TeacherProfile.max_weekly_hours`, and `TeacherProfile.specialties` governed teacher eligibility. In multi-academy SaaS, teacher approval and weekly capacity belong to `accounts.OrganizationTeacherConfiguration`, while track qualifications belong to `curriculum.TeacherTrack`.
+- **What we decided:** All scheduling validation — `Booking.clean()`, `Cohort.clean()`, `matching_sub_teachers`, and `route_session()` — migrated away from `TeacherProfile` authority. A teacher is bookable in an academy only if:
+  1. The user has an active membership in the academy (`organizations.active_membership()`).
+  2. The teacher is approved in that academy (`OrganizationTeacherConfiguration.approved == True`).
+  3. The level's track is active in the teacher's `TeacherTrack` for that academy.
+  4. The booking does not exceed the teacher's `OrganizationTeacherConfiguration.max_weekly_hours`.
+  The legacy fields on `TeacherProfile` are kept untouched for backwards compatibility until remaining consumers (`TeacherProfile.hourly_payout_rate` in Phase 7 payouts, and `TeacherProfile.bio`) are audited.
+- **Why it matters for later phases:** A teacher can now teach Tajweed in Academy A with 10 weekly hours, while teaching Arabic in Academy B with 5 weekly hours, with independent approval and capacity tracking.
+
+## 2026-09-11 — Scheduling endpoints are mounted under `/api/scheduling/organizations/<organization_pk>/...`
+- **What happened:** Previously, scheduling routes were global (e.g. `/api/scheduling/bookings/`, `/api/scheduling/route/`).
+- **What we decided:** All scheduling endpoints were moved under `/api/scheduling/organizations/<organization_pk>/...` using `AcademyScopedView(OrganizationScopedMixin)` and `AcademyScopedSerializerMixin`. Scoped serializers validate `level`, `student`, and `teacher` querysets against the active organization, returning a 400 "does not exist" on foreign IDs (preventing information leakage). Legacy unscoped scheduling routes were retired completely.
+- **Why it matters for later phases:** Consistency across the platform: all domain-specific APIs follow the `/api/<domain>/organizations/<organization_pk>/...` pattern established in Phase 2 and Phase 3.
