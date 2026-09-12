@@ -5,7 +5,7 @@
 Repository: `adewoye-saheed-dML/quran_acad`
 Target branch: `main`
 
-Current completed SaaS phase: **SaaS Phase 9 — Video Provider Abstraction**
+Current completed SaaS phase: **SaaS Phase 10 — Bulk Import**
 
 Current audited commit:
 `bbcfa7cbf9448c7e895266ee994ade436c5ad013`
@@ -23,8 +23,19 @@ Completed SaaS phases:
 - SaaS Phase 7 — Teacher Payout Tenancy
 - SaaS Phase 8 — Notification Domain (Implicitly completed)
 - SaaS Phase 9 — Video Provider Abstraction
+- SaaS Phase 10 — Bulk Import
 
-The next implementation phase is **SaaS Phase 10**.
+The next implementation phase is **SaaS Phase 11**.
+
+## Accepted SaaS Phase 10 decisions
+
+- Used `openpyxl` for XLSX support, avoiding heavy data-science dependencies (like `pandas`).
+- An all-or-nothing transactional boundary is applied during commit.
+- User `username` falls back to `email` when created from an import.
+- Missing `timezone` falls back to `UTC`.
+- `OrganizationRole` assigns `TEACHER` for teachers and `STAFF` for parents/students (as opposed to full member role definitions, this fits the current constraints).
+- Did not build arbitrary model importers or frontend spreadsheet editors in this phase.
+- Handled tenant isolation carefully with transaction-safe commit.
 
 ## Accepted SaaS Phase 9 decisions
 

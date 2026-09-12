@@ -2,6 +2,7 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction
+from drf_spectacular.utils import extend_schema, OpenApiResponse
 
 from organizations.views import OrganizationScopedMixin
 from .models import ImportJob, ImportStatus
@@ -17,6 +18,11 @@ class ImportValidateView(AcademyScopedView, generics.CreateAPIView):
     serializer_class = ImportJobValidateSerializer
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        operation_id="imports_validate",
+        summary="Upload and validate an import file",
+        responses={201: ImportJobResponseSerializer}
+    )
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -64,6 +70,12 @@ class ImportCommitView(AcademyScopedView, generics.GenericAPIView):
     def get_queryset(self):
         return ImportJob.objects.filter(organization=self.organization)
 
+    @extend_schema(
+        operation_id="imports_commit",
+        summary="Commit a validated import job",
+        request=None,
+        responses={200: ImportJobResponseSerializer}
+    )
     def post(self, request, *args, **kwargs):
         # Prevent concurrent commits on the same job
         with transaction.atomic():
