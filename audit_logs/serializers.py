@@ -8,6 +8,8 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "id",
             "organization",
             "actor",
+            "actor_type",
+            "actor_id_snapshot",
             "action",
             "object_type",
             "object_id",

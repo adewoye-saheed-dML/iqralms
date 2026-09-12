@@ -60,11 +60,12 @@ class ImportValidateView(AcademyScopedView, generics.CreateAPIView):
             validator = ImportValidator(job, raw_rows)
             validator.validate()
             
+            from audit_logs.models import AuditAction
             from audit_logs.services import record_event
             record_event(
                 organization=self.organization,
                 actor=request.user,
-                action="bulk_import.validated",
+                action=AuditAction.BULK_IMPORT_VALIDATED,
                 target=job,
                 metadata={
                     "kind": job.kind,
@@ -107,11 +108,12 @@ class ImportCommitView(AcademyScopedView, generics.GenericAPIView):
                 
             try:
                 commit_import(job)
+                from audit_logs.models import AuditAction
                 from audit_logs.services import record_event
                 record_event(
                     organization=self.organization,
                     actor=request.user,
-                    action="bulk_import.committed",
+                    action=AuditAction.BULK_IMPORT_COMPLETED,
                     target=job,
                     metadata={
                         "kind": job.kind,

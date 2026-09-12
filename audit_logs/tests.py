@@ -21,7 +21,7 @@ class AuditLogTests(TestCase):
         log = record_event(
             organization=self.org,
             actor=self.user,
-            action="test.action",
+            action="membership.created",
             target=self.membership,
             metadata={"password": "secret_password", "safe_key": "safe_value"}
         )
@@ -43,16 +43,16 @@ class AuditLogTests(TestCase):
         record_event(
             organization=self.org,
             actor=self.user,
-            action="test.action",
+            action="membership.created",
             target=self.membership
         )
         
         url = reverse("audit_logs:audit-log-list", kwargs={"organization_pk": self.org.pk})
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
+        self.assertEqual(len(response.data["results"]), 1)
         
-        log_id = response.data[0]["id"]
+        log_id = response.data["results"][0]["id"]
         detail_url = reverse("audit_logs:audit-log-detail", kwargs={"organization_pk": self.org.pk, "pk": log_id})
         detail_response = self.client.get(detail_url)
         self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
@@ -62,7 +62,7 @@ class AuditLogTests(TestCase):
         record_event(
             organization=self.org,
             actor=self.user,
-            action="test.action",
+            action="membership.created",
             target=self.membership
         )
         

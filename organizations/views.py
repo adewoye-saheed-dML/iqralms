@@ -258,11 +258,12 @@ class OrganizationMembershipListCreateView(
             from notifications.services import notify_teacher_invitation
             notify_teacher_invitation(membership)
             
+        from audit_logs.models import AuditAction
         from audit_logs.services import record_event
         record_event(
             organization=self.organization,
             actor=request.user,
-            action="membership.created",
+            action=AuditAction.MEMBERSHIP_CREATED,
             target=membership,
             metadata={"role": membership.role, "status": membership.status},
         )
@@ -334,25 +335,27 @@ class OrganizationMembershipDetailView(OrganizationScopedMixin, generics.UpdateA
         serializer.is_valid(raise_exception=True)
         membership = serializer.save()
         
+        from audit_logs.models import AuditAction
         metadata = {}
-        action = "membership.updated"
+        action = None
         if old_role != membership.role:
-            action = "membership.role_changed"
+            action = AuditAction.MEMBERSHIP_ROLE_CHANGED
             metadata["old_role"] = old_role
             metadata["new_role"] = membership.role
         elif old_status != membership.status:
-            action = "membership.suspended" if membership.status == "suspended" else "membership.reactivated"
+            action = AuditAction.MEMBERSHIP_SUSPENDED if membership.status == "suspended" else AuditAction.MEMBERSHIP_REACTIVATED
             metadata["old_status"] = old_status
             metadata["new_status"] = membership.status
             
         from audit_logs.services import record_event
-        record_event(
-            organization=self.organization,
-            actor=request.user,
-            action=action,
-            target=membership,
-            metadata=metadata,
-        )
+        if action:
+            record_event(
+                organization=self.organization,
+                actor=request.user,
+                action=action,
+                target=membership,
+                metadata=metadata,
+            )
         
         body = OrganizationMembershipSerializer(
             membership, context=self.get_serializer_context()
