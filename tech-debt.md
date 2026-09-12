@@ -964,3 +964,9 @@ Format:
 - **Why:** To satisfy Phase 9 safely, we implemented `create_meeting` inline in `Booking.save()`. Since Jitsi is deterministic and fast (no network call), this doesn't impact latency yet.
 - **Real fix:** Refactor meeting provisioning to background workers for providers like Zoom which require network API calls, and emit an event back once provisioned.
 - **Revisit when:** We onboard a synchronous network-dependent provider (e.g., Zoom or Google Meet).
+
+## 2026-09-12 — Missing explicit API versioning and refresh tokens
+- **What was skipped:** Moving to `/api/v1/` and introducing a refresh-token lifecycle.
+- **Why:** The product is pre-production without external clients. Introducing versioning and complex token lifecycles in Phase 12 was deemed unnecessary overhead per the guidelines, which prioritized formalizing the existing working state.
+- **Real fix:** Implement JWT with refresh flows and API version namespacing when external third-party integration is required.
+- **Revisit when:** A public developer API is introduced or security requirements mandate short-lived tokens.

@@ -1132,3 +1132,12 @@ Format:
 - **What happened:** In Phase 9, we needed to move Jitsi room generation behind an adapter without rewriting the core scheduling business logic.
 - **What we decided:** Created a `MeetingProvider` interface in `scheduling/providers.py` which abstracts away Jitsi's room URL generation. We mapped `Organization.video_provider` (default "jitsi") to the active adapter. We modified `Booking.save()` to call this interface if `video_join_url` is empty, using the booking's own ID as an idempotency key to prevent unbounded meeting creation.
 - **Why it matters for later phases:** Business rules in `Booking` and `TeacherBookingLock` remain untouched. If a new adapter (e.g., Zoom) requires a network call, the interface supports it without leaking provider-specific logic into the domain layer.
+
+## 2026-09-12 — API Contract Stabilization (Phase 12)
+- **What happened:** The backend reached maturity regarding functional domains (tenancy, scheduling, curriculum, payouts, bulk import, audit), but lacked a consolidated, rigorously verified API contract for frontend developers to build against.
+- **What we decided:** 
+  1. We produced an exhaustive inventory of the API and formalized its behavior in `specs/saas/API_CONTRACT.md`.
+  2. We verified OpenAPI documentation against the implementation to ensure DRF Spectacular was generating accurate schemas, which it was (no warnings on deploy check).
+  3. We preserved existing API behaviors (such as missing refresh-token behavior, strictly tenant-scoped requests, ISO 8601 timestamps, enum values, and immutable audit logs) rather than unnecessarily over-engineering cosmetic changes.
+  4. We ensured the testing suite remains comprehensive and passes all PostgreSQL and DRF spectacular checks.
+- **Why it matters for later phases:** Phase 13 (Frontend Foundation) can now proceed with confidence that the backend acts as a predictable, stable, and well-documented API.
