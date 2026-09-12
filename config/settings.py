@@ -138,6 +138,7 @@ INSTALLED_APPS = [
     "organizations",
     "notifications",
     "imports",
+    "audit_logs",
 ]
 
 MIDDLEWARE = [

@@ -60,6 +60,20 @@ class ImportValidateView(AcademyScopedView, generics.CreateAPIView):
             validator = ImportValidator(job, raw_rows)
             validator.validate()
             
+            from audit_logs.services import record_event
+            record_event(
+                organization=self.organization,
+                actor=request.user,
+                action="bulk_import.validated",
+                target=job,
+                metadata={
+                    "kind": job.kind,
+                    "row_count": job.row_count,
+                    "valid_row_count": job.valid_row_count,
+                    "invalid_row_count": job.invalid_row_count,
+                }
+            )
+            
         response_serializer = ImportJobResponseSerializer(job)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
@@ -93,6 +107,21 @@ class ImportCommitView(AcademyScopedView, generics.GenericAPIView):
                 
             try:
                 commit_import(job)
+                from audit_logs.services import record_event
+                record_event(
+                    organization=self.organization,
+                    actor=request.user,
+                    action="bulk_import.committed",
+                    target=job,
+                    metadata={
+                        "kind": job.kind,
+                        "row_count": job.row_count,
+                        "valid_row_count": job.valid_row_count,
+                        "created_count": job.created_count,
+                        "updated_count": job.updated_count,
+                        "error_count": len(job.error_report) if job.error_report else 0,
+                    }
+                )
             except Exception as e:
                 # job object in memory has error state from commit_import
                 response_serializer = ImportJobResponseSerializer(job)

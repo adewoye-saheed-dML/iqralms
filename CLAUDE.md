@@ -7,11 +7,11 @@ Target branch: `main`
 
 Current completed SaaS phase: **SaaS Phase 10 — Bulk Import**
 
-Current audited commit:
-`bbcfa7cbf9448c7e895266ee994ade436c5ad013`
+Current verified `main` head:
+`52107315cde805be465334970961de5c4116abd7`
 
 Commit message:
-`feat(saas): implement Phase 9 video provider abstraction and complete phase gate`
+`feat(saas): complete Phase 10 bulk import and update OpenAPI schema`
 
 Completed SaaS phases:
 - SaaS Phase 1 — Organization Foundation
@@ -25,233 +25,191 @@ Completed SaaS phases:
 - SaaS Phase 9 — Video Provider Abstraction
 - SaaS Phase 10 — Bulk Import
 
-The next implementation phase is **SaaS Phase 11**.
+The next implementation phase is **SaaS Phase 11 — Audit Log**.
 
-## Accepted SaaS Phase 10 decisions
+## Phase 10 acceptance baseline
 
-- Used `openpyxl` for XLSX support, avoiding heavy data-science dependencies (like `pandas`).
-- An all-or-nothing transactional boundary is applied during commit.
-- User `username` falls back to `email` when created from an import.
-- Missing `timezone` falls back to `UTC`.
-- `OrganizationRole` assigns `TEACHER` for teachers and `STAFF` for parents/students (as opposed to full member role definitions, this fits the current constraints).
-- Did not build arbitrary model importers or frontend spreadsheet editors in this phase.
-- Handled tenant isolation carefully with transaction-safe commit.
+The repository's latest main commit explicitly records SaaS Phase 10 as completed and identifies SaaS Phase 11 as the next implementation phase.
 
-## Accepted SaaS Phase 9 decisions
+Accepted Phase 10 decisions:
+- Use `openpyxl` for XLSX support rather than adding a heavy data-science dependency.
+- Use an all-or-nothing transactional boundary during import commit.
+- Fall back to email for a newly created user's username when required by the current account model.
+- Fall back to `UTC` when an imported timezone is missing.
+- Assign `TEACHER` organization role for teacher imports and `STAFF` for student/parent imports under the current organization-role constraints.
+- Do not build arbitrary model importers or a frontend spreadsheet editor in Phase 10.
+- Preserve tenant isolation during validation and transaction-safe commit.
 
-- Video Provider Abstraction is complete.
-- `Booking` objects no longer derive video details from hardcoded Jitsi logic. Instead, `scheduling/providers.py` handles the provider abstraction, making the DB the boundary of truth.
-- `video_room_name` has been replaced by `video_provider`, `video_provider_meeting_id`, and `video_join_url`.
-- Meeting creation leverages idempotency based on `organization_id` and `booking_id`.
-- Payout validation prevents cross-academy booking, teacher and cohort combinations.
-- Historical payout records remain immutable.
-- Payout generation is organization-scoped and repeat-safe.
-- Payout APIs use explicit organization-scoped routes.
-- Legacy unscoped payout routes are retired.
-- Owner/admin payout operations require active organization membership and suitable organization role.
-- Teacher self-service is limited to the teacher's own records in the selected academy.
-- Student and parent payout access is denied.
-- Adversarial payout tenant-isolation tests are complete.
-- SaaS Phase 7 passed its phase gate and was committed at the baseline above.
+## SaaS Phase 11 objective
 
-## SaaS Phase 8 objective
+Build a central, tenant-aware **Audit Log** domain for security, accountability, troubleshooting and operational support.
 
-Build a central notification/event domain that separates:
+The audit system must record important academy actions without coupling audit persistence directly to individual business models.
+
+Primary flow:
 
 ```text
-domain action
-    ↓
-internal notification event
-    ↓
-delivery service
-    ↓
-provider adapter
-    ↓
-delivery attempt/result
+authorized domain action
+        ↓
+audit service / audit event
+        ↓
+immutable audit record
+        ↓
+academy-scoped query/reporting
 ```
 
-The notification system is the shared communication boundary for future:
-- WhatsApp
-- Telegram
-- Email
-- Push
+## Phase 11 non-negotiable rules
 
-Do not let Booking, Assessment, Payouts, Scheduling, or other domain models contain provider-specific communication logic.
+1. Audit records are append-only from the application perspective.
+2. Existing audit records must not be edited or deleted through normal application APIs.
+3. Every tenant-owned audit record belongs to exactly one organization.
+4. Audit queries are organization-scoped and permission-checked.
+5. A user from Academy A must never read Academy B's audit records, even with a known audit ID.
+6. Sensitive values such as passwords, tokens, API keys, credentials and full private file contents must never be stored in audit payloads.
+7. Audit payloads should capture safe metadata and before/after summaries only where necessary.
+8. Audit logging must not change business transaction outcomes when audit recording is intentionally configured as best-effort for non-security-critical events; security-critical events should fail closed only when the phase specification explicitly requires it.
+9. Do not scatter raw `AuditLog.objects.create(...)` calls throughout unrelated views. Use a small service/interface.
+10. The audit layer must work with the current organization membership and role model.
+11. Do not introduce a second authorization system.
+12. Preserve PostgreSQL compatibility and all existing regression behaviour.
 
-## Core rules
+## Expected Phase 11 domain
 
-1. Every academy-owned notification has deterministic academy ownership.
-2. A notification recipient must be valid for the academy context.
-3. Delivery records belong to the same academy as their notification.
-4. Cross-academy recipient/provider combinations are rejected.
-5. Owner/admin history is academy-scoped.
-6. Ordinary users see only notifications intended for them in academies where they have valid access.
-7. Provider failures never weaken tenant isolation.
-8. Provider callbacks cannot switch tenant context using a client-supplied academy id.
-9. Platform-level/system events must be distinct from academy-owned events.
-10. Tenant filtering happens in querysets/services, not only serializers.
+Implement a central model/service capable of recording at least:
 
-## Initial event types
+- actor user or system actor;
+- organization;
+- action/event type;
+- target object type;
+- target object identifier;
+- request correlation identifier when available;
+- safe structured metadata;
+- creation timestamp.
 
-Implement the roadmap's first required events:
-
-- `BOOKING_CONFIRMED`
-- `BOOKING_CANCELLED`
-- `PLACEMENT_REVIEWED`
-- `PROGRESS_READY`
-- `TEACHER_INVITATION`
-
-Payment/price notifications remain future work unless an existing payment event already exists.
-
-## Provider boundary
-
-Use provider-neutral interfaces such as:
+Recommended action categories include:
 
 ```text
-send_message(...)
-send_template(...)
-send_email(...)
-```
-
-Provider-specific SDKs/payloads belong only inside adapters. The core notification models must not contain provider SDK objects, WhatsApp payload structures, Telegram-specific fields, or email MIME structures.
-
-Production credentials for external providers are not required merely to complete this phase unless the repository already has a safe integration boundary.
-
-## Event and delivery model
-
-A notification should conceptually contain:
-
-```text
-id
-organization
-event_type
-recipient
-title/summary
-payload
-created_at
-read_at
-```
-
-A delivery should conceptually contain:
-
-```text
-id
+authentication
+membership
+permissions
+academy_settings
+curriculum
+student_enrollment
+scheduling
+assessment
+pricing
+payout
 notification
-channel
-provider
-status
-attempt_count
-provider_message_id
-error_code
-error_message
-attempted_at
-delivered_at
-created_at
+video
+bulk_import
 ```
 
-Use repository conventions and the smallest safe field set.
+Only record events that materially improve accountability. Do not turn every read request into a permanent audit event.
 
-## Idempotency
+## Required implementation areas
 
-Define event identity explicitly. A useful candidate is:
+- `auditlog` application or repository-equivalent audit domain.
+- Immutable `AuditLog` model/migration.
+- Audit service/helper API.
+- Organization-scoped permissions/querysets.
+- Structured event/action choices.
+- Safe metadata redaction/normalization.
+- API endpoints for authorized audit-history retrieval.
+- Pagination and filtering by action, actor, object and date range.
+- Tests for cross-tenant isolation and immutability.
+- OpenAPI documentation.
+- PostgreSQL phase gate.
+
+## Preferred API shape
+
+Follow existing organization-scoped routing conventions. A suitable starting point is:
 
 ```text
-source_type + source_id + event_type + recipient
+GET /api/organizations/<organization_pk>/audit-logs/
+GET /api/organizations/<organization_pk>/audit-logs/<id>/
 ```
 
-but do not impose one universal uniqueness rule when legitimate repeated events are possible. Document per-event identity where necessary.
+Do not expose a global unscoped audit-log endpoint.
 
-A repeated booking confirmation must not create uncontrolled duplicate notifications; a later cancellation is a different event and may legitimately create a new notification.
-
-## Domain integration rules
-
-Source domains may emit notification intents/events, but must not call:
-
-- WhatsApp SDKs
-- Telegram SDKs
-- SMTP/provider SDKs
-- push SDKs
-
-directly.
-
-Academy ownership should be derived from the authoritative source domain relationship. Do not add redundant organization columns merely for notifications.
-
-## Permissions
-
-Owner/admin:
-- academy notification history
-- delivery outcomes
-- notification configuration where implemented
-
-Teacher:
-- own notifications only
-- no other teacher's records
-
-Parent:
-- own notifications intended for them/linked children as explicitly modeled
-- no other academy's notification history
-
-Student:
-- own notifications only
-
-Suspended/non-members:
-- no current academy notification access
-
-## API direction
-
-Prefer the established organization-scoped convention:
+Filtering may include:
 
 ```text
-GET  /api/notifications/organizations/<organization_pk>/mine/
-GET  /api/notifications/organizations/<organization_pk>/admin/
-GET  /api/notifications/organizations/<organization_pk>/<id>/
-POST /api/notifications/organizations/<organization_pk>/<id>/read/
-GET  /api/notifications/organizations/<organization_pk>/deliveries/
+action
+actor
+object_type
+object_id
+created_after
+created_before
 ```
 
-Exact names may follow repository conventions. Internal event creation should normally be service-driven, not dependent on a public ingestion endpoint.
+Do not allow clients to bypass tenant ownership by supplying another organization identifier.
 
-## Webhook boundary
+## Audit write behaviour
 
-Provider callbacks must:
-1. identify the provider;
-2. verify/authenticate the callback when supported;
-3. resolve the delivery safely;
-4. update only the matched delivery;
-5. never trust a callback-supplied organization id as tenant authority;
-6. never expose another academy's data.
+Use a central service similar to:
 
-## Privacy
+```text
+record_event(
+    organization=...,
+    actor=...,
+    action=...,
+    target=...,
+    metadata=...,
+)
+```
 
-Notification payloads must not contain:
-- internal assessment QC fields;
-- lead-only notes;
-- private teacher financial data;
-- unnecessary family pricing data;
-- provider secrets;
-- access tokens or authentication credentials.
+The service should:
+- normalize actor identity;
+- validate organization context;
+- derive target information safely;
+- remove prohibited sensitive fields;
+- create an immutable event record;
+- preserve timestamps using timezone-aware datetimes;
+- remain reusable from views, domain services and import workflows.
 
-A join link is permitted only when the recipient is authorized for the session.
+Where a domain operation already runs inside `transaction.atomic()`, attach the audit write to that transaction unless the phase specification explicitly requires an independent outbox/event design.
 
-## Scope boundary
+## Security and privacy
 
-Do not turn Phase 8 into:
-- full production WhatsApp/Telegram rollout;
-- marketing automation;
-- campaign management;
-- full push infrastructure;
-- large preference center;
-- queue/worker platform;
-- retry/backoff infrastructure;
-- video provider abstraction;
-- payment gateway work;
-- frontend notification-center redesign.
+Never store:
 
-The phase establishes the stable notification/event contract and tenant-safe delivery boundary. Background jobs and advanced retries can follow later.
+```text
+passwords
+access tokens
+refresh tokens
+API keys
+secret keys
+private credentials
+raw uploaded files
+full authorization headers
+```
 
-## Testing and phase gate
+When recording changes, prefer safe summaries such as:
 
-At minimum run against PostgreSQL:
+```text
+status: active → suspended
+role: teacher → admin
+```
+
+rather than full serialized objects.
+
+## Testing gate
+
+The phase is not complete until tests prove at minimum:
+
+- valid audit events are created;
+- audit records are tenant-owned;
+- Academy A cannot read Academy B audit records by list endpoint;
+- Academy A cannot retrieve Academy B audit records by guessed ID;
+- unauthorized roles cannot read restricted audit history;
+- suspended memberships cannot use audit endpoints;
+- ordinary users cannot mutate or delete audit records;
+- sensitive fields are redacted or rejected;
+- filtering and pagination stay tenant-scoped;
+- bulk-import events can be audited;
+- existing application tests continue to pass.
+
+Required PostgreSQL gate:
 
 ```bash
 python manage.py check
@@ -260,46 +218,32 @@ python manage.py migrate
 pytest
 ```
 
-Required tests include:
-- Academy A cannot read Academy B notifications/deliveries.
-- Known ids cannot cross tenant boundaries.
-- Users cannot read another user's notifications.
-- Suspended/non-members are denied.
-- Source event, organization and recipient relationships are correct.
-- Invalid cross-tenant recipient/delivery relations are rejected.
-- Event identity/idempotency behaves as documented.
-- Provider failure is recorded without deleting the notification or affecting another delivery.
-- Existing scheduling, routing, pricing, assessment and payout tests remain green.
+## Definition of done
 
-## Documentation
+Phase 11 is complete only when:
 
-Update where decisions actually change:
-- `learnings.md`
-- `tech-debt.md`
-- SaaS Phase 8 spec status/tasks
-- OpenAPI documentation for exposed notification endpoints
+1. The audit model and migration exist.
+2. Audit writes go through a reusable service/interface.
+3. Important Phase 11 event categories are wired into the highest-value existing workflows without creating excessive noise.
+4. Audit reads are organization-scoped and permission-safe.
+5. Audit records are immutable through normal application APIs.
+6. Sensitive metadata is redacted.
+7. Tenant-isolation, permission, immutability and regression tests pass.
+8. OpenAPI documents the audit endpoints.
+9. PostgreSQL checks and the full test suite pass.
+10. The next phase is documented explicitly before implementation moves forward.
 
-## Working discipline
+## Scope discipline
 
-- Audit before schema changes.
-- Implement one numbered task at a time.
-- Reuse organization and membership helpers.
-- Keep provider code at the infrastructure boundary.
-- Preserve current business rules.
-- Run focused tests during development.
-- Run the full PostgreSQL gate at the end.
-- Commit each coherent implementation unit.
-- Do not mark the phase complete from documentation alone.
+Do not implement in Phase 11:
 
-## Stop instead of guessing
+- payment gateway work;
+- accounting/tax features;
+- analytics warehouse pipelines;
+- AI scoring;
+- frontend application screens beyond API readiness;
+- a full event-sourcing architecture;
+- a separate database per academy.
 
-Stop before implementation when:
-- notification ownership is ambiguous;
-- recipient/academy relationship is unclear;
-- event idempotency conflicts with legitimate repeated events;
-- provider credential handling requires a new security architecture;
-- a requested feature becomes marketing automation;
-- background infrastructure becomes a prerequisite beyond this phase;
-- a notification would expose internal/private domain data.
-
-After SaaS Phase 8 is accepted, stop for the next explicitly approved phase.
+The goal is a small, reliable, tenant-safe audit boundary that can support the SaaS platform and future frontend/admin tooling.
+ 

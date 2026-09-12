@@ -38,6 +38,7 @@ urlpatterns = [
     path("api/assessment/", include("assessment.urls")),
     path("api/payouts/", include("payouts.urls")),
     path("api/organizations/", include("organizations.urls")),
+    path("api/organizations/", include("audit_logs.urls")),
     path("api/notifications/", include("notifications.urls")),
     path("api/imports/", include("imports.urls")),
     # Schema / docs

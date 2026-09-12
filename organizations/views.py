@@ -257,6 +257,16 @@ class OrganizationMembershipListCreateView(
         if membership.role == OrganizationRole.TEACHER:
             from notifications.services import notify_teacher_invitation
             notify_teacher_invitation(membership)
+            
+        from audit_logs.services import record_event
+        record_event(
+            organization=self.organization,
+            actor=request.user,
+            action="membership.created",
+            target=membership,
+            metadata={"role": membership.role, "status": membership.status},
+        )
+
         body = OrganizationMembershipSerializer(
             membership, context=self.get_serializer_context()
         ).data
@@ -317,9 +327,33 @@ class OrganizationMembershipDetailView(OrganizationScopedMixin, generics.UpdateA
     )
     def patch(self, request, *args, **kwargs):
         membership = self.get_object()
+        old_role = membership.role
+        old_status = membership.status
+        
         serializer = self.get_serializer(membership, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         membership = serializer.save()
+        
+        metadata = {}
+        action = "membership.updated"
+        if old_role != membership.role:
+            action = "membership.role_changed"
+            metadata["old_role"] = old_role
+            metadata["new_role"] = membership.role
+        elif old_status != membership.status:
+            action = "membership.suspended" if membership.status == "suspended" else "membership.reactivated"
+            metadata["old_status"] = old_status
+            metadata["new_status"] = membership.status
+            
+        from audit_logs.services import record_event
+        record_event(
+            organization=self.organization,
+            actor=request.user,
+            action=action,
+            target=membership,
+            metadata=metadata,
+        )
+        
         body = OrganizationMembershipSerializer(
             membership, context=self.get_serializer_context()
         ).data
