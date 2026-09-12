@@ -28,6 +28,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from accounts.models import Role, User
+from organizations.models import MembershipStatus
+from organizations.permissions import IsOrganizationMember
+from organizations.views import OrganizationScopedMixin
 
 from .exceptions import PayoutAlreadyFinalized
 from .models import TeacherPayout
@@ -41,6 +44,24 @@ from .serializers import (
     TeacherPayoutSerializer,
 )
 from .services import PAYOUT_RELATED, generate_payouts, payouts_for, statement_for
+
+
+class AcademyScopedView(OrganizationScopedMixin):
+    """Shared plumbing for the academy-scoped payout views.
+
+    The organization comes from the URL kwarg ``organization_pk`` and is resolved
+    to the caller's membership by the parent mixin; and it is put into the
+    serializer context, which is how serializers narrow their querysets
+    to one tenant.
+    """
+
+    organization_url_kwarg = "organization_pk"
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.caller_membership:
+            context["organization"] = self.organization
+        return context
 
 
 class Conflict(APIException):
@@ -137,10 +158,11 @@ def required_period(request):
     return start, end
 
 
-def requested_teacher(request, name="teacher_id"):
-    """The teacher a lead-only endpoint is asking about, or None.
+def requested_teacher(request, organization=None, name="teacher_id"):
+    """The teacher an owner/admin endpoint is asking about, or None.
 
-    An unknown id is a 400 rather than an empty statement, for the reason
+    An unknown id, or a teacher not belonging to the organization, is a 400
+    rather than an empty statement, for the reason
     ``assessment.views.requested_track`` gives: answering "what does teacher 99
     earn" with zero sessions looks like a real answer.
     """
@@ -151,9 +173,13 @@ def requested_teacher(request, name="teacher_id"):
         teacher_id = int(raw)
     except (TypeError, ValueError):
         raise ValidationError({name: ["Must be an integer."]})
-    teacher = User.objects.filter(
-        pk=teacher_id, role__in=[Role.LEAD, Role.SUB]
-    ).first()
+    qs = User.objects.filter(pk=teacher_id, role__in=[Role.LEAD, Role.SUB])
+    if organization is not None:
+        qs = qs.filter(
+            organization_memberships__organization=organization,
+            organization_memberships__status=MembershipStatus.ACTIVE,
+        )
+    teacher = qs.distinct().first()
     if teacher is None:
         raise ValidationError({name: ["No such teacher."]})
     return teacher
@@ -162,25 +188,29 @@ def requested_teacher(request, name="teacher_id"):
 # --- Teacher-facing ----------------------------------------------------------
 
 
-class MyPayoutListView(generics.ListAPIView):
-    """GET /api/payouts/mine/ — the caller's own payout records.
+class MyPayoutListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/payouts/organizations/<organization_pk>/mine/ — the caller's own payout records.
 
     Optionally bounded by ``?start=&end=``; unbounded it is the teacher's whole
-    payout history, which is theirs to read. The queryset is scoped to
-    ``request.user`` and there is no parameter that could widen it — another
-    teacher's records are not a 403 here, they simply are not in the set.
+    payout history in this academy, which is theirs to read. The queryset is scoped
+    to ``request.user`` and ``self.organization``, and there is no parameter that
+    could widen it — another teacher's records are not a 403 here, they simply are
+    not in the set.
 
     Generated and finalized records both appear. A teacher seeing only finalized
     ones would have no way to check a draft before it becomes history.
     """
 
     serializer_class = MyTeacherPayoutSerializer
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsTeacher]
 
     def get_queryset(self):
         start, end = optional_period(self.request)
         return payouts_for(
-            teacher=self.request.user, period_start=start, period_end=end
+            organization=self.organization,
+            teacher=self.request.user,
+            period_start=start,
+            period_end=end,
         )
 
     @extend_schema(
@@ -188,42 +218,39 @@ class MyPayoutListView(generics.ListAPIView):
         responses={
             200: OpenApiResponse(response=MyTeacherPayoutSerializer(many=True)),
             400: OpenApiResponse(description="Unparseable or inverted period."),
-            403: OpenApiResponse(description="Not a teacher account."),
+            403: OpenApiResponse(description="Not an active teacher account in this academy."),
         },
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
 
 
-class MyStatementView(generics.GenericAPIView):
-    """GET /api/payouts/statements/mine/?start=&end= — the teacher's own statement.
+class MyStatementView(AcademyScopedView, generics.GenericAPIView):
+    """GET /api/payouts/organizations/<organization_pk>/statements/mine/?start=&end= — the teacher's own statement.
 
     A statement is computed from the payout records it lists, so the total is
     always the sum of the rows shown underneath it. Both bounds are required: a
     statement is a document about a period.
-
-    There is no statement id to fetch, because there is no statement table — the
-    period *is* the identifier. That is a deliberate departure from the spec's
-    suggested ``statements/mine/{id}/`` and it is recorded in learnings.md: a
-    stored statement would be a second copy of financial facts that the spec's own
-    "do not duplicate financial facts" rule forbids.
     """
 
     serializer_class = MyStatementSerializer
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsTeacher]
 
     @extend_schema(
         parameters=PERIOD_PARAMS,
         responses={
             200: OpenApiResponse(response=MyStatementSerializer),
             400: OpenApiResponse(description="Missing, unparseable or inverted period."),
-            403: OpenApiResponse(description="Not a teacher account."),
+            403: OpenApiResponse(description="Not an active teacher account in this academy."),
         },
     )
     def get(self, request, *args, **kwargs):
         start, end = required_period(request)
         statement = statement_for(
-            teacher=request.user, period_start=start, period_end=end
+            organization=self.organization,
+            teacher=request.user,
+            period_start=start,
+            period_end=end,
         )
         return Response(self.get_serializer(statement).data)
 
@@ -231,23 +258,24 @@ class MyStatementView(generics.GenericAPIView):
 # --- Lead-facing -------------------------------------------------------------
 
 
-class LeadPayoutListView(generics.ListAPIView):
-    """GET /api/payouts/lead/ — academy-wide payout records.
+class LeadPayoutListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/payouts/organizations/<organization_pk>/lead/ — academy-wide payout records.
 
     Filterable by ``?teacher_id=`` and by period. Unfiltered it is every payout
-    record in the academy, which is the lead's to see and nobody else's: the
-    permission class is the only thing standing between this queryset and a
+    record in the academy, which is the owner/admin's to see and nobody else's:
+    the permission class is the only thing standing between this queryset and a
     sub-teacher reading their colleagues' income, which is why it is the *first*
     thing the class declares.
     """
 
     serializer_class = TeacherPayoutSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     def get_queryset(self):
         start, end = optional_period(self.request)
         return payouts_for(
-            teacher=requested_teacher(self.request),
+            organization=self.organization,
+            teacher=requested_teacher(self.request, organization=self.organization),
             period_start=start,
             period_end=end,
         )
@@ -265,24 +293,24 @@ class LeadPayoutListView(generics.ListAPIView):
         responses={
             200: OpenApiResponse(response=TeacherPayoutSerializer(many=True)),
             400: OpenApiResponse(description="Unknown teacher, or a bad period."),
-            403: OpenApiResponse(description="Not the lead teacher."),
+            403: OpenApiResponse(description="Not an organization owner or administrator."),
         },
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
 
 
-class LeadStatementView(generics.GenericAPIView):
-    """GET /api/payouts/statements/?teacher_id=&start=&end= — any teacher's statement.
+class LeadStatementView(AcademyScopedView, generics.GenericAPIView):
+    """GET /api/payouts/organizations/<organization_pk>/statements/?teacher_id=&start=&end= — any teacher's statement.
 
-    The same computation ``statements/mine/`` performs, for a teacher the lead
+    The same computation ``statements/mine/`` performs, for a teacher the owner/admin
     names. ``teacher_id`` is required, because a statement is about one teacher —
     an academy-wide total is a different document and Phase 8 was not asked for
     one.
     """
 
     serializer_class = StatementSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     @extend_schema(
         parameters=PERIOD_PARAMS
@@ -300,22 +328,27 @@ class LeadStatementView(generics.GenericAPIView):
             400: OpenApiResponse(
                 description="Missing teacher_id, unknown teacher, or a bad period."
             ),
-            403: OpenApiResponse(description="Not the lead teacher."),
+            403: OpenApiResponse(description="Not an organization owner or administrator."),
         },
     )
     def get(self, request, *args, **kwargs):
-        teacher = requested_teacher(request)
+        teacher = requested_teacher(request, organization=self.organization)
         if teacher is None:
             raise ValidationError(
                 {"teacher_id": ["This query parameter is required for a statement."]}
             )
         start, end = required_period(request)
-        statement = statement_for(teacher=teacher, period_start=start, period_end=end)
+        statement = statement_for(
+            organization=self.organization,
+            teacher=teacher,
+            period_start=start,
+            period_end=end,
+        )
         return Response(self.get_serializer(statement).data)
 
 
-class PayoutGenerateView(generics.GenericAPIView):
-    """POST /api/payouts/generate/ — turn a period's completed sessions into payouts.
+class PayoutGenerateView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/payouts/organizations/<organization_pk>/generate/ — turn a period's completed sessions into payouts.
 
     Safe to repeat, which is the property that makes it usable: a lead who is not
     sure whether the run went through can simply run it again, and the second run
@@ -329,7 +362,7 @@ class PayoutGenerateView(generics.GenericAPIView):
     """
 
     serializer_class = PayoutGenerateSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     @extend_schema(
         responses={
@@ -341,7 +374,7 @@ class PayoutGenerateView(generics.GenericAPIView):
                 ),
             ),
             400: OpenApiResponse(description="Bad period, or an unknown teacher."),
-            403: OpenApiResponse(description="Not the lead teacher."),
+            403: OpenApiResponse(description="Not an organization owner or administrator."),
         }
     )
     def post(self, request, *args, **kwargs):
@@ -350,6 +383,7 @@ class PayoutGenerateView(generics.GenericAPIView):
         payload = request_serializer.validated_data
         try:
             result = generate_payouts(
+                organization=self.organization,
                 period_start=payload["period_start"],
                 period_end=payload["period_end"],
                 teacher=payload.get("teacher"),
@@ -366,18 +400,23 @@ class PayoutGenerateView(generics.GenericAPIView):
         return Response(body, status=status.HTTP_201_CREATED)
 
 
-class PayoutFinalizeView(generics.GenericAPIView):
-    """POST /api/payouts/{id}/finalize/ — make one payout history.
+class PayoutFinalizeView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/payouts/organizations/<organization_pk>/<int:pk>/finalize/ — make one payout history.
 
-    Lead-only, and one-way: after this the record refuses every write, including
+    Owner/admin-only, and one-way: after this the record refuses every write, including
     the lead's own. A payout that is already finalized answers 409 rather than
     silently succeeding, because a second finalization means the caller is acting
     on a stale copy of a financial record.
     """
 
     serializer_class = TeacherPayoutSerializer
-    permission_classes = [IsAuthenticated, IsLeadTeacher]
-    queryset = TeacherPayout.objects.select_related(*PAYOUT_RELATED)
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
+
+    def get_queryset(self):
+        return (
+            TeacherPayout.objects.in_organization(self.organization)
+            .select_related(*PAYOUT_RELATED)
+        )
 
     @extend_schema(
         request=None,
@@ -386,7 +425,7 @@ class PayoutFinalizeView(generics.GenericAPIView):
                 response=TeacherPayoutSerializer,
                 description="Finalized. The record is now immutable.",
             ),
-            403: OpenApiResponse(description="Not the lead teacher."),
+            403: OpenApiResponse(description="Not an organization owner or administrator."),
             404: OpenApiResponse(description="No such payout."),
             409: OpenApiResponse(description="Already finalized."),
         },

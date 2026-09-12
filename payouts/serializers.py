@@ -138,6 +138,17 @@ class PayoutPeriodSerializer(serializers.Serializer):
         return attrs
 
 
+def teachers_in(organization):
+    """Active teacher users in ``organization``."""
+    from organizations.models import MembershipStatus
+
+    return User.objects.filter(
+        role__in=[Role.LEAD, Role.SUB],
+        organization_memberships__organization=organization,
+        organization_memberships__status=MembershipStatus.ACTIVE,
+    ).distinct()
+
+
 class PayoutGenerateSerializer(PayoutPeriodSerializer):
     """The lead's generation request: a period, and optionally one teacher.
 
@@ -148,6 +159,7 @@ class PayoutGenerateSerializer(PayoutPeriodSerializer):
 
     Only ``lead`` and ``sub`` accounts are offered, because nobody else can be a
     booking's teacher. A student id here is a 400 rather than an empty run.
+    When scoped to an organization, only active teachers in that organization are accepted.
     """
 
     teacher = serializers.PrimaryKeyRelatedField(
@@ -155,6 +167,26 @@ class PayoutGenerateSerializer(PayoutPeriodSerializer):
         required=False,
         allow_null=True,
     )
+
+    def get_fields(self):
+        fields = super().get_fields()
+        organization = self.context.get("organization")
+        if organization is not None:
+            fields["teacher"].queryset = teachers_in(organization)
+        return fields
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        teacher = attrs.get("teacher")
+        organization = self.context.get("organization")
+        if teacher and organization:
+            from organizations.models import active_membership
+
+            if not active_membership(user=teacher, organization=organization):
+                raise serializers.ValidationError(
+                    {"teacher": ["Teacher is not an active member of this organization."]}
+                )
+        return attrs
 
 
 class SkippedBookingSerializer(serializers.Serializer):

@@ -18,6 +18,9 @@ from django.test import TestCase
 from django.utils import timezone as dj_timezone
 
 from accounts.tests.factories import StudentFactory
+from curriculum.tests.factories import LevelFactory, TrackFactory
+from organizations.models import MembershipStatus
+from organizations.tests.factories import OrganizationFactory
 from scheduling.models import BookingStatus
 from scheduling.tests.factories import (
     AvailabilityFactory,
@@ -218,3 +221,106 @@ class PayoutImmutabilityTests(TestCase):
         with self.assertRaises(ValidationError) as caught:
             payout.save()
         self.assertIn("finalized_at", caught.exception.message_dict)
+
+
+class PayoutTenancyModelTests(TestCase):
+    """SaaS Phase 7: tenancy and academy scoping at the model layer."""
+
+    def setUp(self):
+        self.org_a = OrganizationFactory(name="Academy A")
+        self.org_b = OrganizationFactory(name="Academy B")
+
+    def test_organization_property_resolves_via_booking(self):
+        payout = TeacherPayoutFactory()
+        self.assertIsNotNone(payout.organization)
+        self.assertEqual(payout.organization, payout.booking.level.track.organization)
+
+    def test_in_organization_queryset_filter(self):
+        track_a = TrackFactory(organization=self.org_a)
+        level_a = LevelFactory(track=track_a)
+        booking_a = past_session(level=level_a)
+        payout_a = TeacherPayoutFactory(booking=booking_a)
+
+        track_b = TrackFactory(organization=self.org_b)
+        level_b = LevelFactory(track=track_b)
+        booking_b = past_session(level=level_b)
+        payout_b = TeacherPayoutFactory(booking=booking_b)
+
+        # Instance filter
+        self.assertEqual(list(TeacherPayout.objects.in_organization(self.org_a)), [payout_a])
+        self.assertEqual(list(TeacherPayout.objects.in_organization(self.org_b)), [payout_b])
+
+        # PK filter
+        self.assertEqual(list(TeacherPayout.objects.in_organization(self.org_a.pk)), [payout_a])
+        self.assertEqual(list(TeacherPayout.objects.in_organization(self.org_b.pk)), [payout_b])
+
+        # None filter returns empty
+        self.assertEqual(list(TeacherPayout.objects.in_organization(None)), [])
+
+    def test_teacher_must_be_active_member_on_creation(self):
+        track = TrackFactory(organization=self.org_a)
+        level = LevelFactory(track=track)
+        booking = past_session(level=level)
+
+        # Suspend the teacher's membership in org_a
+        membership = booking.teacher.organization_memberships.get(organization=self.org_a)
+        membership.status = MembershipStatus.SUSPENDED
+        membership.save()
+
+        payout = TeacherPayoutFactory.build(
+            booking=booking,
+            teacher=booking.teacher,
+            cohort=booking.cohort,
+            minutes_paid=booking.duration_minutes,
+            rate_used=booking.teacher.teacher_profile.hourly_payout_rate,
+        )
+        payout.amount = payout_amount(payout.minutes_paid, payout.rate_used)
+        with self.assertRaises(ValidationError) as caught:
+            payout.save()
+        self.assertIn("teacher", caught.exception.message_dict)
+        self.assertEqual(caught.exception.error_dict["teacher"][0].code, "teacher_not_in_organization")
+
+    def test_cohort_must_belong_to_same_organization(self):
+        track_a = TrackFactory(organization=self.org_a)
+        level_a = LevelFactory(track=track_a)
+        booking_a = past_session(level=level_a)
+
+        # Build a cohort belonging to Academy B
+        track_b = TrackFactory(organization=self.org_b)
+        level_b = LevelFactory(track=track_b, group_eligible=True)
+        cohort_b = CohortFactory(level=level_b)
+
+        # Directly setting cohort_b from another academy (even if booking.cohort was None)
+        # Note: if booking_a.cohort is None, cohort mismatch triggers first; if booking_a.cohort was set
+        # to a cross-org cohort (e.g. forced), cross_academy_cohort_mismatch triggers.
+        booking_a.cohort = cohort_b
+        payout = TeacherPayoutFactory.build(
+            booking=booking_a,
+            teacher=booking_a.teacher,
+            cohort=cohort_b,
+            minutes_paid=booking_a.duration_minutes,
+            rate_used=booking_a.teacher.teacher_profile.hourly_payout_rate,
+        )
+        payout.amount = payout_amount(payout.minutes_paid, payout.rate_used)
+        with self.assertRaises(ValidationError) as caught:
+            payout.save()
+        self.assertIn("cohort", caught.exception.message_dict)
+        self.assertEqual(
+            caught.exception.error_dict["cohort"][0].code, "cross_academy_cohort_mismatch"
+        )
+
+    def test_subsequent_teacher_suspension_does_not_prevent_finalizing(self):
+        track = TrackFactory(organization=self.org_a)
+        level = LevelFactory(track=track)
+        booking = past_session(level=level)
+        payout = TeacherPayoutFactory(booking=booking)
+
+        # Suspend teacher membership after payout is created
+        membership = booking.teacher.organization_memberships.get(organization=self.org_a)
+        membership.status = MembershipStatus.SUSPENDED
+        membership.save()
+
+        # Finalization should still succeed
+        payout.finalize()
+        payout.refresh_from_db()
+        self.assertEqual(payout.status, PayoutStatus.FINALIZED)

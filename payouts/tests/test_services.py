@@ -15,7 +15,7 @@ from django.utils import timezone as dj_timezone
 from accounts.tests.factories import StudentFactory
 from assessment.tests.factories import SessionAssessmentFactory
 from pricing.tests.factories import PremiumAgreementFactory, PricingAgreementFactory
-from scheduling.models import BookingStatus
+from scheduling.models import Booking, BookingStatus
 from scheduling.tests.factories import (
     AvailabilityFactory,
     BookableLeadTeacherFactory,
@@ -29,6 +29,7 @@ from payouts.services import (
     SKIP_COHORT_SEAT_PAID_ELSEWHERE,
     SKIP_NO_PAYOUT_RATE,
     generate_payouts,
+    payouts_for,
     statement_for,
 )
 from payouts.tests.factories import past_session
@@ -51,8 +52,16 @@ def rated_window(rate="5000.00"):
     )
 
 
-def run(*, start=None, end=None, teacher=None):
+def run(*, start=None, end=None, teacher=None, organization=None):
+    if organization is None:
+        booking = Booking.objects.order_by("-pk").first()
+        if booking is not None and booking.organization is not None:
+            organization = booking.organization
+        else:
+            from organizations.tests.factories import OrganizationFactory
+            organization = OrganizationFactory()
     return generate_payouts(
+        organization=organization,
         period_start=start or PERIOD_START,
         period_end=end or PERIOD_END,
         teacher=teacher,
@@ -331,7 +340,10 @@ class StatementTests(TestCase):
 
     def _statement(self):
         return statement_for(
-            teacher=self.teacher, period_start=PERIOD_START, period_end=PERIOD_END
+            organization=self.bookings[0].organization,
+            teacher=self.teacher,
+            period_start=PERIOD_START,
+            period_end=PERIOD_END,
         )
 
     def test_total_agrees_with_the_underlying_records(self):
@@ -363,6 +375,7 @@ class StatementTests(TestCase):
 
     def test_a_period_with_no_records_is_empty_rather_than_zero_earnings(self):
         empty = statement_for(
+            organization=self.bookings[0].organization,
             teacher=self.teacher,
             period_start=PERIOD_END,
             period_end=PERIOD_END + timedelta(weeks=1),
@@ -377,3 +390,103 @@ class StatementTests(TestCase):
         statement = self._statement()
         self.assertNotIn(other.pk, [payout.booking_id for payout in statement.payouts])
         self.assertEqual(statement.session_count, 3)
+
+
+class PayoutTenancyServiceTests(TestCase):
+    """SaaS Phase 7: service-layer tenancy and generation isolation."""
+
+    def setUp(self):
+        from curriculum.tests.factories import LevelFactory, TrackFactory
+        from organizations.tests.factories import OrganizationFactory
+
+        self.org_a = OrganizationFactory(name="Academy A")
+        self.org_b = OrganizationFactory(name="Academy B")
+
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.level_a = LevelFactory(track=self.track_a)
+
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_b = LevelFactory(track=self.track_b)
+
+    def test_generation_for_academy_a_never_touches_academy_b_bookings(self):
+        # Create completed sessions in both academies
+        booking_a = past_session(level=self.level_a, start_time_utc=PERIOD_START + timedelta(days=1))
+        booking_b = past_session(level=self.level_b, start_time_utc=PERIOD_START + timedelta(days=1))
+
+        # Generate for Academy A
+        result_a = generate_payouts(
+            organization=self.org_a,
+            period_start=PERIOD_START,
+            period_end=PERIOD_END,
+        )
+        self.assertEqual(result_a.created_count, 1)
+        self.assertEqual(result_a.created[0].booking, booking_a)
+
+        # Confirm Academy B has 0 payouts
+        self.assertEqual(TeacherPayout.objects.in_organization(self.org_b).count(), 0)
+
+        # Generate for Academy B
+        result_b = generate_payouts(
+            organization=self.org_b,
+            period_start=PERIOD_START,
+            period_end=PERIOD_END,
+        )
+        self.assertEqual(result_b.created_count, 1)
+        self.assertEqual(result_b.created[0].booking, booking_b)
+
+    def test_service_functions_require_explicit_organization(self):
+        with self.assertRaises(ValueError):
+            generate_payouts(
+                organization=None,
+                period_start=PERIOD_START,
+                period_end=PERIOD_END,
+            )
+        with self.assertRaises(ValueError):
+            payouts_for(organization=None)
+        with self.assertRaises(ValueError):
+            statement_for(
+                organization=None,
+                teacher=StudentFactory(),
+                period_start=PERIOD_START,
+                period_end=PERIOD_END,
+            )
+
+    def test_statement_contains_only_tenant_owned_payouts(self):
+        from scheduling.tests.factories import ensure_teacher_configured
+
+        window_a = rated_window("5000.00")
+        teacher = window_a.teacher
+        ensure_teacher_configured(teacher, self.org_a)
+        ensure_teacher_configured(teacher, self.org_b)
+
+        booking_a = past_session(
+            level=self.level_a,
+            teacher=teacher,
+            start_time_utc=PERIOD_START + timedelta(days=1),
+        )
+        booking_b = past_session(
+            level=self.level_b,
+            teacher=teacher,
+            start_time_utc=PERIOD_START + timedelta(days=2),
+        )
+
+        generate_payouts(organization=self.org_a, period_start=PERIOD_START, period_end=PERIOD_END)
+        generate_payouts(organization=self.org_b, period_start=PERIOD_START, period_end=PERIOD_END)
+
+        stmt_a = statement_for(
+            organization=self.org_a,
+            teacher=teacher,
+            period_start=PERIOD_START,
+            period_end=PERIOD_END,
+        )
+        self.assertEqual(stmt_a.session_count, 1)
+        self.assertEqual(stmt_a.payouts[0].booking, booking_a)
+
+        stmt_b = statement_for(
+            organization=self.org_b,
+            teacher=teacher,
+            period_start=PERIOD_START,
+            period_end=PERIOD_END,
+        )
+        self.assertEqual(stmt_b.session_count, 1)
+        self.assertEqual(stmt_b.payouts[0].booking, booking_b)

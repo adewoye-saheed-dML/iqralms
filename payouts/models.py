@@ -47,6 +47,7 @@ from django.db.models import Q
 from django.utils import timezone as dj_timezone
 
 from accounts.models import User
+from organizations.models import active_membership
 from scheduling.models import Booking, BookingStatus, Cohort, MINUTES_PER_HOUR
 
 from .exceptions import PayoutAlreadyFinalized
@@ -132,6 +133,15 @@ IMMUTABLE_FIELDS = (
 )
 
 
+class TeacherPayoutQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        """The payouts that belong to one academy through their booking's track."""
+        if organization is None:
+            return self.none()
+        organization_id = getattr(organization, "pk", organization)
+        return self.filter(booking__level__track__organization_id=organization_id)
+
+
 class TeacherPayout(models.Model):
     """One teacher's earnings from one eligible completed teaching session.
 
@@ -147,6 +157,8 @@ class TeacherPayout(models.Model):
     both PROTECT, so a payout keeps its own evidence alive, and the admin refuses
     to delete a finalized one.
     """
+
+    objects = TeacherPayoutQuerySet.as_manager()
 
     teacher = models.ForeignKey(
         # PROTECT for the reason ``Booking.teacher`` is PROTECT, only more so: a
@@ -262,6 +274,13 @@ class TeacherPayout(models.Model):
     # --- Behaviour ----------------------------------------------------------
 
     @property
+    def organization(self):
+        """The academy this payout belongs to, reached through booking.level.track."""
+        if self.booking_id:
+            return self.booking.organization
+        return None
+
+    @property
     def is_finalized(self) -> bool:
         return self.status == PayoutStatus.FINALIZED
 
@@ -349,6 +368,12 @@ class TeacherPayout(models.Model):
             self._validate_still_mutable(errors, stored)
 
         if self.booking_id:
+            if self.organization is None:
+                errors["booking"] = ValidationError(
+                    "A booking must belong to an academy to earn a payout.",
+                    code="payout_booking_unscoped",
+                )
+
             if self.teacher_id and self.booking.teacher_id != self.teacher_id:
                 # The payout must be owed to whoever actually taught. Enforced
                 # here as well as in the service, so a direct ORM write cannot
@@ -368,8 +393,26 @@ class TeacherPayout(models.Model):
                     "that one group-class session cannot be paid twice.",
                     code="payout_cohort_mismatch",
                 )
+            elif (
+                self.cohort_id
+                and self.organization is not None
+                and self.cohort.organization != self.organization
+            ):
+                errors["cohort"] = ValidationError(
+                    "The cohort belongs to a different academy than the paid session.",
+                    code="cross_academy_cohort_mismatch",
+                )
             if stored is None:
                 self._validate_earns_a_payout(errors)
+                if self.teacher_id and self.organization is not None:
+                    membership = active_membership(
+                        user=self.teacher, organization=self.organization
+                    )
+                    if membership is None:
+                        errors["teacher"] = ValidationError(
+                            "That teacher is not an active member of the academy that owns this payout.",
+                            code="teacher_not_in_organization",
+                        )
 
         if self.teacher_id and not self.teacher.is_teacher:
             errors.setdefault(

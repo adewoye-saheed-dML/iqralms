@@ -1097,3 +1097,29 @@ Format:
 - **What we decided:** All 16 assessment endpoints were prefixed with `organizations/<organization_pk>/` and protected with `IsAuthenticated, IsOrganizationMember`. Scoped serializers validate related fields against `self.organization`. Foreign resource lookups return 404 (not 403) to prevent existence leakage.
 - **Why it matters for later phases:** Unscoped endpoints cannot provide a cross-tenant bypass vector.
 
+## 2026-09-12 — Derived tenancy via `Booking -> Level -> Track -> Organization` avoids duplicate columns on `TeacherPayout`
+- **What happened:** Payouts and teacher statements needed to become tenant-aware in SaaS Phase 7. The naive approach would add an `organization` foreign key to `TeacherPayout`. However, every payout has an authoritative, non-nullable relationship to `Booking`. `Booking` links to `Level`, `Level` links to `Track`, and `Track` links to `Organization`.
+- **What we decided:** Do not add a redundant `organization` foreign key to `TeacherPayout`. The derived relationship `payout.booking.level.track.organization` is deterministic, single-source-of-truth, and prevents data drift. The model exposes `@property def organization(self)` and query filtering is encapsulated via `TeacherPayoutQuerySet.in_organization(org)` (which joins through `booking__level__track__organization`).
+- **Why it matters for later phases:** Schema normalization prevents desynchronization bugs. Adding redundant tenant columns on child entities creates vectors where foreign keys can diverge.
+
+## 2026-09-12 — Active teacher membership enforced on creation while preserving historical immutability
+- **What happened:** Cross-tenant leakage would occur if a teacher from Academy B was assigned a payout for an Academy A booking, or if a teacher without active academy membership received payouts. However, once a payout is generated and finalized, it represents an immutable financial record that must remain accessible for accounting audit even if the teacher later resigns or is suspended.
+- **What we decided:** In `TeacherPayout.clean()`, we validate that:
+  1. The teacher is an active member (`OrganizationMembership.status == ACTIVE`) of `self.organization` on creation (`self._state.adding`).
+  2. The booking's organization matches the teacher's membership organization.
+  3. If a `cohort` is attached, the cohort's organization (`cohort.level.track.organization`) strictly matches the payout's organization.
+  4. The booking's teacher equals the payout's teacher.
+  5. Once finalized (`is_finalized=True`), the record cannot be unfinalized or mutated.
+- **Why it matters for later phases:** Defense-in-depth model validation ensures that background scripts, direct ORM writes, and migrations cannot violate tenant boundaries, while historical records remain permanent.
+
+## 2026-09-12 — Role-based authorization matrix and endpoint retirement for payouts
+- **What happened:** Legacy payout endpoints (`/api/payouts/...`) were global and authorized via `request.user.role == lead` or `request.user.is_teacher`. A lead in Academy A could access payouts across the entire database, and unscoped endpoints allowed cross-tenant leakage.
+- **What we decided:**
+  1. Mounted all payout endpoints under `/api/payouts/organizations/<organization_pk>/...` subclassing `AcademyScopedView(OrganizationScopedMixin)`.
+  2. Retired all legacy unscoped payout routes (they return 404).
+  3. Lead/admin endpoints (`/lead/`, `/generate/`, `/<id>/finalize/`, `/statements/`) require active `OWNER` or `ADMIN` membership via `IsLeadTeacher`.
+  4. Teacher self-service endpoints (`/mine/`, `/statements/mine/`) require active `TEACHER` membership and verify `request.user.is_teacher`, strictly scoping records to the caller (`user=request.user`).
+  5. Students and parents are denied outright with 403.
+  6. Foreign resource IDs return 404 (not 403) to prevent confirming the existence of records in other academies.
+- **Why it matters for later phases:** Financial endpoints are high-value targets. Explicit organization hierarchy routing combined with role checks and 404 object isolation prevents both unauthorized actions and metadata disclosure.
+

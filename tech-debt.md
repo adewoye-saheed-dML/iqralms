@@ -911,11 +911,11 @@ Format:
   widening it has to be deliberate.
 - **Revisit when:** The first academy onboards a lead teacher who is not its owner.
 
-## 2026-09-11 — `TeacherProfile` retains legacy fields while waiting for Payout tenancy
+## 2026-09-11 — `TeacherProfile` retains legacy fields while waiting for multi-rate finance phases
 - **What was skipped:** Removing `TeacherProfile` entirely or dropping its legacy fields (`approved`, `max_weekly_hours`, `specialties`, `hourly_payout_rate`).
-- **Why:** SaaS Phase 4 migrated scheduling authority to `OrganizationTeacherConfiguration` and `TeacherTrack`. However, `hourly_payout_rate` is still read by `payouts` (SaaS Phase 7), and removing legacy fields prematurely would break unmigrated apps and existing database fixtures.
-- **Real fix:** In SaaS Phase 7 (payout tenancy), migrate `hourly_payout_rate` to `OrganizationTeacherConfiguration`. Afterwards, audit remaining consumers (e.g. `bio`, which is personal and global) and deprecate or remove unused columns.
-- **Revisit when:** SaaS Phase 7 (payout tenancy).
+- **Why:** SaaS Phase 4 migrated scheduling authority to `OrganizationTeacherConfiguration` and `TeacherTrack`. In SaaS Phase 7, the payout specification explicitly forbade introducing a secondary rate model or altering the Phase 8 financial formula. Retaining `TeacherProfile.hourly_payout_rate` preserves historical calculations and single-rate semantics across existing tests and fixtures without churn.
+- **Real fix:** In a dedicated multi-rate / multi-currency finance phase (or billing phase), migrate hourly rates to academy-specific teacher configurations (`OrganizationTeacherConfiguration`) with effective date ranges, and deprecate `TeacherProfile.hourly_payout_rate`.
+- **Revisit when:** Multi-currency / multi-tier teacher payout enhancements.
 
 ## 2026-09-11 — No teacher-facing multi-tenant availability editor
 - **What was skipped:** Any teacher-facing API or UI to view and edit availability across multiple academies.

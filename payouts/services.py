@@ -130,8 +130,8 @@ def applicable_rate(teacher):
     return profile.hourly_payout_rate
 
 
-def eligible_bookings(*, period_start, period_end, teacher=None):
-    """Completed sessions whose stored UTC start falls in ``[start, end)``.
+def eligible_bookings(*, organization, period_start, period_end, teacher=None):
+    """Completed sessions whose stored UTC start falls in ``[start, end)`` inside ``organization``.
 
     Half-open on purpose, so consecutive periods neither overlap nor leave a gap:
     a session at exactly ``period_end`` belongs to the next period. Filtering is
@@ -141,8 +141,13 @@ def eligible_bookings(*, period_start, period_end, teacher=None):
     Status comes from ``PAYABLE_BOOKING_STATUSES``, which is derived from
     ``scheduling.BookingStatus`` — this app never re-defines what "completed"
     means.
+
+    Constrained to ``organization`` through ``Booking.objects.in_organization``
+    so a generation request never reads sessions from another academy.
     """
-    rows = Booking.objects.filter(
+    if organization is None:
+        raise ValueError("An explicit organization context is required.")
+    rows = Booking.objects.in_organization(organization).filter(
         status__in=PAYABLE_BOOKING_STATUSES,
         start_time_utc__gte=period_start,
         start_time_utc__lt=period_end,
@@ -156,47 +161,54 @@ def eligible_bookings(*, period_start, period_end, teacher=None):
 
 
 @transaction.atomic
-def generate_payouts(*, period_start, period_end, teacher=None):
-    """Create the missing payout records for ``[period_start, period_end)``.
+def generate_payouts(*, organization, period_start, period_end, teacher=None):
+    """Create the missing payout records for ``[period_start, period_end)`` in ``organization``.
 
     Idempotent by construction, which the spec requires and which matters more
     than usual here: a lead who is unsure whether the run went through must be
-    able to repeat it. Three things make repeating safe.
+    able to repeat it.
 
+    * Only bookings belonging to ``organization`` are considered.
     * A booking that already has a payout is skipped, whatever that payout's
       status is. Existing records are never recalculated or touched.
-    * A cohort session whose payout already exists is skipped for *every* seat,
-      so a group class is paid once no matter how many students sat in it or how
-      many times generation runs.
+    * A cohort session whose payout already exists in this academy is skipped for
+      *every* seat, so a group class is paid once no matter how many students sat
+      in it or how many times generation runs.
     * The database holds both rules as constraints, so two concurrent runs cannot
       both win.
 
     One ``atomic()`` block for the whole run, so a rejection mid-period leaves no
-    half-generated payroll (the lesson learnings.md records from the Phase 7
-    rubric write). Records are created one ``save()`` at a time — no
+    half-generated payroll. Records are created one ``save()`` at a time — no
     ``bulk_create()``, which would bypass ``TeacherPayout.full_clean()`` and with
     it every invariant in this app.
     """
+    if organization is None:
+        raise ValueError("An explicit organization context is required for payout generation.")
     result = GenerationResult(period_start=period_start, period_end=period_end)
-    bookings = list(eligible_bookings(
-        period_start=period_start, period_end=period_end, teacher=teacher
-    ))
+    bookings = list(
+        eligible_bookings(
+            organization=organization,
+            period_start=period_start,
+            period_end=period_end,
+            teacher=teacher,
+        )
+    )
     if not bookings:
         return result
 
     booking_ids = [booking.pk for booking in bookings]
     cohort_ids = {booking.cohort_id for booking in bookings if booking.cohort_id}
     paid_bookings = set(
-        TeacherPayout.objects.filter(booking_id__in=booking_ids).values_list(
-            "booking_id", flat=True
-        )
+        TeacherPayout.objects.in_organization(organization)
+        .filter(booking_id__in=booking_ids)
+        .values_list("booking_id", flat=True)
     )
     # Any seat of the cohort having been paid closes the whole session, including
     # seats outside this period's booking set.
     paid_cohorts = set(
-        TeacherPayout.objects.filter(cohort_id__in=cohort_ids).values_list(
-            "cohort_id", flat=True
-        )
+        TeacherPayout.objects.in_organization(organization)
+        .filter(cohort_id__in=cohort_ids)
+        .values_list("cohort_id", flat=True)
     )
     #: Cohorts paid by *this* run, so the second seat is reported with a reason of
     #: its own rather than looking like a pre-existing record.
@@ -250,15 +262,17 @@ def _skip(booking, reason):
     )
 
 
-def payouts_for(*, teacher=None, period_start=None, period_end=None):
-    """The payout records for a teacher and/or a period, newest session last.
+def payouts_for(*, organization, teacher=None, period_start=None, period_end=None):
+    """The payout records for a teacher and/or a period inside ``organization``, newest session last.
 
     The single scoping helper every view uses, so "only your own payouts" is one
     filter in one place rather than a rule each endpoint reimplements. The period
     bounds are the same half-open pair generation uses, and again read from the
     booking's stored UTC start rather than from ``created_at``.
     """
-    rows = TeacherPayout.objects.select_related(*PAYOUT_RELATED)
+    if organization is None:
+        raise ValueError("An explicit organization context is required.")
+    rows = TeacherPayout.objects.in_organization(organization).select_related(*PAYOUT_RELATED)
     if teacher is not None:
         rows = rows.filter(teacher=getattr(teacher, "pk", teacher))
     if period_start is not None:
@@ -268,8 +282,8 @@ def payouts_for(*, teacher=None, period_start=None, period_end=None):
     return rows
 
 
-def statement_for(*, teacher, period_start, period_end):
-    """Total one teacher's payouts for ``[period_start, period_end)``.
+def statement_for(*, organization, teacher, period_start, period_end):
+    """Total one teacher's payouts for ``[period_start, period_end)`` in ``organization``.
 
     Computed, never stored. The count and the total come from one aggregate over
     the same queryset the statement lists, so a statement cannot disagree with
@@ -281,8 +295,13 @@ def statement_for(*, teacher, period_start, period_end):
     earned nothing" are different statements, and only the records can tell the
     lead which one they are looking at.
     """
+    if organization is None:
+        raise ValueError("An explicit organization context is required.")
     rows = payouts_for(
-        teacher=teacher, period_start=period_start, period_end=period_end
+        organization=organization,
+        teacher=teacher,
+        period_start=period_start,
+        period_end=period_end,
     )
     totals = rows.aggregate(
         session_count=Count("pk"),
