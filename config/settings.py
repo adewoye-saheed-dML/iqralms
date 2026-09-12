@@ -137,6 +137,7 @@ INSTALLED_APPS = [
     "payouts",
     "organizations",
     "notifications",
+    "imports",
 ]
 
 MIDDLEWARE = [

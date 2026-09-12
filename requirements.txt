@@ -15,3 +15,6 @@ dj-database-url>=2.3
 # Private object storage for placement audio. [s3] pulls in boto3, which is what
 # generates the presigned URLs.
 django-storages[s3]>=1.14
+
+# Phase 10 - Bulk Import
+openpyxl>=3.1
