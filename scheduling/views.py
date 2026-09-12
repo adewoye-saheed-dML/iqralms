@@ -171,6 +171,8 @@ class BookingCreateView(AcademyScopedView, generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         booking = serializer.save()
+        from notifications.services import notify_booking_confirmed
+        notify_booking_confirmed(booking)
         body = BookingSerializer(booking, context=self.get_serializer_context()).data
         return Response(body, status=status.HTTP_201_CREATED)
 
@@ -259,6 +261,8 @@ class BookingCancelView(AcademyScopedView, generics.GenericAPIView):
             booking.cancel()
         except BookingNotCancellable as exc:
             raise Conflict(str(exc)) from exc
+        from notifications.services import notify_booking_cancelled
+        notify_booking_cancelled(booking)
         body = BookingSerializer(booking, context=self.get_serializer_context()).data
         return Response(body, status=status.HTTP_200_OK)
 
@@ -356,6 +360,10 @@ class RouteView(AcademyScopedView, generics.GenericAPIView):
             # teach this track is refused the same way a direct booking naming
             # them would be. Same 400 either way.
             raise as_drf_error(exc) from exc
+
+        if routed and hasattr(routed, "booking") and routed.booking:
+            from notifications.services import notify_booking_confirmed
+            notify_booking_confirmed(routed.booking)
 
         context = self.get_serializer_context()
         return Response(

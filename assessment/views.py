@@ -373,6 +373,8 @@ class SessionAssessmentCreateView(AcademyScopedView, generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         assessment = serializer.save()
+        from notifications.services import notify_progress_ready
+        notify_progress_ready(assessment)
         body = TeacherAssessmentSerializer(
             assessment, context=self.get_serializer_context()
         ).data
@@ -770,6 +772,9 @@ class ProgressSnapshotCreateView(AcademyScopedView, generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         snapshot = serializer.save()
+        if getattr(snapshot, "visible_to_family", False):
+            from notifications.services import notify_progress_ready
+            notify_progress_ready(snapshot)
         body = ProgressSnapshotSerializer(
             snapshot, context=self.get_serializer_context()
         ).data

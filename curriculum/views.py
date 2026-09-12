@@ -851,6 +851,8 @@ class AcademyPlacementReviewView(AcademyPlacementScopedView, generics.GenericAPI
             placement = serializer.save()
         except PlacementAlreadyReviewed as exc:
             raise Conflict(str(exc)) from exc
+        from notifications.services import notify_placement_reviewed
+        notify_placement_reviewed(placement)
         body = PlacementResultSerializer(
             placement, context=self.get_serializer_context()
         ).data

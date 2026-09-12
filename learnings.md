@@ -1123,3 +1123,7 @@ Format:
   6. Foreign resource IDs return 404 (not 403) to prevent confirming the existence of records in other academies.
 - **Why it matters for later phases:** Financial endpoints are high-value targets. Explicit organization hierarchy routing combined with role checks and 404 object isolation prevents both unauthorized actions and metadata disclosure.
 
+## 2026-09-12 — Event dispatching uses views instead of signals for test isolation
+- **What happened:** Hooking notification creation directly into `post_save` signals would cause tests that rely on those models to suddenly fail if they don't set up full organization context. Legacy tests running without organization contexts would break.
+- **What we decided:** Event dispatching is intentionally placed inside view `post()`/`create()` methods immediately after `serializer.save()`. This preserves test isolation and ensures we have the correct context when dispatching events.
+- **Why it matters for later phases:** Continue placing event dispatching in the view/service layer rather than deep in model signals to maintain testability and avoid noisy side effects.

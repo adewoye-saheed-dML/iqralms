@@ -254,6 +254,9 @@ class OrganizationMembershipListCreateView(
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         membership = serializer.save()
+        if membership.role == OrganizationRole.TEACHER:
+            from notifications.services import notify_teacher_invitation
+            notify_teacher_invitation(membership)
         body = OrganizationMembershipSerializer(
             membership, context=self.get_serializer_context()
         ).data

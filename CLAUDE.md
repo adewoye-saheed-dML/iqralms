@@ -3,154 +3,240 @@
 ## Repository baseline
 
 Repository: `adewoye-saheed-dML/quran_acad`
-
 Target branch: `main`
 
-Current audited commit before SaaS Phase 7:
-`9bde46c920dc18ef8f60645ff7a2960789bd04b4`
+Current completed SaaS phase: **SaaS Phase 7 — Teacher Payout Tenancy**
 
-Current completed SaaS phases:
+Current audited commit:
+`2127f80cff6512b6ad52fe0f057e1df4cb7fd61a`
+
+Commit message:
+`feat(saas): implement Phase 7 teacher payout tenancy and complete phase gate`
+
+Completed SaaS phases:
 - SaaS Phase 1 — Organization Foundation
 - SaaS Phase 2 — Accounts Tenancy
 - SaaS Phase 3 — Curriculum Tenancy
 - SaaS Phase 4 — Scheduling Tenancy
 - SaaS Phase 5 — Pricing Tenancy
 - SaaS Phase 6 — Assessment Tenancy
+- SaaS Phase 7 — Teacher Payout Tenancy
 
-The next implementation phase is **SaaS Phase 7 — Teacher Payout Tenancy**.
+The next implementation phase is **SaaS Phase 8 — Notification Domain**.
 
-The repository already contains the non-SaaS payout implementation from Phase 8. SaaS Phase 7 is not a new payout-product phase. It is the tenant-safety migration of that existing payout domain.
+## Accepted SaaS Phase 7 decisions
 
-## Accepted SaaS Phase 6 decisions
+- Teacher payout tenancy is complete.
+- `TeacherPayout` derives academy ownership from its authoritative booking/curriculum relationship rather than a redundant organization column.
+- Payout validation prevents cross-academy booking, teacher and cohort combinations.
+- Historical payout records remain immutable.
+- Payout generation is organization-scoped and repeat-safe.
+- Payout APIs use explicit organization-scoped routes.
+- Legacy unscoped payout routes are retired.
+- Owner/admin payout operations require active organization membership and suitable organization role.
+- Teacher self-service is limited to the teacher's own records in the selected academy.
+- Student and parent payout access is denied.
+- Adversarial payout tenant-isolation tests are complete.
+- SaaS Phase 7 passed its phase gate and was committed at the baseline above.
 
-- Assessment resources derive organization ownership through the existing curriculum/booking relationships rather than adding unnecessary duplicate tenant fields.
-- Assessment querysets expose organization scoping.
-- Assessment serializers and model validation enforce same-organization relationships.
-- Assessment APIs are mounted under organization-scoped routes.
-- Assessment permissions require authenticated active organization membership.
-- Legacy unscoped assessment routes are retired.
-- Student, parent, teacher, and lead assessment visibility is organization-scoped.
-- Historical assessment snapshots remain auditable.
-- Adversarial cross-tenant assessment tests are required.
-- SaaS Phase 6 is complete only after tests, PostgreSQL verification, migration checks, tenant-isolation checks, API acceptance, OpenAPI verification, documentation, and commit.
+## SaaS Phase 8 objective
 
-## SaaS Phase 7 objective
+Build a central notification/event domain that separates:
 
-Make the existing `payouts` domain tenant-safe.
+```text
+domain action
+    ↓
+internal notification event
+    ↓
+delivery service
+    ↓
+provider adapter
+    ↓
+delivery attempt/result
+```
 
-The existing payout business rules must remain intact:
+The notification system is the shared communication boundary for future:
+- WhatsApp
+- Telegram
+- Email
+- Push
 
-- Completed eligible teaching sessions can generate payouts.
-- Cancelled, no-show, and scheduled bookings do not generate payouts.
-- One eligible booking produces at most one payout.
-- Group/cohort sessions remain paid according to the existing Phase 8 rules.
-- The teacher payout rate remains independent of family pricing.
-- Assessment data does not change payout amounts.
-- Payouts preserve the actual rate and amount used at generation time.
-- Finalized payouts remain immutable.
-- Generation remains repeat-safe/idempotent.
-- Teacher self-service remains limited to the teacher's own payout history/statements.
-- Lead payout management remains restricted to the academy that owns the records.
+Do not let Booking, Assessment, Payouts, Scheduling, or other domain models contain provider-specific communication logic.
 
-Do not redesign these rules during SaaS Phase 7 unless the current code is proven inconsistent with them.
+## Core rules
 
-## Current payout architecture to preserve
+1. Every academy-owned notification has deterministic academy ownership.
+2. A notification recipient must be valid for the academy context.
+3. Delivery records belong to the same academy as their notification.
+4. Cross-academy recipient/provider combinations are rejected.
+5. Owner/admin history is academy-scoped.
+6. Ordinary users see only notifications intended for them in academies where they have valid access.
+7. Provider failures never weaken tenant isolation.
+8. Provider callbacks cannot switch tenant context using a client-supplied academy id.
+9. Platform-level/system events must be distinct from academy-owned events.
+10. Tenant filtering happens in querysets/services, not only serializers.
 
-The existing payout app contains:
+## Initial event types
 
-- `payouts/models.py`
-- `payouts/services.py`
-- `payouts/serializers.py`
-- `payouts/permissions.py`
-- `payouts/views.py`
-- `payouts/urls.py`
-- payout migrations
-- payout automated tests
+Implement the roadmap's first required events:
 
-The existing API is currently mounted under `/api/payouts/` and uses role-only permissions. SaaS Phase 7 must replace the global financial boundary with organization-aware access.
+- `BOOKING_CONFIRMED`
+- `BOOKING_CANCELLED`
+- `PLACEMENT_REVIEWED`
+- `PROGRESS_READY`
+- `TEACHER_INVITATION`
 
-The preferred ownership model is to derive payout organization from the authoritative scheduled academic object chain already present in the repository. Do not add a redundant `organization` foreign key to `TeacherPayout` unless the audit proves that ownership cannot be determined safely from its booking/cohort relationships.
+Payment/price notifications remain future work unless an existing payment event already exists.
 
-The organization boundary must never be inferred from the caller's `User.role`.
+## Provider boundary
 
-## Non-negotiable tenant invariants
+Use provider-neutral interfaces such as:
 
-1. Every `TeacherPayout` has exactly one unambiguous owning academy.
-2. A payout's teacher must be an active member of that academy when the payout is created or otherwise validated for active tenancy.
-3. A payout's booking must belong to the same academy as the payout.
-4. A payout's cohort, when present, must belong to the same academy as the payout.
-5. A lead/admin may only read and manage payout records belonging to the selected academy where they have sufficient organization authority.
-6. A teacher may only read payout records belonging to an academy where they have an active teacher membership.
-7. A teacher may only see their own payout records inside that academy.
-8. A teacher must never retrieve another academy's payout by guessing an object ID.
-9. A payout-generation request must operate only over bookings belonging to the requested academy.
-10. A payout-generation request must never create a payout in one academy from a booking in another academy.
-11. A payout cannot reference a teacher, booking, cohort, or other tenant-owned object from another academy.
-12. Parent and student accounts have no payout access.
-13. Finalized payout history remains immutable after tenancy changes.
-14. Existing family pricing and assessment isolation rules remain unchanged.
-15. Legacy unscoped payout routes must not remain as a tenant bypass.
-16. Querysets, serializers, model/service validation, permissions, and tests must all enforce the boundary. Serializer filtering alone is insufficient.
+```text
+send_message(...)
+send_template(...)
+send_email(...)
+```
 
-## Organization role rules
+Provider-specific SDKs/payloads belong only inside adapters. The core notification models must not contain provider SDK objects, WhatsApp payload structures, Telegram-specific fields, or email MIME structures.
 
-Use the existing organization membership system as the tenant authority.
+Production credentials for external providers are not required merely to complete this phase unless the repository already has a safe integration boundary.
 
-Do not invent a second organization-role system.
+## Event and delivery model
 
-Use:
-- `OrganizationMembership`
-- `OrganizationRole`
-- `MembershipStatus`
-- `active_membership()`
+A notification should conceptually contain:
 
-Organization-level payout authority should follow the existing SaaS model. Owner/admin roles are allowed to manage academy-wide payout records unless the current codebase documents a stricter finance-specific policy.
+```text
+id
+organization
+event_type
+recipient
+title/summary
+payload
+created_at
+read_at
+```
 
-The old global `User.role == lead` rule must not be treated as the complete tenant permission boundary.
+A delivery should conceptually contain:
 
-A user can be a teacher in one organization and have a different relationship in another organization. The payout API must evaluate the organization membership for the requested academy.
+```text
+id
+notification
+channel
+provider
+status
+attempt_count
+provider_message_id
+error_code
+error_message
+attempted_at
+delivered_at
+created_at
+```
+
+Use repository conventions and the smallest safe field set.
+
+## Idempotency
+
+Define event identity explicitly. A useful candidate is:
+
+```text
+source_type + source_id + event_type + recipient
+```
+
+but do not impose one universal uniqueness rule when legitimate repeated events are possible. Document per-event identity where necessary.
+
+A repeated booking confirmation must not create uncontrolled duplicate notifications; a later cancellation is a different event and may legitimately create a new notification.
+
+## Domain integration rules
+
+Source domains may emit notification intents/events, but must not call:
+
+- WhatsApp SDKs
+- Telegram SDKs
+- SMTP/provider SDKs
+- push SDKs
+
+directly.
+
+Academy ownership should be derived from the authoritative source domain relationship. Do not add redundant organization columns merely for notifications.
+
+## Permissions
+
+Owner/admin:
+- academy notification history
+- delivery outcomes
+- notification configuration where implemented
+
+Teacher:
+- own notifications only
+- no other teacher's records
+
+Parent:
+- own notifications intended for them/linked children as explicitly modeled
+- no other academy's notification history
+
+Student:
+- own notifications only
+
+Suspended/non-members:
+- no current academy notification access
 
 ## API direction
 
-Prefer the same organization-scoped route pattern already established by SaaS Phases 4–6.
-
-The final tenant-aware payout surface should follow this shape unless an audit of existing routing establishes a repository-wide convention that is materially better:
+Prefer the established organization-scoped convention:
 
 ```text
-GET  /api/payouts/organizations/<organization_pk>/mine/
-GET  /api/payouts/organizations/<organization_pk>/mine/?start=&end=
-GET  /api/payouts/organizations/<organization_pk>/statements/mine/
-GET  /api/payouts/organizations/<organization_pk>/lead/
-GET  /api/payouts/organizations/<organization_pk>/statements/
-POST /api/payouts/organizations/<organization_pk>/generate/
-POST /api/payouts/organizations/<organization_pk>/<payout_id>/finalize/
+GET  /api/notifications/organizations/<organization_pk>/mine/
+GET  /api/notifications/organizations/<organization_pk>/admin/
+GET  /api/notifications/organizations/<organization_pk>/<id>/
+POST /api/notifications/organizations/<organization_pk>/<id>/read/
+GET  /api/notifications/organizations/<organization_pk>/deliveries/
 ```
 
-Exact route names may follow the patterns already used by the current repository, but every endpoint must have an explicit organization context.
+Exact names may follow repository conventions. Internal event creation should normally be service-driven, not dependent on a public ingestion endpoint.
 
-Do not trust a client-supplied organization id merely because it is syntactically valid. Verify active membership and role on the server before returning or changing any payout.
+## Webhook boundary
 
-Legacy `/api/payouts/...` routes must be retired or otherwise made incapable of bypassing tenant checks.
+Provider callbacks must:
+1. identify the provider;
+2. verify/authenticate the callback when supported;
+3. resolve the delivery safely;
+4. update only the matched delivery;
+5. never trust a callback-supplied organization id as tenant authority;
+6. never expose another academy's data.
 
-## Implementation discipline
+## Privacy
 
-- Start each task with an audit of the current code.
-- Do not duplicate existing tenant logic.
-- Reuse existing organization helpers and conventions.
-- Prefer model relationships over redundant tenant fields.
-- Preserve existing payout calculations and historical behavior.
-- Do not introduce billing, payment gateways, bank transfers, invoices, tax, accounting exports, or frontend work.
-- Do not introduce a second payout-rate source.
-- Do not use `bulk_create()` if it bypasses payout invariants.
-- Keep organization filtering server-side.
-- Use PostgreSQL for the phase gate.
-- Run focused tests while implementing.
-- Run the full gate before marking the phase complete.
-- Commit each coherent task or implementation unit.
+Notification payloads must not contain:
+- internal assessment QC fields;
+- lead-only notes;
+- private teacher financial data;
+- unnecessary family pricing data;
+- provider secrets;
+- access tokens or authentication credentials.
 
-## Required phase gate
+A join link is permitted only when the recipient is authorized for the session.
 
-At minimum:
+## Scope boundary
+
+Do not turn Phase 8 into:
+- full production WhatsApp/Telegram rollout;
+- marketing automation;
+- campaign management;
+- full push infrastructure;
+- large preference center;
+- queue/worker platform;
+- retry/backoff infrastructure;
+- video provider abstraction;
+- payment gateway work;
+- frontend notification-center redesign.
+
+The phase establishes the stable notification/event contract and tenant-safe delivery boundary. Background jobs and advanced retries can follow later.
+
+## Testing and phase gate
+
+At minimum run against PostgreSQL:
 
 ```bash
 python manage.py check
@@ -159,66 +245,46 @@ python manage.py migrate
 pytest
 ```
 
-The gate must be executed against PostgreSQL.
+Required tests include:
+- Academy A cannot read Academy B notifications/deliveries.
+- Known ids cannot cross tenant boundaries.
+- Users cannot read another user's notifications.
+- Suspended/non-members are denied.
+- Source event, organization and recipient relationships are correct.
+- Invalid cross-tenant recipient/delivery relations are rejected.
+- Event identity/idempotency behaves as documented.
+- Provider failure is recorded without deleting the notification or affecting another delivery.
+- Existing scheduling, routing, pricing, assessment and payout tests remain green.
 
-Also perform manual two-academy acceptance and OpenAPI verification.
+## Documentation
 
-## Required tenant-isolation tests
+Update where decisions actually change:
+- `learnings.md`
+- `tech-debt.md`
+- SaaS Phase 8 spec status/tasks
+- OpenAPI documentation for exposed notification endpoints
 
-The test suite must prove at least:
+## Working discipline
 
-- Academy A lead/admin cannot list Academy B payouts.
-- Academy A teacher cannot read Academy B payout ids even when ids are known.
-- Academy A teacher cannot read another teacher's payout in Academy A.
-- Academy A lead/admin cannot finalize an Academy B payout.
-- Generation for Academy A never considers Academy B bookings.
-- A booking from Academy A cannot create a payout whose teacher or cohort belongs to Academy B.
-- A payout with mismatched booking/teacher/cohort organization is rejected.
-- Suspended memberships cannot use payout endpoints.
-- Student accounts cannot use payout endpoints.
-- Parent accounts cannot use payout endpoints.
-- Re-running generation remains idempotent within the correct academy.
-- Finalized payouts remain immutable.
-- Historical payout amount/rate remains unchanged after current rate changes.
-- Existing pricing and assessment tenant-isolation regressions still pass.
-
-## Documentation requirements
-
-Before completion update the project documentation where appropriate:
-
-- `learnings.md` with decisions that affect future phases.
-- `tech-debt.md` only for deliberate, accepted limitations.
-- SaaS Phase 7 core spec status/task state.
-- OpenAPI/API documentation where route or permission behavior changed.
-
-Do not claim the phase is complete until the implementation, migrations, tests, PostgreSQL verification, tenant-isolation checks, manual acceptance, OpenAPI verification, documentation, and commit are complete.
+- Audit before schema changes.
+- Implement one numbered task at a time.
+- Reuse organization and membership helpers.
+- Keep provider code at the infrastructure boundary.
+- Preserve current business rules.
+- Run focused tests during development.
+- Run the full PostgreSQL gate at the end.
+- Commit each coherent implementation unit.
+- Do not mark the phase complete from documentation alone.
 
 ## Stop instead of guessing
 
 Stop before implementation when:
+- notification ownership is ambiguous;
+- recipient/academy relationship is unclear;
+- event idempotency conflicts with legitimate repeated events;
+- provider credential handling requires a new security architecture;
+- a requested feature becomes marketing automation;
+- background infrastructure becomes a prerequisite beyond this phase;
+- a notification would expose internal/private domain data.
 
-- payout ownership cannot be derived unambiguously from existing relationships;
-- cohort-to-organization ownership is contradictory;
-- the existing payout-rate source is no longer sufficient;
-- payout correction/reversal behavior is requested;
-- payment execution or accounting behavior is requested;
-- organization-level financial authority conflicts with an existing repository decision;
-- historical payout rows cannot be safely assigned to an academy without a deterministic rule.
-
-Routine queryset, permission, serializer, service, route, migration, and test changes may proceed when the rule is already explicit.
-
-## Phase boundary
-
-SaaS Phase 7 is the tenant-safety phase for the already-existing teacher payout domain.
-
-Do not turn this phase into:
-- a new payment system;
-- subscription billing;
-- bank transfer automation;
-- payout corrections/reversals;
-- a frontend payout dashboard;
-- notification delivery;
-- multi-currency accounting;
-- a redesign of the Phase 8 payout calculation.
-
-After SaaS Phase 7 is accepted, stop and wait for the next explicitly requested phase.
+After SaaS Phase 8 is accepted, stop for the next explicitly approved phase.

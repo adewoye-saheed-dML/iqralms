@@ -953,4 +953,8 @@ Format:
 - **Real fix:** Scheduled worker that executes `ProgressSnapshot.generate` at month-end or term-end for all active students in active tracks.
 - **Revisit when:** Background worker / scheduler infrastructure phase.
 
-
+## 2026-09-12 — Production provider adapters are mocked/deferred
+- **What was skipped:** Real implementations for Push, Telegram, WhatsApp, and Email providers.
+- **Why:** The goal of SaaS Phase 8 was to establish the domain boundary, data models, tenant isolation, and idempotency strategy, not to integrate specific SDKs.
+- **Real fix:** Implement concrete provider logic in `notifications/adapters.py` (e.g., Twilio, SendGrid, etc.) when actual credentials and API keys are introduced.
+- **Revisit when:** We need to actually send notifications to real users over these channels.
