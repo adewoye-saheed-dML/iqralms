@@ -455,6 +455,7 @@ class VideoRoomTests(TestCase):
     def test_the_room_name_cannot_be_changed(self):
         """Cancel and recreate is the only reschedule path this phase."""
         booking = BookingFactory()
+        booking.video_provider_meeting_id = "changed"
         with self.assertRaises(ValidationError) as ctx:
             booking.save()
         self.assertIn("video_provider_meeting_id", ctx.exception.message_dict)

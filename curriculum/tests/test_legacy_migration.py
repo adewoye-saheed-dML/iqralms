@@ -345,7 +345,7 @@ class LegacyCurriculumMigrationTests(TransactionTestCase):
     def fast_forward(self):
         executor = MigrationExecutor(connection)
         executor.loader.build_graph()
-        executor.migrate(self.AFTER)
+        executor.migrate(executor.loader.graph.leaf_nodes())
         executor.loader.build_graph()
 
     # --- building the pre-SaaS state ----------------------------------------

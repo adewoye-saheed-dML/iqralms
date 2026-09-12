@@ -304,7 +304,7 @@ class LegacyPricingMigrationTests(TransactionTestCase):
     def fast_forward(self):
         executor = MigrationExecutor(connection)
         executor.loader.build_graph()
-        executor.migrate(self.AFTER)
+        executor.migrate(executor.loader.graph.leaf_nodes())
         executor.loader.build_graph()
 
     def test_migration_remediates_legacy_pricing_data(self):

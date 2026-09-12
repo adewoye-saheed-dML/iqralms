@@ -235,6 +235,11 @@ class LegacyPayoutMigrationTests(TransactionTestCase):
     migrate_from = [("payouts", "0001_initial")]
     migrate_to = [("payouts", "0002_remediate_legacy_payouts")]
 
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
     def test_migration_runs_cleanly(self):
         executor = MigrationExecutor(connection)
         # Migrate to initial

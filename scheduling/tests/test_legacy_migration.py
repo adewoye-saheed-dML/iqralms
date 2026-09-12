@@ -241,7 +241,8 @@ class LegacyAvailabilityMigrationTests(TransactionTestCase):
     def fast_forward(self):
         executor = MigrationExecutor(connection)
         executor.loader.build_graph()
-        executor.migrate(self.AFTER)
+        # Migrate fully to the latest state of all apps
+        executor.migrate(executor.loader.graph.leaf_nodes())
         executor.loader.build_graph()
 
     def old(self, app_label, model_name):
