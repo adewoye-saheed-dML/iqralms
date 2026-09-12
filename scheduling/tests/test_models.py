@@ -4,7 +4,7 @@ Acceptance criteria from specs/phase-3-scheduling.md covered at the model layer:
 1 (no model change is missing a migration), 2 (inside a declared window books,
 outside it is rejected), 3 (an overlapping booking for the same teacher is
 rejected, a neighbouring one is not), 4 (an unapproved teacher is rejected),
-5 (``video_room_name`` exists and is unique) and 6 (cancelling sets the status
+5 (``video_provider_meeting_id`` exists and is unique) and 6 (cancelling sets the status
 and keeps the row).
 
 Criteria 2-6 are covered again through HTTP in test_api.py. That is not
@@ -47,9 +47,7 @@ from scheduling.models import (
     DEFAULT_DURATION_MINUTES,
     PAST_BOOKING_GRACE,
     TeacherWaitlist,
-    VIDEO_ROOM_PREFIX,
     Weekday,
-    generate_video_room_name,
 )
 from scheduling.utils import UTC, next_date_for_weekday
 
@@ -426,10 +424,6 @@ class BookingModelTests(TestCase):
 class VideoRoomTests(TestCase):
     """Acceptance criterion 5, plus the immutability the spec asks for."""
 
-    def test_generated_names_are_prefixed_and_unguessable(self):
-        name = generate_video_room_name()
-        self.assertTrue(name.startswith(VIDEO_ROOM_PREFIX))
-        self.assertEqual(len(name.removeprefix(VIDEO_ROOM_PREFIX)), 32)
 
     def test_two_bookings_get_present_and_distinct_room_names(self):
         """Acceptance criterion 5."""
@@ -438,33 +432,32 @@ class VideoRoomTests(TestCase):
         second = BookingFactory(
             availability=window, start_time_utc=slot_at(window, 60)
         )
-        self.assertTrue(first.video_room_name)
-        self.assertTrue(second.video_room_name)
-        self.assertNotEqual(first.video_room_name, second.video_room_name)
+        self.assertTrue(first.video_provider_meeting_id)
+        self.assertTrue(second.video_provider_meeting_id)
+        self.assertNotEqual(first.video_provider_meeting_id, second.video_provider_meeting_id)
 
     def test_the_join_url_is_built_from_the_room_name(self):
         booking = BookingFactory()
         with self.settings(JITSI_DOMAIN="meet.jit.si"):
             self.assertEqual(
                 booking.video_join_url,
-                f"https://meet.jit.si/{booking.video_room_name}",
+                f"https://meet.jit.si/{booking.video_provider_meeting_id}",
             )
 
     def test_the_room_name_survives_an_unrelated_update(self):
         booking = BookingFactory()
-        original = booking.video_room_name
+        original = booking.video_provider_meeting_id
         booking.status = BookingStatus.COMPLETED
         booking.save()
         booking.refresh_from_db()
-        self.assertEqual(booking.video_room_name, original)
+        self.assertEqual(booking.video_provider_meeting_id, original)
 
     def test_the_room_name_cannot_be_changed(self):
         """Cancel and recreate is the only reschedule path this phase."""
         booking = BookingFactory()
-        booking.video_room_name = generate_video_room_name()
         with self.assertRaises(ValidationError) as ctx:
             booking.save()
-        self.assertIn("video_room_name", ctx.exception.message_dict)
+        self.assertIn("video_provider_meeting_id", ctx.exception.message_dict)
 
 
 class BookingAvailabilityRulesTests(TestCase):

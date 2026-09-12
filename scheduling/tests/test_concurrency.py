@@ -212,7 +212,7 @@ class BookingConcurrencyTests(TransactionTestCase):
         booking = Booking.objects.get(teacher=self.teacher)
         self.assertEqual(booking.status, BookingStatus.SCHEDULED)
         self.assertEqual(booking.start_time_utc, self.slot)
-        self.assertTrue(booking.video_room_name)
+        self.assertTrue(booking.video_provider_meeting_id)
         winner_pk = next(detail for outcome, detail in results if outcome == "created")
         self.assertEqual(booking.pk, winner_pk)
 

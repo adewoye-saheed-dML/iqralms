@@ -1127,3 +1127,8 @@ Format:
 - **What happened:** Hooking notification creation directly into `post_save` signals would cause tests that rely on those models to suddenly fail if they don't set up full organization context. Legacy tests running without organization contexts would break.
 - **What we decided:** Event dispatching is intentionally placed inside view `post()`/`create()` methods immediately after `serializer.save()`. This preserves test isolation and ensures we have the correct context when dispatching events.
 - **Why it matters for later phases:** Continue placing event dispatching in the view/service layer rather than deep in model signals to maintain testability and avoid noisy side effects.
+
+## 2026-09-12 — Video Provider Abstraction Boundary
+- **What happened:** In Phase 9, we needed to move Jitsi room generation behind an adapter without rewriting the core scheduling business logic.
+- **What we decided:** Created a `MeetingProvider` interface in `scheduling/providers.py` which abstracts away Jitsi's room URL generation. We mapped `Organization.video_provider` (default "jitsi") to the active adapter. We modified `Booking.save()` to call this interface if `video_join_url` is empty, using the booking's own ID as an idempotency key to prevent unbounded meeting creation.
+- **Why it matters for later phases:** Business rules in `Booking` and `TeacherBookingLock` remain untouched. If a new adapter (e.g., Zoom) requires a network call, the interface supports it without leaking provider-specific logic into the domain layer.

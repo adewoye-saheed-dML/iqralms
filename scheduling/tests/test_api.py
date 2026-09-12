@@ -4,7 +4,7 @@ Every endpoint gets a happy path and at least one failure case, per CLAUDE.md.
 Acceptance criteria from specs/phase-3-scheduling.md covered here: 2 (a booking
 inside a declared window succeeds, outside is rejected), 3 (an overlapping
 booking for the same teacher is rejected), 4 (an unapproved teacher is
-rejected), 5 (``video_room_name`` and the Jitsi join URL come back), 6
+rejected), 5 (``video_provider_meeting_id`` and the Jitsi join URL come back), 6
 (cancelling sets the status and keeps the row) and 7 (a student cannot see
 another student's bookings).
 
@@ -234,7 +234,7 @@ class BookingCreateAPITests(APITestCase):
         self.assertEqual(response.data["level"]["id"], self.level.pk)
         self.assertEqual(response.data["status"], BookingStatus.SCHEDULED)
         self.assertEqual(response.data["duration_minutes"], 30)
-        self.assertTrue(response.data["video_room_name"])
+        self.assertTrue(response.data["video_provider_meeting_id"])
 
         booking = Booking.objects.get(pk=response.data["id"])
         self.assertEqual(booking.student, self.student)
@@ -247,7 +247,7 @@ class BookingCreateAPITests(APITestCase):
         response = self.client.post(self.url, self.payload())
         self.assertEqual(
             response.data["video_join_url"],
-            f"https://meet.jit.si/{response.data['video_room_name']}",
+            f"https://meet.jit.si/{response.data['video_provider_meeting_id']}",
         )
 
     def test_two_bookings_get_distinct_rooms(self):
@@ -257,7 +257,7 @@ class BookingCreateAPITests(APITestCase):
         second = self.client.post(self.url, self.payload(60))
         self.assertEqual(second.status_code, status.HTTP_201_CREATED)
         self.assertNotEqual(
-            first.data["video_room_name"], second.data["video_room_name"]
+            first.data["video_provider_meeting_id"], second.data["video_provider_meeting_id"]
         )
 
     def test_the_response_renders_the_start_in_the_callers_zone(self):
@@ -461,10 +461,10 @@ class BookingCreateAPITests(APITestCase):
     def test_the_client_cannot_choose_its_own_room_name(self):
         self.client.force_authenticate(user=self.student)
         response = self.client.post(
-            self.url, self.payload(video_room_name="guessable-room")
+            self.url, self.payload(video_provider_meeting_id="guessable-room")
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertNotEqual(response.data["video_room_name"], "guessable-room")
+        self.assertNotEqual(response.data["video_provider_meeting_id"], "guessable-room")
 
     def test_the_client_cannot_create_an_already_completed_booking(self):
         self.client.force_authenticate(user=self.student)
@@ -685,10 +685,10 @@ class BookingCancelAPITests(APITestCase):
         )
 
     def test_the_room_name_is_unchanged_by_cancelling(self):
-        original = self.booking.video_room_name
+        original = self.booking.video_provider_meeting_id
         self.client.force_authenticate(user=self.student)
         response = self.client.post(cancel_url(self.organization, self.booking))
-        self.assertEqual(response.data["video_room_name"], original)
+        self.assertEqual(response.data["video_provider_meeting_id"], original)
 
     def test_a_stranger_gets_a_404_rather_than_a_403(self):
         stranger_student = admit(StudentFactory(), self.organization).user
@@ -771,5 +771,5 @@ class BookingCancelAPITests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertNotEqual(
-            response.data["video_room_name"], self.booking.video_room_name
+            response.data["video_provider_meeting_id"], self.booking.video_provider_meeting_id
         )

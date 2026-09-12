@@ -273,11 +273,11 @@ class SessionAssessmentSubmissionTests(TestCase):
         self.assertEqual(scheduled.status, BookingStatus.SCHEDULED)
 
     def test_assessment_does_not_change_the_booking_at_all(self):
-        before = (self.booking.status, self.booking.video_room_name)
+        before = (self.booking.status, self.booking.video_provider_meeting_id)
         self.submit()
 
         self.booking.refresh_from_db()
-        self.assertEqual((self.booking.status, self.booking.video_room_name), before)
+        self.assertEqual((self.booking.status, self.booking.video_provider_meeting_id), before)
 
     def test_a_teacher_whose_approval_was_withdrawn_cannot_assess(self):
         """The gate booking already uses, reused rather than restated.

@@ -291,7 +291,7 @@ class RouteToCohortTests(RoutingWorld, TestCase):
         booking = self.route().booking
         booking.refresh_from_db()
         self.assertEqual(booking.status, BookingStatus.SCHEDULED)
-        self.assertTrue(booking.video_room_name)
+        self.assertTrue(booking.video_provider_meeting_id)
         self.assertEqual(booking.level, self.level)
         self.assertEqual(booking.start_time_utc, self.cohort.schedule_start_utc)
 
@@ -729,8 +729,8 @@ class RoutingWritesThroughSaveTests(RoutingWorld, TestCase):
     def test_a_routed_booking_gets_a_video_room(self):
         """Generated in ``save()``, so its presence proves ``save()`` ran."""
         booking = self.route().booking
-        self.assertTrue(booking.video_room_name)
-        self.assertTrue(booking.video_join_url.endswith(booking.video_room_name))
+        self.assertTrue(booking.video_provider_meeting_id)
+        self.assertTrue(booking.video_join_url.endswith(booking.video_provider_meeting_id))
 
     def test_a_routed_booking_takes_the_teachers_lock(self):
         """``TeacherBookingLock`` is created by ``save()`` and by nothing else."""

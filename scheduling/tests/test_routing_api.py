@@ -277,8 +277,8 @@ class RouteAPITests(RouteAPIWorld):
         response = self.post_route()
 
         booking = response.data["booking"]
-        self.assertTrue(booking["video_room_name"])
-        self.assertIn(booking["video_room_name"], booking["video_join_url"])
+        self.assertTrue(booking["video_provider_meeting_id"])
+        self.assertIn(booking["video_provider_meeting_id"], booking["video_join_url"])
         self.assertEqual(booking["status"], "scheduled")
         self.assertEqual(booking["student"]["id"], self.student.pk)
 

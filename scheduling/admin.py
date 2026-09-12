@@ -97,14 +97,12 @@ class BookingAdmin(admin.ModelAdmin):
         "student__username",
         "student__email",
         "teacher__username",
-        "video_room_name",
+        "video_provider_meeting_id",
     )
     autocomplete_fields = ("student", "teacher", "level", "cohort")
-    # The room name is generated once and never changes (the model enforces it),
-    # so it is never typed in. The join URL is derived from it.
-    readonly_fields = ("video_room_name", "video_join_url")
+    readonly_fields = ("video_provider", "video_provider_meeting_id", "video_join_url")
 
-    @admin.display(description="Jitsi join URL")
+    @admin.display(description="Join URL")
     def video_join_url(self, obj):
         return obj.video_join_url if obj.pk else "—"
 

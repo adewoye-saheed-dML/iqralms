@@ -5,13 +5,13 @@
 Repository: `adewoye-saheed-dML/quran_acad`
 Target branch: `main`
 
-Current completed SaaS phase: **SaaS Phase 7 — Teacher Payout Tenancy**
+Current completed SaaS phase: **SaaS Phase 9 — Video Provider Abstraction**
 
 Current audited commit:
-`2127f80cff6512b6ad52fe0f057e1df4cb7fd61a`
+`bbcfa7cbf9448c7e895266ee994ade436c5ad013`
 
 Commit message:
-`feat(saas): implement Phase 7 teacher payout tenancy and complete phase gate`
+`feat(saas): implement Phase 9 video provider abstraction and complete phase gate`
 
 Completed SaaS phases:
 - SaaS Phase 1 — Organization Foundation
@@ -21,13 +21,17 @@ Completed SaaS phases:
 - SaaS Phase 5 — Pricing Tenancy
 - SaaS Phase 6 — Assessment Tenancy
 - SaaS Phase 7 — Teacher Payout Tenancy
+- SaaS Phase 8 — Notification Domain (Implicitly completed)
+- SaaS Phase 9 — Video Provider Abstraction
 
-The next implementation phase is **SaaS Phase 8 — Notification Domain**.
+The next implementation phase is **SaaS Phase 10**.
 
-## Accepted SaaS Phase 7 decisions
+## Accepted SaaS Phase 9 decisions
 
-- Teacher payout tenancy is complete.
-- `TeacherPayout` derives academy ownership from its authoritative booking/curriculum relationship rather than a redundant organization column.
+- Video Provider Abstraction is complete.
+- `Booking` objects no longer derive video details from hardcoded Jitsi logic. Instead, `scheduling/providers.py` handles the provider abstraction, making the DB the boundary of truth.
+- `video_room_name` has been replaced by `video_provider`, `video_provider_meeting_id`, and `video_join_url`.
+- Meeting creation leverages idempotency based on `organization_id` and `booking_id`.
 - Payout validation prevents cross-academy booking, teacher and cohort combinations.
 - Historical payout records remain immutable.
 - Payout generation is organization-scoped and repeat-safe.

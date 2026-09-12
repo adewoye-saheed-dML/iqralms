@@ -67,10 +67,6 @@ DEFAULT_MAX_STUDENTS = 6
 
 MINUTES_PER_HOUR = 60
 
-#: Prefixed so a room is identifiable in a shared Jitsi namespace; the uuid is
-#: what makes it unguessable.
-VIDEO_ROOM_PREFIX = "quranacademy-"
-
 #: An upper bound on any stored booking's length, used to bound the overlap
 #: query. It holds by construction: a booking must fit inside one availability
 #: window, and a window cannot span more than a single UTC day.
@@ -134,15 +130,6 @@ class RoutedReason(models.TextChoices):
     LEAD_FULL_ROUTED = "lead_full_routed", "Lead teacher full, routed to a sub teacher"
     STUDENT_CHOICE = "student_choice", "Teacher named directly by the student or parent"
     COHORT_ASSIGNED = "cohort_assigned", "Assigned a seat in an open cohort"
-
-
-def generate_video_room_name() -> str:
-    """An unguessable Jitsi room identifier.
-
-    No API call creates the room — it exists the moment someone joins it, so
-    uniqueness and unguessability are the only requirements.
-    """
-    return f"{VIDEO_ROOM_PREFIX}{uuid.uuid4().hex}"
 
 
 def get_teacher_configuration(teacher, organization=None):
@@ -804,7 +791,7 @@ class Booking(models.Model):
     see ``clashing_bookings()`` for the one rule that has to know the difference.
 
     Rescheduling is deliberately not supported: cancel and recreate. That keeps
-    ``video_room_name`` immutable, which the Phase 3 spec requires.
+    ``video_provider_meeting_id`` immutable, which the Phase 3 spec requires.
     """
 
     student = models.ForeignKey(
@@ -855,14 +842,17 @@ class Booking(models.Model):
         choices=BookingStatus.choices,
         default=BookingStatus.SCHEDULED,
     )
-    video_room_name = models.CharField(
-        max_length=64,
-        unique=True,
+    video_provider = models.CharField(
+        max_length=32,
+        default="jitsi",
+    )
+    video_provider_meeting_id = models.CharField(
+        max_length=128,
         blank=True,
-        help_text=(
-            "Jitsi room identifier, generated once at creation and never "
-            "changed — not even by a reschedule."
-        ),
+    )
+    video_join_url = models.URLField(
+        max_length=512,
+        blank=True,
     )
 
     objects = BookingQuerySet.as_manager()
@@ -891,10 +881,7 @@ class Booking(models.Model):
             return None
         return self.start_time_utc + timedelta(minutes=self.duration_minutes)
 
-    @property
-    def video_join_url(self) -> str:
-        """The join link both sides use. The room exists once someone joins it."""
-        return f"https://{settings.JITSI_DOMAIN}/{self.video_room_name}"
+
 
     def cancel(self):
         """Set ``status=cancelled``. The row stays — history for payouts later."""
@@ -1148,18 +1135,18 @@ class Booking(models.Model):
         if self.cohort_id:
             self._validate_matches_its_cohort(errors)
 
-        if not self._state.adding and self.video_room_name:
+        if not self._state.adding and self.video_provider_meeting_id:
             stored = (
                 type(self)
                 .objects.filter(pk=self.pk)
-                .values_list("video_room_name", flat=True)
+                .values_list("video_provider_meeting_id", flat=True)
                 .first()
             )
-            if stored and self.video_room_name != stored:
-                errors["video_room_name"] = ValidationError(
-                    "A booking's video room never changes. Cancel and recreate "
+            if stored and self.video_provider_meeting_id != stored:
+                errors["video_provider_meeting_id"] = ValidationError(
+                    "A booking's video meeting never changes. Cancel and recreate "
                     "instead of rescheduling.",
-                    code="video_room_immutable",
+                    code="video_meeting_immutable",
                 )
 
         timed = self.start_time_utc is not None and self.duration_minutes
@@ -1202,11 +1189,6 @@ class Booking(models.Model):
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
-        if not self.video_room_name:
-            # Generated once, before the first validation, so the uniqueness
-            # check in full_clean() covers it too.
-            self.video_room_name = generate_video_room_name()
-
         with ExitStack() as stack:
             if self._state.adding and self.teacher_id:
                 # Phase 3.5. The overlap rule is a read (clashing_bookings) then
@@ -1221,6 +1203,22 @@ class Booking(models.Model):
 
             self.full_clean()
             super().save(*args, **kwargs)
+
+            if not self.video_join_url:
+                from scheduling.providers import create_meeting
+                org = getattr(self, "organization", None)
+                provider_name = getattr(org, "video_provider", "jitsi") if org else "jitsi"
+                # Idempotency key based on organization and booking identity
+                identity = f"org_{org.pk if org else 0}_booking_{self.pk}"
+                meeting = create_meeting(provider_name, identity)
+                self.video_provider = meeting.provider
+                self.video_provider_meeting_id = meeting.provider_meeting_id
+                self.video_join_url = meeting.join_url
+                type(self).objects.filter(pk=self.pk).update(
+                    video_provider=self.video_provider,
+                    video_provider_meeting_id=self.video_provider_meeting_id,
+                    video_join_url=self.video_join_url,
+                )
 
     def __str__(self):
         return (

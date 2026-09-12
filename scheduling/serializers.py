@@ -211,7 +211,8 @@ class BookingSerializer(serializers.ModelSerializer):
             "end_time_utc",
             "duration_minutes",
             "status",
-            "video_room_name",
+            "video_provider",
+            "video_provider_meeting_id",
             "video_join_url",
         ]
         read_only_fields = fields

@@ -958,3 +958,9 @@ Format:
 - **Why:** The goal of SaaS Phase 8 was to establish the domain boundary, data models, tenant isolation, and idempotency strategy, not to integrate specific SDKs.
 - **Real fix:** Implement concrete provider logic in `notifications/adapters.py` (e.g., Twilio, SendGrid, etc.) when actual credentials and API keys are introduced.
 - **Revisit when:** We need to actually send notifications to real users over these channels.
+
+## 2026-09-12 — Sync meeting creation in Booking.save()
+- **What was skipped:** Moving meeting creation to an async celery task.
+- **Why:** To satisfy Phase 9 safely, we implemented `create_meeting` inline in `Booking.save()`. Since Jitsi is deterministic and fast (no network call), this doesn't impact latency yet.
+- **Real fix:** Refactor meeting provisioning to background workers for providers like Zoom which require network API calls, and emit an event back once provisioned.
+- **Revisit when:** We onboard a synchronous network-dependent provider (e.g., Zoom or Google Meet).

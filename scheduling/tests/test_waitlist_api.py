@@ -104,8 +104,8 @@ class PreferredTeacherRouteAPITests(PreferredTeacherRouteAPIWorld):
         wanted = self.available_teacher()
         booking = self.post_prefer(wanted).data["booking"]
 
-        self.assertTrue(booking["video_room_name"])
-        self.assertIn(booking["video_room_name"], booking["video_join_url"])
+        self.assertTrue(booking["video_provider_meeting_id"])
+        self.assertIn(booking["video_provider_meeting_id"], booking["video_join_url"])
         self.assertEqual(booking["status"], BookingStatus.SCHEDULED)
 
     def test_a_preference_overrides_the_routing_order(self):
@@ -347,7 +347,7 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
         self.assertEqual(response.data["student"]["id"], entry.student.pk)
         self.assertEqual(response.data["teacher"]["id"], entry.requested_teacher.pk)
         self.assertEqual(response.data["routed_reason"], RoutedReason.STUDENT_CHOICE)
-        self.assertTrue(response.data["video_room_name"])
+        self.assertTrue(response.data["video_provider_meeting_id"])
 
     def test_promotion_stamps_the_entry_and_keeps_the_row(self):
         """Acceptance criterion 7 — the row survives as a record."""

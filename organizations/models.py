@@ -123,6 +123,15 @@ class Organization(models.Model):
             "decided by active membership alone (see learnings.md)."
         ),
     )
+    VIDEO_PROVIDER_CHOICES = [
+        ("jitsi", "Jitsi"),
+    ]
+    video_provider = models.CharField(
+        max_length=32,
+        choices=VIDEO_PROVIDER_CHOICES,
+        default="jitsi",
+        help_text="The preferred video provider for this academy."
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

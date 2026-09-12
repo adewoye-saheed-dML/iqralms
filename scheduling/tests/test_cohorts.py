@@ -392,7 +392,7 @@ class CohortSeatBookingTests(TestCase):
 
     def test_each_seat_still_gets_its_own_video_room(self):
         first, second = self.seat(), self.seat()
-        self.assertNotEqual(first.video_room_name, second.video_room_name)
+        self.assertNotEqual(first.video_provider_meeting_id, second.video_provider_meeting_id)
 
     def test_a_one_to_one_session_still_clashes_with_a_cohort_seat(self):
         """The relaxation is same-cohort only, not "cohorts don't clash"."""

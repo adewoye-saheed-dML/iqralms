@@ -125,8 +125,8 @@ class PreferredTeacherWithCapacityTests(PreferredTeacherWorld, TestCase):
 
     def test_a_preferred_booking_gets_a_video_room_like_any_other(self):
         routed = self.prefer(self.available_teacher())
-        self.assertTrue(routed.booking.video_room_name)
-        self.assertIn(routed.booking.video_room_name, routed.booking.video_join_url)
+        self.assertTrue(routed.booking.video_provider_meeting_id)
+        self.assertIn(routed.booking.video_provider_meeting_id, routed.booking.video_join_url)
 
     def test_the_lead_is_not_booked_when_somebody_else_was_asked_for(self):
         """A preference overrides the routing order, not merely supplements it."""
@@ -540,7 +540,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         entry = self.waiting_entry()
         routed = promote_waitlist_entry(entry)
 
-        self.assertTrue(routed.booking.video_room_name)
+        self.assertTrue(routed.booking.video_provider_meeting_id)
         self.assertEqual(routed.booking.status, BookingStatus.SCHEDULED)
         # And it really is inside declared hours: re-validating it passes.
         routed.booking.full_clean()
