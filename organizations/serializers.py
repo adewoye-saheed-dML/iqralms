@@ -244,3 +244,90 @@ class OrganizationMembershipUpdateSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise as_drf_error(exc) from exc
         return membership
+
+
+class StudentListSerializer(serializers.ModelSerializer):
+    """A student's enrollment, as seen in the academy's list."""
+
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    username = serializers.CharField(source="user.username", read_only=True)
+    email = serializers.CharField(source="user.email", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    date_of_birth = serializers.DateField(source="user.date_of_birth", read_only=True)
+    is_minor = serializers.BooleanField(source="user.is_minor", read_only=True)
+    enrollment_status = serializers.CharField(source="status", read_only=True)
+
+    class Meta:
+        from .models import StudentEnrollment
+
+        model = StudentEnrollment
+        fields = [
+            "id",
+            "user_id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "date_of_birth",
+            "is_minor",
+            "enrollment_status",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class StudentDetailSerializer(StudentListSerializer):
+    """A student's enrollment, as seen in the academy's detail view."""
+    pass
+
+
+class StudentEnrollmentCreateSerializer(serializers.Serializer):
+    """Enrolling an existing student user into an academy."""
+
+    user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+
+    def validate_user(self, user):
+        from accounts.models import Role
+        from .models import StudentEnrollment
+
+        organization = self.context["organization"]
+
+        if user.role != Role.STUDENT:
+            raise serializers.ValidationError("Only users with role 'student' can be enrolled.")
+
+        if StudentEnrollment.objects.filter(organization=organization, user=user).exists():
+            raise serializers.ValidationError("This student is already enrolled in this organization.")
+
+        return user
+
+    def create(self, validated_data):
+        from .models import StudentEnrollment, EnrollmentStatus
+        
+        enrollment = StudentEnrollment(
+            organization=self.context["organization"],
+            user=validated_data["user"],
+            status=EnrollmentStatus.ACTIVE,
+        )
+        try:
+            enrollment.save()
+        except DjangoValidationError as exc:
+            raise as_drf_error(exc) from exc
+        return enrollment
+
+
+class StudentEnrollmentUpdateSerializer(serializers.Serializer):
+    """Updating a student's enrollment status."""
+
+    from .models import EnrollmentStatus
+    status = serializers.ChoiceField(choices=EnrollmentStatus.choices)
+
+    def update(self, enrollment, validated_data):
+        if "status" in validated_data:
+            enrollment.status = validated_data["status"]
+        try:
+            enrollment.save()
+        except DjangoValidationError as exc:
+            raise as_drf_error(exc) from exc
+        return enrollment

@@ -361,3 +361,140 @@ class OrganizationMembershipDetailView(OrganizationScopedMixin, generics.UpdateA
             membership, context=self.get_serializer_context()
         ).data
         return Response(body, status=status.HTTP_200_OK)
+
+
+# --- Students ----------------------------------------------------------------
+
+
+class StudentEnrollmentListCreateView(OrganizationScopedMixin, generics.ListCreateAPIView):
+    """/api/organizations/<organization_pk>/students/ — the tenant's students.
+
+    GET lists the organization's students; POST attaches an existing student.
+    """
+
+    permission_classes = [IsAuthenticated, CanManageOrganizationMemberships]
+    organization_url_kwarg = "organization_pk"
+
+    def get_queryset(self):
+        from django.db.models import Q
+        from .models import StudentEnrollment
+
+        queryset = StudentEnrollment.objects.filter(
+            organization_id=self.organization_id
+        ).select_related("user", "organization")
+
+        search = self.request.query_params.get("search")
+        if search:
+            queryset = queryset.filter(
+                Q(user__username__icontains=search)
+                | Q(user__email__icontains=search)
+                | Q(user__first_name__icontains=search)
+                | Q(user__last_name__icontains=search)
+            )
+
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        return queryset
+
+    def get_serializer_class(self):
+        from .serializers import StudentListSerializer, StudentEnrollmentCreateSerializer
+
+        if self.request.method == "POST":
+            return StudentEnrollmentCreateSerializer
+        return StudentListSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["organization"] = self.organization
+        return context
+
+    @extend_schema(
+        responses={
+            200: OpenApiResponse(description="List of students"),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Not an owner or administrator here."),
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        responses={
+            201: OpenApiResponse(description="Student attached successfully"),
+            400: OpenApiResponse(description="Unknown user, not a student, or already enrolled"),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Not an owner or administrator here."),
+        }
+    )
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        enrollment = serializer.save()
+
+        from .serializers import StudentListSerializer
+
+        body = StudentListSerializer(
+            enrollment, context=self.get_serializer_context()
+        ).data
+        return Response(body, status=status.HTTP_201_CREATED)
+
+
+class StudentEnrollmentDetailView(OrganizationScopedMixin, generics.RetrieveUpdateAPIView):
+    """/api/organizations/<organization_pk>/students/<id>/ — one student enrollment.
+
+    GET retrieves the student's enrollment record.
+    PATCH updates the enrollment status.
+    """
+
+    permission_classes = [IsAuthenticated, CanManageOrganizationMemberships]
+    organization_url_kwarg = "organization_pk"
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_queryset(self):
+        from .models import StudentEnrollment
+
+        return StudentEnrollment.objects.filter(
+            organization_id=self.organization_id
+        ).select_related("user", "organization")
+
+    def get_serializer_class(self):
+        from .serializers import StudentDetailSerializer, StudentEnrollmentUpdateSerializer
+
+        if self.request.method == "PATCH":
+            return StudentEnrollmentUpdateSerializer
+        return StudentDetailSerializer
+
+    @extend_schema(
+        responses={
+            200: OpenApiResponse(description="Student enrollment details"),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Not an owner or administrator here."),
+            404: OpenApiResponse(description="No such student in this organization."),
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        responses={
+            200: OpenApiResponse(description="Student enrollment updated"),
+            400: OpenApiResponse(description="Nothing to change or invalid status"),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Not an owner or administrator here."),
+            404: OpenApiResponse(description="No such student in this organization."),
+        }
+    )
+    def patch(self, request, *args, **kwargs):
+        enrollment = self.get_object()
+        serializer = self.get_serializer(enrollment, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        enrollment = serializer.save()
+
+        from .serializers import StudentDetailSerializer
+
+        body = StudentDetailSerializer(
+            enrollment, context=self.get_serializer_context()
+        ).data
+        return Response(body, status=status.HTTP_200_OK)

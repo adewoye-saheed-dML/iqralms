@@ -20,6 +20,8 @@ from .views import (
     OrganizationDetailView,
     OrganizationMembershipDetailView,
     OrganizationMembershipListCreateView,
+    StudentEnrollmentListCreateView,
+    StudentEnrollmentDetailView,
 )
 
 app_name = "organizations"
@@ -37,5 +39,15 @@ urlpatterns = [
         "<int:organization_pk>/memberships/<int:pk>/",
         OrganizationMembershipDetailView.as_view(),
         name="membership-detail",
+    ),
+    path(
+        "<int:organization_pk>/students/",
+        StudentEnrollmentListCreateView.as_view(),
+        name="student-list",
+    ),
+    path(
+        "<int:organization_pk>/students/<int:pk>/",
+        StudentEnrollmentDetailView.as_view(),
+        name="student-detail",
     ),
 ]

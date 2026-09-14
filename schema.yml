@@ -2601,6 +2601,147 @@ paths:
             owner.
         '404':
           description: No such membership in this organization.
+  /api/organizations/{organization_pk}/students/:
+    get:
+      operationId: organizations_students_list
+      description: |-
+        /api/organizations/<organization_pk>/students/ — the tenant's students.
+
+        GET lists the organization's students; POST attaches an existing student.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: List of students
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Not an owner or administrator here.
+    post:
+      operationId: organizations_students_create
+      description: |-
+        /api/organizations/<organization_pk>/students/ — the tenant's students.
+
+        GET lists the organization's students; POST attaches an existing student.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentEnrollmentCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/StudentEnrollmentCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/StudentEnrollmentCreate'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          description: Student attached successfully
+        '400':
+          description: Unknown user, not a student, or already enrolled
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Not an owner or administrator here.
+  /api/organizations/{organization_pk}/students/{id}/:
+    get:
+      operationId: organizations_students_retrieve
+      description: |-
+        /api/organizations/<organization_pk>/students/<id>/ — one student enrollment.
+
+        GET retrieves the student's enrollment record.
+        PATCH updates the enrollment status.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: Student enrollment details
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Not an owner or administrator here.
+        '404':
+          description: No such student in this organization.
+    patch:
+      operationId: organizations_students_partial_update
+      description: |-
+        /api/organizations/<organization_pk>/students/<id>/ — one student enrollment.
+
+        GET retrieves the student's enrollment record.
+        PATCH updates the enrollment status.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedStudentEnrollmentUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedStudentEnrollmentUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedStudentEnrollmentUpdate'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: Student enrollment updated
+        '400':
+          description: Nothing to change or invalid status
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Not an owner or administrator here.
+        '404':
+          description: No such student in this organization.
   /api/organizations/{id}/:
     get:
       operationId: organizations_retrieve
@@ -5700,6 +5841,12 @@ components:
           nullable: true
         approved:
           type: boolean
+    PatchedStudentEnrollmentUpdate:
+      type: object
+      description: Updating a student's enrollment status.
+      properties:
+        status:
+          $ref: '#/components/schemas/StudentEnrollmentUpdateStatusEnum'
     PatchedTeacherTrackUpdate:
       type: object
       description: |-
@@ -6552,6 +6699,22 @@ components:
         * `generated` - Generated, none finalized
         * `partly_finalized` - Partly finalized
         * `finalized` - Fully finalized
+    StudentEnrollmentCreate:
+      type: object
+      description: Enrolling an existing student user into an academy.
+      properties:
+        user:
+          type: integer
+      required:
+      - user
+    StudentEnrollmentUpdateStatusEnum:
+      enum:
+      - active
+      - inactive
+      type: string
+      description: |-
+        * `active` - Active
+        * `inactive` - Inactive
     StudentProgress:
       type: object
       description: |-

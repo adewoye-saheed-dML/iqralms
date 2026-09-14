@@ -310,3 +310,74 @@ def active_membership(*, user, organization):
         .select_related("organization")
         .first()
     )
+
+
+class EnrollmentStatus(models.TextChoices):
+    """Status of a student's enrollment in an academy."""
+
+    ACTIVE = "active", "Active"
+    INACTIVE = "inactive", "Inactive"
+
+
+class StudentEnrollment(models.Model):
+    """A student's enrollment in an academy.
+
+    Records whether a student user participates in an academy. This is separate
+    from OrganizationMembership which defines administrative authority.
+    """
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="student_enrollments",
+        help_text="The academy the student is enrolled in.",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="organization_enrollments",
+        help_text="The student user.",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=EnrollmentStatus.choices,
+        default=EnrollmentStatus.ACTIVE,
+        help_text="Whether the student is currently active in this academy.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["organization_id", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "user"],
+                name="unique_student_enrollment",
+                violation_error_message=(
+                    "This student is already enrolled in this organization."
+                ),
+            )
+        ]
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == EnrollmentStatus.ACTIVE
+
+    def clean(self):
+        from accounts.models import Role
+        if self.user_id and self.user.role != Role.STUDENT:
+            raise ValidationError(
+                {
+                    "user": ValidationError(
+                        "Only users with the 'student' role can be enrolled.",
+                        code="invalid_student_role",
+                    )
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.user.username} enrolled in {self.organization.slug} ({self.status})"
