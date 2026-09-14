@@ -1,0 +1,223 @@
+We have a local Quran Academy frontend/backend setup:
+
+Frontend:
+http://localhost:3000
+
+Backend:
+http://127.0.0.1:8000
+
+The frontend login currently shows:
+
+> A network error occurred. Please try again.
+
+The backend Django log shows:
+
+```text
+OPTIONS /api/accounts/me/ HTTP/1.1 401
+OPTIONS /api/accounts/me/ HTTP/1.1 401
+OPTIONS /api/accounts/me/ HTTP/1.1 401
+OPTIONS /api/auth/register/ HTTP/1.1 200
+```
+
+This indicates the browser's CORS preflight for authenticated API requests is being rejected.
+
+## Task
+
+Fix the backend's local-development CORS configuration without weakening production security.
+
+Repository:
+
+`https://github.com/adewoye-saheed-dML/quran_acad`
+
+## First inspect
+
+Read the actual backend configuration before modifying anything:
+
+* `config/settings.py`
+* `config/urls.py`
+* `requirements.txt` / `pyproject.toml`
+* authentication configuration
+* REST framework configuration
+* any existing CORS configuration
+* environment configuration
+
+Confirm whether `django-cors-headers` is installed.
+
+The current `config/settings.py` has standard Django middleware but does not appear to include:
+
+```python
+"corsheaders.middleware.CorsMiddleware"
+```
+
+Do not assume this is the only issue; inspect the full request/authentication configuration.
+
+## Required local behavior
+
+The backend must allow the local frontend origin:
+
+```text
+http://localhost:3000
+```
+
+and, where necessary for this development setup:
+
+```text
+http://127.0.0.1:3000
+```
+
+The API must permit the frontend's authenticated requests using:
+
+```http
+Authorization: Token <token>
+```
+
+and JSON requests.
+
+CORS handling must allow preflight `OPTIONS` requests to complete successfully without requiring authentication.
+
+A browser preflight must NOT receive:
+
+```text
+401 Unauthorized
+```
+
+## Security requirements
+
+Do NOT:
+
+* set `CORS_ALLOW_ALL_ORIGINS = True`
+* disable authentication
+* disable CSRF globally
+* remove token authentication
+* make the API public
+* weaken production security
+* add wildcard origins in production
+
+Development-only configuration is acceptable, but production must remain explicit and restrictive.
+
+Prefer an environment-driven configuration such as:
+
+```python
+CORS_ALLOWED_ORIGINS = env_list(
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    default=["http://localhost:3000"],
+)
+```
+
+Only use the exact implementation that matches the project's existing environment helper conventions.
+
+If `django-cors-headers` is not installed, add it using the repository's existing dependency management approach.
+
+If it is installed, configure it correctly.
+
+## Middleware order
+
+If using django-cors-headers, ensure the middleware is placed correctly, before Django's CommonMiddleware, for example:
+
+```python
+"corsheaders.middleware.CorsMiddleware",
+"django.middleware.common.CommonMiddleware",
+```
+
+Do not blindly paste this without checking the project's middleware architecture.
+
+## Authentication interaction
+
+Inspect why:
+
+```text
+OPTIONS /api/accounts/me/
+```
+
+is reaching authentication and returning `401`.
+
+The correct behavior is that browser preflight is handled before authentication requirements for the actual API request.
+
+Do not bypass authentication for GET/POST/PATCH/etc.
+
+Only make the OPTIONS preflight succeed appropriately.
+
+## Frontend contract
+
+The frontend API client currently uses:
+
+```ts
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
+```
+
+and sends:
+
+```http
+Authorization: Token <token>
+```
+
+when a token exists.
+
+The backend must support this existing contract.
+
+Do not modify the frontend authentication architecture unless absolutely necessary.
+
+## Verify the fix
+
+Run Django locally and verify:
+
+```bash
+curl -i -X OPTIONS http://127.0.0.1:8000/api/accounts/me/ \
+  -H "Origin: http://localhost:3000" \
+  -H "Access-Control-Request-Method: GET" \
+  -H "Access-Control-Request-Headers: authorization"
+```
+
+The response must NOT be `401`.
+
+It should contain the appropriate CORS response headers, including an allowed origin.
+
+Also verify:
+
+```bash
+curl -i http://127.0.0.1:8000/api/accounts/me/
+```
+
+An unauthenticated request may correctly return `401`.
+
+That proves authentication is still enforced for the real request.
+
+## Registration
+
+Also verify the browser can successfully call:
+
+```text
+POST /api/auth/register/
+```
+
+from `http://localhost:3000`.
+
+Do not change the registration API contract.
+
+## Tests
+
+Add or update backend tests for:
+
+1. OPTIONS preflight from `http://localhost:3000` succeeds.
+2. OPTIONS preflight includes the appropriate CORS headers.
+3. An actual unauthenticated API request still returns `401`.
+4. Token-authenticated API requests remain protected.
+5. A disallowed origin is not automatically permitted.
+6. Production configuration does not become permissive.
+
+Run the project's normal backend test/check commands.
+
+## Final report
+
+Report:
+
+* whether django-cors-headers was already installed
+* files changed
+* exact CORS configuration added
+* middleware changes
+* why the previous OPTIONS request returned 401
+* test results
+* exact command needed to run the backend locally
+* any required `.env` variable
+
+Do not make unrelated changes.

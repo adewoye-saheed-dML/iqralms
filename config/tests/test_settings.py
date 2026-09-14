@@ -222,6 +222,26 @@ class AllowedHostsTests(SimpleTestCase):
         )
 
 
+class CorsSettingsTests(SimpleTestCase):
+    """CORS configuration."""
+
+    def test_production_does_not_permit_all_origins(self):
+        self.assertFalse(getattr(production(), "CORS_ALLOW_ALL_ORIGINS", False))
+    
+    def test_production_defaults_to_no_cors_origins_if_unset(self):
+        self.assertEqual(production().CORS_ALLOWED_ORIGINS, [])
+
+    def test_production_reads_cors_origins(self):
+        settings = production(DJANGO_CORS_ALLOWED_ORIGINS="https://app.example.invalid,https://other.example.invalid")
+        self.assertEqual(settings.CORS_ALLOWED_ORIGINS, ["https://app.example.invalid", "https://other.example.invalid"])
+
+    def test_development_defaults_to_localhost_and_127(self):
+        self.assertEqual(
+            development().CORS_ALLOWED_ORIGINS,
+            ["http://localhost:3000", "http://127.0.0.1:3000"],
+        )
+
+
 class DatabaseConfigurationTests(SimpleTestCase):
     """Criteria 4 and the database half of the configuration contract."""
 

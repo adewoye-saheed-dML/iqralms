@@ -112,6 +112,11 @@ if PRODUCTION and not ALLOWED_HOSTS:
         "would defeat the check."
     )
 
+CORS_ALLOWED_ORIGINS = env_list(
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    default=[] if PRODUCTION else ["http://localhost:3000", "http://127.0.0.1:3000"],
+)
+
 
 # --- Applications -----------------------------------------------------------
 
@@ -127,6 +132,7 @@ INSTALLED_APPS = [
     "rest_framework.authtoken",
     "dj_rest_auth",
     "drf_spectacular",
+    "corsheaders",
     "storages",
     # Local
     "accounts",
@@ -144,6 +150,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
