@@ -250,6 +250,19 @@ class OrganizationAccessAPITests(TenantWorld):
         response = self.client.get(detail_url(self.org_a))
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+
+    def test_an_inactive_organization_denies_suspended_member(self):
+        self.org_a.is_active = False
+        self.org_a.save()
+        response = self.as_user(self.suspended_a).get(detail_url(self.org_a))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_an_inactive_organization_cannot_be_read(self):
+        self.org_a.is_active = False
+        self.org_a.save()
+        response = self.as_user(self.owner_a).get(detail_url(self.org_a))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_an_unknown_organization_answers_the_same_as_someone_elses(self):
         # 403 either way, so the response cannot be used to discover which
         # organization ids exist.

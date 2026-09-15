@@ -180,7 +180,16 @@ class OrganizationMembershipCreateSerializer(serializers.Serializer):
     phase with email, token and expiry decisions of its own.
     """
 
+
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    from curriculum.models import Track, Level
+    track_id = serializers.PrimaryKeyRelatedField(
+        queryset=Track.objects.all(), source="track", required=False, allow_null=True
+    )
+    level_id = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.all(), source="level", required=False, allow_null=True
+    )
+
     role = serializers.ChoiceField(choices=ASSIGNABLE_ORGANIZATION_ROLES)
 
     def validate_user(self, user):
@@ -257,6 +266,8 @@ class StudentListSerializer(serializers.ModelSerializer):
     date_of_birth = serializers.DateField(source="user.date_of_birth", read_only=True)
     is_minor = serializers.BooleanField(source="user.is_minor", read_only=True)
     enrollment_status = serializers.CharField(source="status", read_only=True)
+    track_id = serializers.IntegerField(source="track.id", read_only=True, allow_null=True)
+    level_id = serializers.IntegerField(source="level.id", read_only=True, allow_null=True)
 
     class Meta:
         from .models import StudentEnrollment
@@ -271,7 +282,11 @@ class StudentListSerializer(serializers.ModelSerializer):
             "last_name",
             "date_of_birth",
             "is_minor",
+
             "enrollment_status",
+            "track_id",
+            "level_id",
+
             "created_at",
             "updated_at",
         ]
@@ -286,7 +301,16 @@ class StudentDetailSerializer(StudentListSerializer):
 class StudentEnrollmentCreateSerializer(serializers.Serializer):
     """Enrolling an existing student user into an academy."""
 
+
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    from curriculum.models import Track, Level
+    track_id = serializers.PrimaryKeyRelatedField(
+        queryset=Track.objects.all(), source="track", required=False, allow_null=True
+    )
+    level_id = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.all(), source="level", required=False, allow_null=True
+    )
+
 
     def validate_user(self, user):
         from accounts.models import Role
@@ -305,11 +329,15 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         from .models import StudentEnrollment, EnrollmentStatus
         
+
         enrollment = StudentEnrollment(
             organization=self.context["organization"],
             user=validated_data["user"],
+            track=validated_data.get("track"),
+            level=validated_data.get("level"),
             status=EnrollmentStatus.ACTIVE,
         )
+
         try:
             enrollment.save()
         except DjangoValidationError as exc:
@@ -320,12 +348,27 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
 class StudentEnrollmentUpdateSerializer(serializers.Serializer):
     """Updating a student's enrollment status."""
 
+
     from .models import EnrollmentStatus
-    status = serializers.ChoiceField(choices=EnrollmentStatus.choices)
+    from curriculum.models import Track, Level
+    status = serializers.ChoiceField(choices=EnrollmentStatus.choices, required=False)
+    track_id = serializers.PrimaryKeyRelatedField(
+        queryset=Track.objects.all(), source="track", required=False, allow_null=True
+    )
+    level_id = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.all(), source="level", required=False, allow_null=True
+    )
+
 
     def update(self, enrollment, validated_data):
+
         if "status" in validated_data:
             enrollment.status = validated_data["status"]
+        if "track" in validated_data:
+            enrollment.track = validated_data["track"]
+        if "level" in validated_data:
+            enrollment.level = validated_data["level"]
+
         try:
             enrollment.save()
         except DjangoValidationError as exc:
