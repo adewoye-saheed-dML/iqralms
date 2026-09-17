@@ -69,9 +69,14 @@ def admit(user, organization, role=None):
         role = (
             OrganizationRole.TEACHER if user.is_teacher else OrganizationRole.STAFF
         )
-    return OrganizationMembership.objects.create(
+    membership = OrganizationMembership.objects.create(
         organization=organization, user=user, role=role
     )
+    if getattr(user, "is_student", False) or getattr(user, "role", None) == "student":
+        from organizations.models import StudentEnrollment
+
+        StudentEnrollment.objects.get_or_create(organization=organization, user=user)
+    return membership
 
 
 class TrackFactory(factory.django.DjangoModelFactory):

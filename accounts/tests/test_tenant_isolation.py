@@ -46,9 +46,23 @@ BELONGS = OrganizationRole.STAFF
 
 
 def admit(organization, user, role=BELONGS, **kwargs):
-    return OrganizationMembershipFactory(
-        organization=organization, user=user, role=role, **kwargs
+    membership = OrganizationMembershipFactory(
+        organization=organization,
+        user=user,
+        role=role,
+        **kwargs,
     )
+    if getattr(user, "is_student", False) or getattr(user, "role", None) == "student":
+        from organizations.models import StudentEnrollment, EnrollmentStatus
+        
+        status_val = str(kwargs.get("status", ""))
+        status = EnrollmentStatus.INACTIVE if "suspended" in status_val else EnrollmentStatus.ACTIVE
+        StudentEnrollment.objects.get_or_create(
+            organization=organization, 
+            user=user,
+            defaults={"status": status}
+        )
+    return membership
 
 
 def children_url(organization):
@@ -151,13 +165,16 @@ class CrossTenantParentAccessTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([c["id"] for c in response.data], [self.student.pk])
 
-    def test_suspending_the_students_membership_withdraws_the_academys_view(self):
-        membership = OrganizationMembership.objects.get(
+    def test_suspending_the_students_enrollment_withdraws_the_academys_view(self):
+        from organizations.models import StudentEnrollment, EnrollmentStatus
+        
+        enrollment = StudentEnrollment.objects.get(
             organization=self.b, user=self.student
         )
-        membership.status = MembershipStatus.SUSPENDED
-        membership.save()
+        enrollment.status = EnrollmentStatus.INACTIVE
+        enrollment.save()
 
+        self.client.force_authenticate(user=self.parent)
         response = self.client.get(children_url(self.b))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(list(response.data), [])

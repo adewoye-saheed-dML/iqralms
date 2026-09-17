@@ -191,38 +191,27 @@ class OrganizationDetailView(OrganizationScopedMixin, generics.RetrieveAPIView):
 # --- Memberships -------------------------------------------------------------
 
 
-class OrganizationMembershipListCreateView(
-    OrganizationScopedMixin, generics.ListCreateAPIView
+class OrganizationMembershipListView(
+    OrganizationScopedMixin, generics.ListAPIView
 ):
     """/api/organizations/{id}/memberships/ — the tenant's directory, owner/admin only.
 
-    GET lists the organization's memberships; POST adds an existing user as
-    ``admin``, ``staff`` or ``teacher``. Staff and teacher members are refused
-    both: an ordinary member does not receive the academy's member directory in
-    Phase 1, and cannot change who is in it.
-
-    The organization a new membership lands in comes from ``self.organization`` —
-    the caller's *verified* membership — so it cannot be a tenant the caller was
-    not admitted to, whatever the request body says. ``owner`` is not an
-    assignable role, so no request here can create a second owner.
+    GET lists the organization's memberships. Staff and teacher members are refused
+    this: an ordinary member does not receive the academy's member directory in
+    Phase 1.
     """
 
     permission_classes = [IsAuthenticated, CanManageOrganizationMemberships]
     organization_url_kwarg = "organization_pk"
+    serializer_class = OrganizationMembershipSerializer
 
     def get_queryset(self):
         return OrganizationMembership.objects.filter(
             organization_id=self.organization_id
         ).select_related("user", "organization")
 
-    def get_serializer_class(self):
-        if self.request.method == "POST":
-            return OrganizationMembershipCreateSerializer
-        return OrganizationMembershipSerializer
-
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        # The tenant, from the URL and the caller's membership — never from input.
         context["organization"] = self.organization
         return context
 
@@ -235,43 +224,6 @@ class OrganizationMembershipListCreateView(
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
-
-    @extend_schema(
-        request=OrganizationMembershipCreateSerializer,
-        responses={
-            201: OpenApiResponse(response=OrganizationMembershipSerializer),
-            400: OpenApiResponse(
-                description=(
-                    "Unknown user, already a member, or a role that is not "
-                    "assignable ('owner' never is)."
-                )
-            ),
-            401: OpenApiResponse(description="Not authenticated."),
-            403: OpenApiResponse(description="Not an owner or administrator here."),
-        },
-    )
-    def post(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        membership = serializer.save()
-        if membership.role == OrganizationRole.TEACHER:
-            from notifications.services import notify_teacher_invitation
-            notify_teacher_invitation(membership)
-            
-        from audit_logs.models import AuditAction
-        from audit_logs.services import record_event
-        record_event(
-            organization=self.organization,
-            actor=request.user,
-            action=AuditAction.MEMBERSHIP_CREATED,
-            target=membership,
-            metadata={"role": membership.role, "status": membership.status},
-        )
-
-        body = OrganizationMembershipSerializer(
-            membership, context=self.get_serializer_context()
-        ).data
-        return Response(body, status=status.HTTP_201_CREATED)
 
 
 class OrganizationMembershipDetailView(OrganizationScopedMixin, generics.UpdateAPIView):
@@ -498,3 +450,75 @@ class StudentEnrollmentDetailView(OrganizationScopedMixin, generics.RetrieveUpda
             enrollment, context=self.get_serializer_context()
         ).data
         return Response(body, status=status.HTTP_200_OK)
+
+from .serializers import (
+    OrganizationInvitationSerializer,
+    OrganizationInvitationCreateSerializer,
+    OrganizationInvitationAcceptSerializer
+)
+from .models import OrganizationInvitation
+
+class OrganizationInvitationListCreateView(OrganizationScopedMixin, generics.ListCreateAPIView):
+    """/api/organizations/{id}/invitations/"""
+    permission_classes = [IsAuthenticated, CanManageOrganizationMemberships]
+    organization_url_kwarg = "organization_pk"
+
+    def get_queryset(self):
+        return OrganizationInvitation.objects.filter(
+            organization_id=self.organization_id
+        ).order_by("-created_at")
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return OrganizationInvitationCreateSerializer
+        return OrganizationInvitationSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["organization"] = self.organization
+        return context
+
+    def perform_create(self, serializer):
+        invitation = serializer.save()
+        # notify teacher invitation
+        if invitation.role == OrganizationRole.TEACHER:
+            from notifications.services import notify_teacher_invitation
+            notify_teacher_invitation(invitation)
+        return invitation
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        invitation = self.perform_create(serializer)
+        
+        data = OrganizationInvitationSerializer(invitation).data
+        return Response(data, status=status.HTTP_201_CREATED)
+
+
+class OrganizationInvitationAcceptView(generics.GenericAPIView):
+    """POST /api/organizations/{id}/invitations/accept/"""
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationInvitationAcceptSerializer
+    
+    def get_organization(self):
+        from django.shortcuts import get_object_or_404
+        from .models import Organization
+        return get_object_or_404(Organization, pk=self.kwargs["organization_pk"])
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["organization"] = self.get_organization()
+        return context
+
+    @extend_schema(
+        request=OrganizationInvitationAcceptSerializer,
+        responses={200: OpenApiResponse(response=OrganizationMembershipSerializer)},
+    )
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        membership = serializer.save()
+        
+        # Return the resulting membership
+        data = OrganizationMembershipSerializer(membership).data
+        return Response(data, status=status.HTTP_200_OK)

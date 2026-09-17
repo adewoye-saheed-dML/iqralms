@@ -251,7 +251,10 @@ class AvailabilityLocalConversionTests(TestCase):
 
     def test_a_local_window_is_stored_as_utc(self):
         teacher = BookableTeacherFactory(timezone="Africa/Lagos")  # UTC+1, no DST
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         windows = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.MONDAY,
             start_local=time(9, 0),
@@ -264,7 +267,10 @@ class AvailabilityLocalConversionTests(TestCase):
 
     def test_the_teachers_own_zone_is_the_default(self):
         teacher = BookableTeacherFactory(timezone="Asia/Karachi")  # UTC+5
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         window = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.TUESDAY,
             start_local=time(20, 0),
@@ -276,7 +282,10 @@ class AvailabilityLocalConversionTests(TestCase):
     def test_a_window_crossing_utc_midnight_is_stored_as_two_rows(self):
         """A Lagos small-hours window lands on two different UTC days."""
         teacher = BookableTeacherFactory(timezone="Africa/Lagos")
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         windows = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.MONDAY,
             start_local=time(0, 30),
@@ -293,7 +302,10 @@ class AvailabilityLocalConversionTests(TestCase):
     def test_conversion_can_shift_the_weekday_without_splitting(self):
         """A New Zealand morning is the previous UTC day, in one piece."""
         teacher = BookableTeacherFactory(timezone="Pacific/Auckland")  # UTC+12/+13
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         windows = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.MONDAY,
             start_local=time(9, 0),
@@ -318,7 +330,10 @@ class AvailabilityLocalConversionTests(TestCase):
 
     def test_a_stored_window_round_trips_through_the_teachers_zone(self):
         teacher = BookableTeacherFactory(timezone="America/New_York")
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         window = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.THURSDAY,
             start_local=time(14, 0),
@@ -340,7 +355,10 @@ class AvailabilityLocalConversionTests(TestCase):
         a session ending at UTC midnight still books.
         """
         teacher = BookableTeacherFactory(timezone="America/New_York")
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         windows = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.THURSDAY,
             start_local=time(18, 0),
@@ -360,7 +378,10 @@ class AvailabilityLocalConversionTests(TestCase):
     def test_a_session_ending_at_utc_midnight_still_books(self):
         """The end-of-day sentinel is applied on both sides, so it cancels out."""
         teacher = BookableTeacherFactory(timezone="America/New_York")
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         window = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.THURSDAY,
             start_local=time(18, 0),
@@ -1328,6 +1349,7 @@ class AvailabilityTenancyTests(TestCase):
         ensure_teacher_configured(single_org_teacher, single_org)
 
         windows = Availability.create_from_local(
+            organization=single_org,
             teacher=single_org_teacher,
             weekday=Weekday.TUESDAY,
             start_local=time(10, 0),
@@ -1593,17 +1615,17 @@ class TeacherTrackSchedulingTenancyTests(TestCase):
         from scheduling.models import specialty_error
 
         # With active eligibility in Academy A
-        self.assertIsNone(specialty_error(self.teacher, self.level_a))
+        self.assertIsNone(specialty_error(self.teacher, self.level_a, organization=self.org_a))
 
         # Without eligibility in Academy B
-        err_b = specialty_error(self.teacher, self.level_b)
+        err_b = specialty_error(self.teacher, self.level_b, organization=self.org_b)
         self.assertIsNotNone(err_b)
         self.assertEqual(err_b.code, "teacher_lacks_specialty")
 
         # When deactivated in Academy A
         self.tt_a.active = False
         self.tt_a.save()
-        err_a = specialty_error(self.teacher, self.level_a)
+        err_a = specialty_error(self.teacher, self.level_a, organization=self.org_a)
         self.assertIsNotNone(err_a)
         self.assertEqual(err_a.code, "teacher_lacks_specialty")
 
@@ -1861,3 +1883,43 @@ class MigrationStateTests(TestCase):
     def test_no_model_changes_are_missing_a_migration(self):
         """Guards acceptance criterion 1 against later model edits."""
         call_command("makemigrations", "--check", "--dry-run", verbosity=0)
+
+class AvailabilityValidationTests(TestCase):
+    def test_missing_organization_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            Availability.create_from_local(
+                teacher=None,
+                weekday=Weekday.MONDAY,
+                start_local=time(10, 0),
+                end_local=time(12, 0),
+            )
+
+    def test_teacher_not_in_organization_raises_validation_error(self):
+        teacher = BookableTeacherFactory()
+        org = OrganizationFactory()
+        with self.assertRaises(ValidationError) as cm:
+            Availability.create_from_local(
+                organization=org,
+                teacher=teacher,
+                weekday=Weekday.MONDAY,
+                start_local=time(10, 0),
+                end_local=time(12, 0),
+            )
+        self.assertIn("active membership in the organization", str(cm.exception))
+
+    def test_teacher_not_configured_raises_validation_error(self):
+        teacher = BookableTeacherFactory()
+        org = OrganizationFactory()
+        # Give them membership, but no configuration
+        from organizations.models import OrganizationMembership, OrganizationRole
+        OrganizationMembership.objects.create(organization=org, user=teacher, role=OrganizationRole.TEACHER)
+        
+        with self.assertRaises(ValidationError) as cm:
+            Availability.create_from_local(
+                organization=org,
+                teacher=teacher,
+                weekday=Weekday.MONDAY,
+                start_local=time(10, 0),
+                end_local=time(12, 0),
+            )
+        self.assertIn("valid academy configuration", str(cm.exception))

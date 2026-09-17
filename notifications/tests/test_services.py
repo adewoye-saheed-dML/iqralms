@@ -233,18 +233,27 @@ class DomainEventHelpersTests(TestCase):
         self.assertEqual(notif.payload["summary"], "Great recitation today.")
 
     def test_notify_teacher_invitation_excludes_credentials(self):
-        new_teacher = UserFactory(username="teacher_new", email="newteacher@example.com")
-        membership = OrganizationMembership.objects.create(
+        from organizations.models import OrganizationInvitation, OrganizationRole
+        invitation, token = OrganizationInvitation.generate_token_and_digest()
+        import datetime
+        from django.utils import timezone
+        
+        inv_obj = OrganizationInvitation.objects.create(
             organization=self.org,
-            user=new_teacher,
+            email="newteacher@example.com",
             role=OrganizationRole.TEACHER,
-            status=MembershipStatus.ACTIVE,
+            token_digest=token,
+            expires_at=timezone.now() + datetime.timedelta(days=7)
         )
-        notif = notify_teacher_invitation(membership)
-        self.assertEqual(notif.event_type, EventType.TEACHER_INVITATION)
-        self.assertEqual(notif.recipient, new_teacher)
-        self.assertEqual(notif.organization, self.org)
-        # Verify no secrets in payload
-        self.assertNotIn("password", notif.payload)
-        self.assertNotIn("token", notif.payload)
-        self.assertEqual(notif.payload["role"], "teacher")
+        inv_obj.raw_token = token
+        
+        from django.core import mail
+        mail.outbox = []
+        
+        notify_teacher_invitation(inv_obj)
+        
+        self.assertEqual(len(mail.outbox), 1)
+        email = mail.outbox[0]
+        self.assertIn("newteacher@example.com", email.to)
+        self.assertIn(token, email.body)
+        self.assertNotIn("password", email.body)

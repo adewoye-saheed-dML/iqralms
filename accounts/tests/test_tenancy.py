@@ -162,24 +162,42 @@ class ActiveStudentAndParentMembershipTests(TestCase):
 
 
 class ChildrenInOrganizationTests(TestCase):
-    """``parent active here AND student active here`` — the phase's isolation rule."""
+    """``parent active here (membership) AND child enrolled here (enrollment)``
+
+    B03's tenant-isolation rule: parents are checked via membership (authority),
+    children via enrollment (academic participation). The two are separate.
+    """
 
     def setUp(self):
         self.organization = OrganizationFactory()
         self.link = ParentLinkFactory()
         self.parent, self.student = self.link.parent, self.link.student
 
-    def admit(self, user, organization=None, **kwargs):
+    def admit_parent(self, parent, organization=None, **kwargs):
+        """Give the parent an active membership (authority) in the academy."""
         return OrganizationMembershipFactory(
             organization=organization or self.organization,
-            user=user,
+            user=parent,
             role=BELONGS,
             **kwargs,
         )
 
-    def test_a_child_admitted_alongside_their_parent_is_listed(self):
-        self.admit(self.parent)
-        self.admit(self.student)
+    def enroll_child(self, student, organization=None, **kwargs):
+        """Give the student an active enrollment (participation) in the academy."""
+        from organizations.models import StudentEnrollment, EnrollmentStatus
+
+        org = organization or self.organization
+        status = kwargs.pop("status", EnrollmentStatus.ACTIVE)
+        return StudentEnrollment.objects.create(
+            organization=org,
+            user=student,
+            status=status,
+            **kwargs,
+        )
+
+    def test_a_child_enrolled_alongside_their_parent_is_listed(self):
+        self.admit_parent(self.parent)
+        self.enroll_child(self.student)
         self.assertEqual(
             list(children_in_organization(
                 parent=self.parent, organization=self.organization
@@ -187,9 +205,9 @@ class ChildrenInOrganizationTests(TestCase):
             [self.student],
         )
 
-    def test_a_child_the_academy_has_not_admitted_is_absent(self):
+    def test_a_child_the_academy_has_not_enrolled_is_absent(self):
         """The global ParentLink exists. It is not access to this academy."""
-        self.admit(self.parent)
+        self.admit_parent(self.parent)
         self.assertEqual(
             list(children_in_organization(
                 parent=self.parent, organization=self.organization
@@ -197,9 +215,12 @@ class ChildrenInOrganizationTests(TestCase):
             [],
         )
 
-    def test_a_suspended_child_is_absent(self):
-        self.admit(self.parent)
-        self.admit(self.student, status=MembershipStatus.SUSPENDED)
+    def test_a_child_with_inactive_enrollment_is_absent(self):
+        """Inactive enrollment is a record, not participation."""
+        from organizations.models import EnrollmentStatus
+
+        self.admit_parent(self.parent)
+        self.enroll_child(self.student, status=EnrollmentStatus.INACTIVE)
         self.assertEqual(
             list(children_in_organization(
                 parent=self.parent, organization=self.organization
@@ -208,8 +229,8 @@ class ChildrenInOrganizationTests(TestCase):
         )
 
     def test_a_suspended_parent_sees_nothing_here(self):
-        self.admit(self.parent, status=MembershipStatus.SUSPENDED)
-        self.admit(self.student)
+        self.admit_parent(self.parent, status=MembershipStatus.SUSPENDED)
+        self.enroll_child(self.student)
         self.assertEqual(
             list(children_in_organization(
                 parent=self.parent, organization=self.organization
@@ -218,7 +239,7 @@ class ChildrenInOrganizationTests(TestCase):
         )
 
     def test_a_parent_who_is_not_a_member_sees_nothing_here(self):
-        self.admit(self.student)
+        self.enroll_child(self.student)
         self.assertEqual(
             list(children_in_organization(
                 parent=self.parent, organization=self.organization
@@ -227,9 +248,9 @@ class ChildrenInOrganizationTests(TestCase):
         )
 
     def test_an_unlinked_student_of_the_same_academy_is_not_a_child(self):
-        self.admit(self.parent)
-        self.admit(self.student)
-        self.admit(MinorStudentFactory())
+        self.admit_parent(self.parent)
+        self.enroll_child(self.student)
+        self.enroll_child(MinorStudentFactory())
         self.assertEqual(
             list(children_in_organization(
                 parent=self.parent, organization=self.organization
@@ -238,13 +259,13 @@ class ChildrenInOrganizationTests(TestCase):
         )
 
     def test_one_parent_in_two_academies_gets_two_different_answers(self):
-        """The same ParentLink rows, filtered by who each academy has admitted."""
+        """The same ParentLink rows, filtered by who each academy has enrolled."""
         here, there = self.organization, OrganizationFactory()
         second_child = ParentLinkFactory(parent=self.parent).student
-        self.admit(self.parent, organization=here)
-        self.admit(self.parent, organization=there)
-        self.admit(self.student, organization=here)
-        self.admit(second_child, organization=there)
+        self.admit_parent(self.parent, organization=here)
+        self.admit_parent(self.parent, organization=there)
+        self.enroll_child(self.student, organization=here)
+        self.enroll_child(second_child, organization=there)
 
         self.assertEqual(
             list(children_in_organization(parent=self.parent, organization=here)),
@@ -257,8 +278,8 @@ class ChildrenInOrganizationTests(TestCase):
 
     def test_a_bare_organization_id_is_accepted(self):
         """Views hold the URL's id, not the object."""
-        self.admit(self.parent)
-        self.admit(self.student)
+        self.admit_parent(self.parent)
+        self.enroll_child(self.student)
         self.assertEqual(
             list(children_in_organization(
                 parent=self.parent, organization=self.organization.pk
@@ -268,10 +289,45 @@ class ChildrenInOrganizationTests(TestCase):
 
     def test_a_non_parent_account_has_no_children_here(self):
         teacher = SubTeacherFactory()
-        self.admit(teacher)
+        OrganizationMembershipFactory(
+            organization=self.organization,
+            user=teacher,
+            role=BELONGS,
+        )
         self.assertEqual(
             list(children_in_organization(
                 parent=teacher, organization=self.organization
             )),
             [],
         )
+
+    def test_child_with_membership_but_no_enrollment_is_absent(self):
+        """B03: membership alone is not participation for students."""
+        self.admit_parent(self.parent)
+        OrganizationMembershipFactory(
+            organization=self.organization,
+            user=self.student,
+            role=BELONGS,
+        )
+        # Student has membership but no enrollment → not visible
+        self.assertEqual(
+            list(children_in_organization(
+                parent=self.parent, organization=self.organization
+            )),
+            [],
+        )
+
+    def test_child_enrolled_in_academy_b_not_visible_through_academy_a(self):
+        """Cross-tenant: child enrolled in B must never appear in A's list."""
+        academy_b = OrganizationFactory()
+        self.admit_parent(self.parent)
+        self.admit_parent(self.parent, organization=academy_b)
+        self.enroll_child(self.student, organization=academy_b)
+
+        self.assertEqual(
+            list(children_in_organization(
+                parent=self.parent, organization=self.organization
+            )),
+            [],
+        )
+

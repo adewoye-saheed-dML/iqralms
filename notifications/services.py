@@ -473,31 +473,28 @@ def notify_progress_ready(
 
 
 def notify_teacher_invitation(
-    membership: OrganizationMembership,
+    invitation: "organizations.models.OrganizationInvitation",
     *,
     channels: Optional[List[DeliveryChannel]] = None,
-) -> Notification:
-    """Emit TEACHER_INVITATION notification.
+) -> None:
+    """Send TEACHER_INVITATION email.
 
-    Strictly excludes auth tokens, credentials, or passwords.
+    Strictly excludes auth tokens, credentials, or passwords, but does include
+    the invitation token needed to accept the invitation.
     """
-    org = membership.organization
-    teacher = membership.user
+    from django.core.mail import send_mail
+    from django.conf import settings
 
-    payload = {
-        "membership_id": membership.id,
-        "organization_id": org.id,
-        "organization_name": org.name,
-        "role": membership.role,
-    }
+    org = invitation.organization
+    
+    token = getattr(invitation, "raw_token", "REDACTED")
+    subject = f"Invitation to join {org.name}"
+    message = f"You have been invited to join {org.name} as a {invitation.role}.\n\nYour invitation token is: {token}"
 
-    return create_notification(
-        organization=org,
-        event_type=EventType.TEACHER_INVITATION,
-        recipient=teacher,
-        title=f"Welcome to {org.name}",
-        summary=f"You have been added as a {membership.get_role_display()} at {org.name}.",
-        payload=payload,
-        idempotency_key=f"invitation:{membership.id}:{teacher.id}",
-        channels=channels,
+    send_mail(
+        subject=subject,
+        message=message,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[invitation.email],
+        fail_silently=True,
     )

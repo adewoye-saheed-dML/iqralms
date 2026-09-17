@@ -19,7 +19,9 @@ from .views import (
     OrganizationCreateView,
     OrganizationDetailView,
     OrganizationMembershipDetailView,
-    OrganizationMembershipListCreateView,
+    OrganizationMembershipListView,
+    OrganizationInvitationListCreateView,
+    OrganizationInvitationAcceptView,
     StudentEnrollmentListCreateView,
     StudentEnrollmentDetailView,
 )
@@ -32,13 +34,23 @@ urlpatterns = [
     path("<int:pk>/", OrganizationDetailView.as_view(), name="organization-detail"),
     path(
         "<int:organization_pk>/memberships/",
-        OrganizationMembershipListCreateView.as_view(),
+        OrganizationMembershipListView.as_view(),
         name="membership-list",
     ),
     path(
         "<int:organization_pk>/memberships/<int:pk>/",
         OrganizationMembershipDetailView.as_view(),
         name="membership-detail",
+    ),
+    path(
+        "<int:organization_pk>/invitations/",
+        OrganizationInvitationListCreateView.as_view(),
+        name="invitation-list",
+    ),
+    path(
+        "<int:organization_pk>/invitations/accept/",
+        OrganizationInvitationAcceptView.as_view(),
+        name="invitation-accept",
     ),
     path(
         "<int:organization_pk>/students/",

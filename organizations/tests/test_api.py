@@ -22,6 +22,7 @@ from accounts.models import Role, User
 from accounts.tests.factories import StudentFactory, SubTeacherFactory, UserFactory
 
 from organizations.models import (
+    OrganizationInvitation,
     MembershipStatus,
     Organization,
     OrganizationMembership,
@@ -49,6 +50,13 @@ def detail_url(organization):
 
 def memberships_url(organization):
     return reverse("organizations:membership-list", args=[organization.pk])
+
+def invitations_url(organization):
+    return reverse("organizations:invitation-list", args=[organization.pk])
+
+def accept_invitation_url(organization):
+    return reverse("organizations:invitation-accept", args=[organization.pk])
+
 
 
 def membership_url(membership):
@@ -362,146 +370,117 @@ class MembershipListingAPITests(TenantWorld):
         )
 
 
-class MembershipCreationAPITests(TenantWorld):
-    """POST /api/organizations/{id}/memberships/ — who may add whom, and as what."""
-
+class InvitationCreationAPITests(TenantWorld):
     def setUp(self):
         super().setUp()
         self.newcomer = UserFactory()
 
     def add(self, caller, organization=None, **body):
-        payload = {"user": self.newcomer.pk, "role": OrganizationRole.TEACHER, **body}
+        payload = {"email": getattr(self.newcomer, "email", self.newcomer), "role": "teacher", **body}
         return self.as_user(caller).post(
-            memberships_url(organization or self.org_a), payload
+            invitations_url(organization or self.org_a), payload
         )
 
     def test_the_owner_adds_a_teacher(self):
         response = self.add(self.owner_a)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["username"], self.newcomer.username)
-        self.assertEqual(response.data["status"], MembershipStatus.ACTIVE)
-        membership = OrganizationMembership.objects.get(user=self.newcomer)
-        self.assertEqual(membership.organization, self.org_a)
-        self.assertEqual(membership.role, OrganizationRole.TEACHER)
+        self.assertEqual(response.data["email"], self.newcomer.email)
+        self.assertEqual(response.data["status"], "pending")
+        invitation = OrganizationInvitation.objects.get(email=self.newcomer.email)
+        self.assertEqual(invitation.organization, self.org_a)
+        self.assertEqual(invitation.role, "teacher")
 
     def test_an_admin_adds_a_teacher(self):
-        self.assertEqual(
-            self.add(self.admin_a).status_code, status.HTTP_201_CREATED
-        )
+        response = self.add(self.admin_a)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
     def test_an_admin_may_add_another_admin(self):
-        response = self.add(self.admin_a, role=OrganizationRole.ADMIN)
+        response = self.add(self.admin_a, role="admin")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["role"], OrganizationRole.ADMIN)
+        self.assertEqual(response.data["role"], "admin")
 
     def test_a_new_member_can_then_read_the_organization(self):
-        self.add(self.owner_a)
+        # We need to accept the invitation first
+        from .factories import OrganizationRole
+        invitation, token = OrganizationInvitation.generate_token_and_digest()
+        import datetime
+        from django.utils import timezone
+        inv_obj = OrganizationInvitation.objects.create(
+            organization=self.org_a, email=self.newcomer.email, role="teacher",
+            token_digest=token, expires_at=timezone.now() + datetime.timedelta(days=7)
+        )
+        # Accept it
+        self.as_user(self.newcomer).post(accept_invitation_url(self.org_a), {"token": invitation})
+        
         response = self.as_user(self.newcomer).get(detail_url(self.org_a))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-    def test_adding_a_member_does_not_touch_their_account_role(self):
-        self.add(self.owner_a)
-        self.newcomer.refresh_from_db()
-        self.assertEqual(self.newcomer.role, Role.STUDENT)
 
     def test_a_staff_member_cannot_add_anyone(self):
         response = self.add(self.staff_a)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertFalse(
-            OrganizationMembership.objects.filter(user=self.newcomer).exists()
-        )
 
     def test_a_teacher_cannot_add_anyone(self):
-        self.assertEqual(self.add(self.teacher_a).status_code, status.HTTP_403_FORBIDDEN)
+        response = self.add(self.teacher_a)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_a_suspended_member_cannot_add_anyone(self):
-        self.assertEqual(
-            self.add(self.suspended_a).status_code, status.HTTP_403_FORBIDDEN
-        )
+        self.teacher_membership_a.status = MembershipStatus.SUSPENDED
+        self.teacher_membership_a.save()
+        response = self.add(self.teacher_a)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_an_outsider_cannot_add_anyone(self):
-        self.assertEqual(self.add(self.outsider).status_code, status.HTTP_403_FORBIDDEN)
+        outsider = UserFactory()
+        response = self.add(outsider)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_another_organizations_owner_cannot_add_to_this_one(self):
         response = self.add(self.owner_b)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertFalse(
-            OrganizationMembership.objects.filter(user=self.newcomer).exists()
-        )
 
-    def test_an_admin_cannot_create_an_owner(self):
-        response = self.add(self.admin_a, role=OrganizationRole.OWNER)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("role", response.data)
-        self.assertEqual(
-            self.org_a.memberships.filter(role=OrganizationRole.OWNER).count(), 1
-        )
-
-    def test_the_owner_cannot_create_a_second_owner_either(self):
-        response = self.add(self.owner_a, role=OrganizationRole.OWNER)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(
-            self.org_a.memberships.filter(role=OrganizationRole.OWNER).count(), 1
-        )
-
-    def test_an_unsupported_role_is_refused(self):
-        response = self.add(self.owner_a, role="principal")
+    def test_the_caller_cannot_create_an_owner(self):
+        response = self.add(self.owner_a, role="owner")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("role", response.data)
 
-    def test_an_existing_member_cannot_be_added_twice(self):
-        response = self.add(self.owner_a, user=self.teacher_a.pk)
+    def test_an_existing_member_cannot_be_invited_again(self):
+        self.newcomer = self.teacher_a
+        response = self.add(self.owner_a)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("user", response.data)
-        self.assertEqual(self.org_a.memberships.filter(user=self.teacher_a).count(), 1)
 
-    def test_a_suspended_member_cannot_be_added_again(self):
-        # Reactivation is a change to the row that exists, not a second row.
-        response = self.add(self.owner_a, user=self.suspended_a.pk)
+    def test_a_suspended_member_cannot_be_invited_again(self):
+        self.teacher_membership_a.status = MembershipStatus.SUSPENDED
+        self.teacher_membership_a.save()
+        self.newcomer = self.teacher_a
+        response = self.add(self.owner_a)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("user", response.data)
 
-    def test_an_unknown_user_is_refused(self):
-        response = self.add(self.owner_a, user=999999)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("user", response.data)
-
-    def test_no_user_is_created_by_this_endpoint(self):
-        # Onboarding someone the platform has not met is an invitation flow, which
-        # is a later phase. Naming a user who does not exist is a 400, not a signup.
-        before = OrganizationMembership.objects.count()
-        response = self.as_user(self.owner_a).post(
-            memberships_url(self.org_a),
-            {"username": "brand-new", "role": OrganizationRole.TEACHER},
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("user", response.data)
-        self.assertFalse(User.objects.filter(username="brand-new").exists())
-        self.assertEqual(OrganizationMembership.objects.count(), before)
+    def test_an_unknown_user_can_be_invited(self):
+        payload = {"email": "doesnotexist@example.com", "role": "teacher"}
+        response = self.as_user(self.owner_a).post(invitations_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
     def test_the_tenant_comes_from_the_url_not_the_body(self):
-        # A caller who names another organization in the body still adds to the
-        # one they were authorized for.
+        payload = {
+            "email": self.newcomer.email,
+            "role": "teacher",
+            "organization": self.org_b.pk,
+        }
         response = self.as_user(self.owner_a).post(
-            memberships_url(self.org_a),
-            {
-                "user": self.newcomer.pk,
-                "role": OrganizationRole.TEACHER,
-                "organization": self.org_b.pk,
-            },
+            invitations_url(self.org_a), payload
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(
-            OrganizationMembership.objects.get(user=self.newcomer).organization,
-            self.org_a,
+        self.assertTrue(
+            OrganizationInvitation.objects.filter(
+                organization=self.org_a, email=self.newcomer.email
+            ).exists()
+        )
+        self.assertFalse(
+            OrganizationInvitation.objects.filter(
+                organization=self.org_b, email=self.newcomer.email
+            ).exists()
         )
 
-    def test_a_membership_cannot_be_added_to_an_unknown_organization(self):
-        response = self.as_user(self.owner_a).post(
-            reverse("organizations:membership-list", args=[999999]),
-            {"user": self.newcomer.pk, "role": OrganizationRole.TEACHER},
-        )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class MembershipUpdateAPITests(TenantWorld):

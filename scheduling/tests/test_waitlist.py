@@ -275,7 +275,7 @@ class WaitlistOrderingTests(TestCase):
         high = self.entry(priority=10, offset_hours=2)
 
         self.assertEqual(
-            list(TeacherWaitlist.open_for_teacher(self.teacher)), [high, low]
+            list(TeacherWaitlist.open_for_teacher(self.teacher, organization=self.level.track.organization)), [high, low]
         )
 
     def test_equal_priority_orders_by_longest_waiting(self):
@@ -284,7 +284,7 @@ class WaitlistOrderingTests(TestCase):
         second = self.entry(offset_hours=2)
 
         self.assertEqual(
-            list(TeacherWaitlist.open_for_teacher(self.teacher)), [first, second]
+            list(TeacherWaitlist.open_for_teacher(self.teacher, organization=self.level.track.organization)), [first, second]
         )
 
     def test_priority_beats_waiting_time(self):
@@ -293,7 +293,7 @@ class WaitlistOrderingTests(TestCase):
         bumped = self.entry(priority=1, offset_hours=2)
 
         self.assertEqual(
-            list(TeacherWaitlist.open_for_teacher(self.teacher)),
+            list(TeacherWaitlist.open_for_teacher(self.teacher, organization=self.level.track.organization)),
             [bumped, waited_longest],
         )
 
@@ -303,7 +303,7 @@ class WaitlistOrderingTests(TestCase):
         deprioritised = self.entry(priority=-5, offset_hours=2)
 
         self.assertEqual(
-            list(TeacherWaitlist.open_for_teacher(self.teacher)),
+            list(TeacherWaitlist.open_for_teacher(self.teacher, organization=self.level.track.organization)),
             [normal, deprioritised],
         )
 
@@ -319,7 +319,7 @@ class WaitlistOrderingTests(TestCase):
         done.mark_fulfilled(booking)
 
         self.assertEqual(
-            list(TeacherWaitlist.open_for_teacher(self.teacher)), [open_entry]
+            list(TeacherWaitlist.open_for_teacher(self.teacher, organization=self.level.track.organization)), [open_entry]
         )
 
     def test_another_teachers_queue_is_separate(self):
@@ -327,13 +327,13 @@ class WaitlistOrderingTests(TestCase):
         WaitlistEntryFactory()
 
         self.assertEqual(
-            list(TeacherWaitlist.open_for_teacher(self.teacher)), [mine]
+            list(TeacherWaitlist.open_for_teacher(self.teacher, organization=self.level.track.organization)), [mine]
         )
 
     def test_open_for_teacher_accepts_an_id(self):
         mine = self.entry(offset_hours=1)
         self.assertEqual(
-            list(TeacherWaitlist.open_for_teacher(self.teacher.pk)), [mine]
+            list(TeacherWaitlist.open_for_teacher(self.teacher.pk, organization=self.level.track.organization)), [mine]
         )
 
 
@@ -473,7 +473,7 @@ class NotifiedIsForALaterPhaseTests(TestCase):
 
     def test_promotion_does_not_set_notified(self):
         entry = WaitlistEntryFactory()
-        promote_waitlist_entry(entry)
+        promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         entry.refresh_from_db()
         self.assertFalse(
@@ -592,7 +592,7 @@ class WaitlistTenancyTests(TestCase):
             status=MembershipStatus.SUSPENDED
         )
         with self.assertRaises(ValidationError) as ctx:
-            promote_waitlist_entry(entry_a)
+            promote_waitlist_entry(entry_a, organization=entry_a.level.track.organization)
         self.assertIn("student", ctx.exception.error_dict)
         self.assertEqual(
             ctx.exception.error_dict["student"][0].code,
@@ -613,7 +613,7 @@ class WaitlistTenancyTests(TestCase):
         ).update(approved=False)
 
         with self.assertRaises(ValidationError) as ctx:
-            promote_waitlist_entry(entry_a)
+            promote_waitlist_entry(entry_a, organization=entry_a.level.track.organization)
         self.assertIn("teacher", ctx.exception.error_dict)
         self.assertEqual(
             ctx.exception.error_dict["teacher"][0].code,
@@ -634,7 +634,7 @@ class WaitlistTenancyTests(TestCase):
         ).update(active=False)
 
         with self.assertRaises(ValidationError) as ctx:
-            promote_waitlist_entry(entry_a)
+            promote_waitlist_entry(entry_a, organization=entry_a.level.track.organization)
         self.assertIn("level", ctx.exception.error_dict)
         self.assertEqual(
             ctx.exception.error_dict["level"][0].code,

@@ -490,7 +490,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         """Acceptance criterion 7."""
         entry = self.waiting_entry()
 
-        routed = promote_waitlist_entry(entry)
+        routed = promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         self.assertTrue(routed.booking.pk)
         self.assertEqual(routed.booking.student, entry.student)
@@ -503,7 +503,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         """Acceptance criterion 7 — "with the waitlist row still present"."""
         entry = self.waiting_entry()
 
-        routed = promote_waitlist_entry(entry)
+        routed = promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         entry.refresh_from_db()
         self.assertEqual(entry.fulfilled_booking, routed.booking)
@@ -522,7 +522,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         teacher = entry.requested_teacher
         TeacherBookingLock.objects.filter(teacher=teacher).delete()
 
-        promote_waitlist_entry(entry)
+        promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         self.assertEqual(
             TeacherBookingLock.objects.filter(teacher=teacher).count(),
@@ -538,7 +538,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         declared hours, neither of which a raw INSERT would guarantee.
         """
         entry = self.waiting_entry()
-        routed = promote_waitlist_entry(entry)
+        routed = promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         self.assertTrue(routed.booking.video_provider_meeting_id)
         self.assertEqual(routed.booking.status, BookingStatus.SCHEDULED)
@@ -550,7 +550,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         entry = self.waiting_entry()
         later = entry.requested_start_utc + timedelta(hours=2)
 
-        routed = promote_waitlist_entry(entry, start_time_utc=later)
+        routed = promote_waitlist_entry(entry, start_time_utc=later, organization=entry.level.track.organization)
 
         self.assertEqual(routed.booking.start_time_utc, later)
         entry.refresh_from_db()
@@ -562,7 +562,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
 
     def test_promotion_can_offer_a_different_duration(self):
         entry = self.waiting_entry()
-        routed = promote_waitlist_entry(entry, duration_minutes=60)
+        routed = promote_waitlist_entry(entry, duration_minutes=60, organization=entry.level.track.organization)
         self.assertEqual(routed.booking.duration_minutes, 60)
 
     def test_promoting_an_ineligible_entry_fails_cleanly(self):
@@ -578,7 +578,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         )
 
         with self.assertRaises(ValidationError) as ctx:
-            promote_waitlist_entry(entry)
+            promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         self.assertIn("teacher_double_booked", error_codes(ctx.exception))
 
@@ -594,7 +594,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         booking_count = Booking.objects.count()
 
         with self.assertRaises(ValidationError):
-            promote_waitlist_entry(entry)
+            promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         entry.refresh_from_db()
         self.assertTrue(entry.is_open, "the family is still waiting")
@@ -609,7 +609,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         self.fill_week(entry.requested_teacher, 60)
 
         with self.assertRaises(ValidationError) as ctx:
-            promote_waitlist_entry(entry)
+            promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         self.assertIn("teacher_weekly_capacity_exceeded", error_codes(ctx.exception))
         entry.refresh_from_db()
@@ -623,7 +623,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         profile.save()
 
         with self.assertRaises(ValidationError):
-            promote_waitlist_entry(entry)
+            promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         entry.refresh_from_db()
         self.assertTrue(entry.is_open)
@@ -639,7 +639,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
 
         with self.assertRaises(ValidationError) as ctx:
             promote_waitlist_entry(
-                entry, start_time_utc=dj_timezone.now() - timedelta(days=1)
+                entry, start_time_utc=dj_timezone.now() - timedelta(days=1), organization=entry.level.track.organization
             )
 
         self.assertIn("start_time_in_past", error_codes(ctx.exception))
@@ -647,10 +647,10 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
     def test_promoting_an_already_fulfilled_entry_is_refused(self):
         """One-way transition, the same shape as reviewing a placement."""
         entry = self.waiting_entry()
-        promote_waitlist_entry(entry)
+        promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         with self.assertRaises(WaitlistEntryAlreadyFulfilled):
-            promote_waitlist_entry(entry)
+            promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         self.assertEqual(Booking.objects.filter(student=entry.student).count(), 1)
 
@@ -666,7 +666,7 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
             schedule_start_utc=entry.requested_start_utc,
         )
 
-        routed = promote_waitlist_entry(entry)
+        routed = promote_waitlist_entry(entry, organization=entry.level.track.organization)
         self.assertIsNone(routed.booking.cohort)
 
 
@@ -701,7 +701,7 @@ class CancellingAPromotedSessionDoesNotReopenTheEntryTests(
 
     def test_the_entry_stays_closed_after_its_booking_is_cancelled(self):
         entry = self.waiting_entry()
-        routed = promote_waitlist_entry(entry)
+        routed = promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         routed.booking.cancel()
 
@@ -712,23 +712,23 @@ class CancellingAPromotedSessionDoesNotReopenTheEntryTests(
     def test_a_cancelled_promotion_does_not_return_to_the_lead_queue(self):
         """The accepted cost: the family drops out of the queue silently."""
         entry = self.waiting_entry()
-        routed = promote_waitlist_entry(entry)
+        routed = promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
         routed.booking.cancel()
 
         self.assertNotIn(
             entry,
-            TeacherWaitlist.open_for_teacher(entry.requested_teacher),
+            TeacherWaitlist.open_for_teacher(entry.requested_teacher, organization=entry.level.track.organization),
         )
 
     def test_promoting_again_after_a_cancellation_is_still_refused(self):
         """Not a second bite: the stamp is what closes the entry, not the status."""
         entry = self.waiting_entry()
-        routed = promote_waitlist_entry(entry)
+        routed = promote_waitlist_entry(entry, organization=entry.level.track.organization)
         routed.booking.cancel()
 
         with self.assertRaises(WaitlistEntryAlreadyFulfilled):
-            promote_waitlist_entry(entry)
+            promote_waitlist_entry(entry, organization=entry.level.track.organization)
 
     def test_asking_again_creates_a_fresh_entry_at_the_back_of_the_queue(self):
         """A cancellation is a new request, and a new request starts over.
@@ -740,7 +740,7 @@ class CancellingAPromotedSessionDoesNotReopenTheEntryTests(
         """
         entry = self.waiting_entry()
         teacher = entry.requested_teacher
-        routed = promote_waitlist_entry(entry)
+        routed = promote_waitlist_entry(entry, organization=entry.level.track.organization)
         routed.booking.cancel()
         # The teacher is full again, so re-asking is refused the same way.
         self.fill_week(teacher, 60)
@@ -781,6 +781,7 @@ class PhaseFourRoutingIsUnchangedTests(PreferredTeacherWorld, TestCase):
             start_time_utc=self.slot,
             duration_minutes=30,
             preferred_teacher=None,
+            organization=self.level.track.organization,
         )
         self.assertEqual(routed.booking.teacher, lead)
         self.assertEqual(routed.reason, RoutedReason.LEAD_AVAILABLE)

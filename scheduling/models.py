@@ -132,40 +132,27 @@ class RoutedReason(models.TextChoices):
     COHORT_ASSIGNED = "cohort_assigned", "Assigned a seat in an open cohort"
 
 
-def get_teacher_configuration(teacher, organization=None):
+def get_teacher_configuration(teacher, *, organization):
     """Retrieve OrganizationTeacherConfiguration for a teacher in an organization.
 
-    If organization is None and the teacher has exactly one active membership,
-    that configuration is returned.
     """
     from accounts.models import OrganizationTeacherConfiguration
     from organizations.models import MembershipStatus
 
     teacher_id = getattr(teacher, "pk", teacher)
-    if organization is not None:
-        org_id = getattr(organization, "pk", organization)
-        return (
-            OrganizationTeacherConfiguration.objects.filter(
-                membership__organization_id=org_id,
-                membership__user_id=teacher_id,
-                membership__status=MembershipStatus.ACTIVE,
-            )
-            .select_related("membership", "membership__organization")
-            .first()
-        )
-
-    active_configs = list(
+    org_id = getattr(organization, "pk", organization)
+    return (
         OrganizationTeacherConfiguration.objects.filter(
+            membership__organization_id=org_id,
             membership__user_id=teacher_id,
             membership__status=MembershipStatus.ACTIVE,
-        ).select_related("membership", "membership__organization")[:2]
+        )
+        .select_related("membership", "membership__organization")
+        .first()
     )
-    if len(active_configs) == 1:
-        return active_configs[0]
-    return None
 
 
-def bookable_teacher_error(user, organization=None):
+def bookable_teacher_error(user, *, organization):
     """Why ``user`` cannot be booked or hold availability, or None if they can.
 
     Returns the ``ValidationError`` rather than raising it, so callers can
@@ -263,7 +250,7 @@ def bookable_teacher_error(user, organization=None):
     return None
 
 
-def specialty_error(user, level, organization=None):
+def specialty_error(user, level, *, organization):
     """Why ``user`` may not teach ``level``, or None if they may.
 
     SaaS Phase 4 Task 4.5: Migrated from TeacherProfile.specialties to TeacherTrack.
@@ -283,20 +270,15 @@ def specialty_error(user, level, organization=None):
 
     from curriculum.models import TeacherTrack
 
-    if organization is not None:
-        org_id = getattr(organization, "pk", organization)
-        has_eligibility = TeacherTrack.objects.filter(
-            membership__user=user,
-            membership__organization_id=org_id,
-            track=level.track,
-            active=True,
-        ).exists()
-        if has_eligibility:
-            return None
-    else:
-        profile = getattr(user, "teacher_profile", None)
-        if profile is not None and profile.specialties.filter(pk=level.track_id).exists():
-            return None
+    org_id = getattr(organization, "pk", organization)
+    has_eligibility = TeacherTrack.objects.filter(
+        membership__user=user,
+        membership__organization_id=org_id,
+        track=level.track,
+        active=True,
+    ).exists()
+    if has_eligibility:
+        return None
 
     return ValidationError(
         "%(username)s does not teach %(track)s, so they cannot take a "
@@ -358,7 +340,7 @@ class Availability(models.Model):
     def create_from_local(
         cls,
         *,
-        organization=None,
+        organization,
         teacher,
         weekday,
         start_local,
@@ -372,20 +354,27 @@ class Availability(models.Model):
         never stored. Returns a list, because converting can split one local
         window across two UTC days (and shift its weekday) — see utils.py.
         """
-        if organization is None:
-            active_memberships = list(
-                teacher.organization_memberships.filter(
-                    status=MembershipStatus.ACTIVE
-                ).values_list("organization_id", flat=True)[:2]
-            )
-            if len(active_memberships) == 1:
-                organization = active_memberships[0]
-            elif len(active_memberships) == 0:
-                from organizations.tests.factories import OrganizationFactory
-                from scheduling.tests.factories import ensure_teacher_configured
-
-                organization = OrganizationFactory()
-                ensure_teacher_configured(teacher, organization)
+        from organizations.models import OrganizationMembership, MembershipStatus
+        
+        # Validate that the teacher has an active membership in this organization
+        membership = OrganizationMembership.objects.filter(
+            organization=organization,
+            user=teacher,
+            status=MembershipStatus.ACTIVE,
+        ).first()
+        if not membership:
+            from django.core.exceptions import ValidationError
+            raise ValidationError("Teacher must have an active membership in the organization.")
+            
+        # Validate that the teacher has a valid configuration in this organization
+        from accounts.models import OrganizationTeacherConfiguration
+        config = OrganizationTeacherConfiguration.objects.filter(
+            membership=membership,
+            approved=True
+        ).first()
+        if not config:
+            from django.core.exceptions import ValidationError
+            raise ValidationError("Teacher must have a valid academy configuration.")
 
         tz_name = tz_name or teacher.timezone
         create_kwargs = {
@@ -754,7 +743,7 @@ class Cohort(models.Model):
                 # teach its track can never seat anybody: every seat booking
                 # would be refused by Booking.clean(). Failing here is failing
                 # where the mistake was actually made.
-                track_error = specialty_error(self.teacher, self.level)
+                track_error = specialty_error(self.teacher, self.level, organization=self.organization)
                 if track_error is not None:
                     errors["teacher"] = track_error
 
@@ -1041,7 +1030,7 @@ class Booking(models.Model):
         and every pre-existing test that asserts *why* a booking was refused
         reads the teacher and non-field slots.
         """
-        error = specialty_error(self.teacher, self.level)
+        error = specialty_error(self.teacher, self.level, organization=self.organization)
         if error is not None:
             errors["level"] = error
 
@@ -1052,7 +1041,7 @@ class Booking(models.Model):
         organization, and committed minutes are counted within that organization.
         """
         org = self.organization
-        config = get_teacher_configuration(self.teacher, org)
+        config = get_teacher_configuration(self.teacher, organization=org)
         if config is not None:
             cap_hours = config.max_weekly_hours
         else:
@@ -1235,7 +1224,7 @@ class Booking(models.Model):
 
 
 def weekly_committed_minutes(
-    teacher_id, moment, *, including=None, excluding_pk=None, organization=None
+    teacher_id, moment, *, including=None, excluding_pk=None, organization
 ):
     """Teaching minutes in ``teacher_id``'s week containing ``moment``.
 
@@ -1261,8 +1250,7 @@ def weekly_committed_minutes(
         start_time_utc__lt=week_end,
         status__in=CAPACITY_CONSUMING_STATUSES,
     )
-    if organization is not None:
-        rows = rows.in_organization(organization)
+    rows = rows.in_organization(organization)
     if excluding_pk is not None:
         rows = rows.exclude(pk=excluding_pk)
 
@@ -1281,7 +1269,7 @@ def weekly_committed_minutes(
     return total
 
 
-def remaining_weekly_minutes(teacher, moment, organization=None):
+def remaining_weekly_minutes(teacher, moment, *, organization):
     """How much of ``teacher``'s weekly cap is unspent in ``moment``'s week.
 
     SaaS Phase 4: cap is read from OrganizationTeacherConfiguration in the target
@@ -1295,7 +1283,7 @@ def remaining_weekly_minutes(teacher, moment, organization=None):
     returned as-is rather than clamped, so an over-committed teacher sorts below
     an exactly-full one instead of tying with them.
     """
-    config = get_teacher_configuration(teacher, organization)
+    config = get_teacher_configuration(teacher, organization=organization)
     if config is not None:
         cap_minutes = config.max_weekly_hours * MINUTES_PER_HOUR
     else:
@@ -1471,7 +1459,7 @@ class TeacherWaitlist(models.Model):
         )
 
     @classmethod
-    def open_for_teacher(cls, teacher, organization=None):
+    def open_for_teacher(cls, teacher, *, organization):
         """Unfulfilled entries naming ``teacher``, in the order to work them.
 
         ``Meta.ordering`` supplies the order — priority desc, then longest

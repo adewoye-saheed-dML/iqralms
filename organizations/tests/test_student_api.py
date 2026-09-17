@@ -114,7 +114,8 @@ class StudentEnrollmentAPITests(APITestCase):
         student = UserFactory(role=Role.STUDENT)
         from organizations.models import OrganizationMembership, OrganizationRole; OrganizationMembership.objects.create(organization=self.org, user=student, role=OrganizationRole.STAFF)
         
-        url = reverse("organizations:organization-student-list", args=[self.org.pk])
+        self.client.force_authenticate(user=self.owner)
+        url = reverse("organizations:student-list", args=[self.org.pk])
         response = self.client.post(url, {"user": student.pk, "track_id": track.pk, "level_id": level.pk})
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["track_id"], track.pk)
@@ -128,7 +129,8 @@ class StudentEnrollmentAPITests(APITestCase):
         from organizations.models import OrganizationMembership, OrganizationRole; OrganizationMembership.objects.create(organization=self.org, user=student, role=OrganizationRole.STAFF)
         enrollment = StudentEnrollment.objects.create(organization=self.org, user=student)
         
-        url = reverse("organizations:organization-student-detail", args=[self.org.pk, enrollment.pk])
+        self.client.force_authenticate(user=self.owner)
+        url = reverse("organizations:student-detail", args=[self.org.pk, enrollment.pk])
         response = self.client.patch(url, {"track_id": track.pk, "level_id": level.pk})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["track_id"], track.pk)
