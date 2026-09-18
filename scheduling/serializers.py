@@ -79,7 +79,7 @@ class AcademyScopedSerializerMixin:
         fields = super().get_fields()
         organization = self.organization
         if organization is None:
-            return fields
+            raise RuntimeError(f"{self.__class__.__name__} requires an organization in the context.")
         for name, build in self.scoped_querysets.items():
             if name in fields:
                 fields[name].queryset = build(organization)

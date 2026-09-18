@@ -181,71 +181,45 @@ def bookable_teacher_error(user, *, organization):
     from accounts.models import OrganizationTeacherConfiguration
     from organizations.models import active_membership, MembershipStatus
 
-    if organization is not None:
-        membership = active_membership(user=user, organization=organization)
-        if membership is None:
-            return ValidationError(
-                "%(username)s is not an active member of %(organization)s.",
-                code="teacher_not_active_member",
-                params={
-                    "teacher": user.username,
-                    "username": user.username,
-                    "organization": getattr(organization, "name", organization),
-                },
-            )
-        config = OrganizationTeacherConfiguration.objects.filter(
-            membership=membership
-        ).first()
-        if config is None:
-            return ValidationError(
-                "%(username)s has no teacher configuration in %(organization)s.",
-                code="teacher_not_configured",
-                params={
-                    "username": user.username,
-                    "organization": getattr(organization, "name", organization),
-                },
-            )
-        if not config.approved:
-            return ValidationError(
-                "%(username)s's teacher profile is not approved yet.",
-                code="teacher_not_approved",
-                params={
-                    "username": user.username,
-                    "organization": getattr(organization, "name", organization),
-                },
-            )
-    else:
-        active_memberships = list(
-            user.organization_memberships.filter(
-                status=MembershipStatus.ACTIVE
-            ).select_related("organization")[:2]
+    if organization is None:
+        return ValidationError(
+            "%(username)s's scheduling operations require an organization context.",
+            code="organization_context_required",
+            params={"username": user.username},
         )
-        if len(active_memberships) == 1:
-            return bookable_teacher_error(
-                user, organization=active_memberships[0].organization
-            )
-        elif len(active_memberships) == 0:
-            from organizations.models import Organization
 
-            if not Organization.objects.exists():
-                if not profile.approved:
-                    return ValidationError(
-                        "%(username)s's teacher profile is not approved yet.",
-                        code="teacher_not_approved",
-                        params={"username": user.username},
-                    )
-                return None
-            return ValidationError(
-                "%(username)s has no active academy membership.",
-                code="teacher_not_active_member",
-                params={"username": user.username},
-            )
-        else:
-            return ValidationError(
-                "%(username)s belongs to multiple academies; organization context required.",
-                code="multiple_organizations_ambiguous",
-                params={"username": user.username},
-            )
+    membership = active_membership(user=user, organization=organization)
+    if membership is None:
+        return ValidationError(
+            "%(username)s is not an active member of %(organization)s.",
+            code="teacher_not_active_member",
+            params={
+                "teacher": user.username,
+                "username": user.username,
+                "organization": getattr(organization, "name", organization),
+            },
+        )
+    config = OrganizationTeacherConfiguration.objects.filter(
+        membership=membership
+    ).first()
+    if config is None:
+        return ValidationError(
+            "%(username)s has no teacher configuration in %(organization)s.",
+            code="teacher_not_configured",
+            params={
+                "username": user.username,
+                "organization": getattr(organization, "name", organization),
+            },
+        )
+    if not config.approved:
+        return ValidationError(
+            "%(username)s's teacher profile is not approved yet.",
+            code="teacher_not_approved",
+            params={
+                "username": user.username,
+                "organization": getattr(organization, "name", organization),
+            },
+        )
 
     return None
 
@@ -447,16 +421,6 @@ class Availability(models.Model):
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
-        # If organization was not explicitly passed, check if teacher has a single active membership
-        if not self.organization_id and self.teacher_id:
-            active_memberships = list(
-                self.teacher.organization_memberships.filter(
-                    status=MembershipStatus.ACTIVE
-                ).values_list("organization_id", flat=True)[:2]
-            )
-            if len(active_memberships) == 1:
-                self.organization_id = active_memberships[0]
-
         # The approved-profile rule reads another table, so it cannot be a DB
         # constraint; validating here makes it hold for the admin and direct ORM
         # writes as well as the API.

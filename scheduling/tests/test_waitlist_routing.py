@@ -240,6 +240,7 @@ class PreferredTeacherAtCapacityTests(PreferredTeacherWorld, TestCase):
         wanted = self.make_teacher()
         Availability.objects.create(
             teacher=wanted,
+            organization=self.level.track.organization,
             weekday=self.slot.weekday(),
             start_time_utc=time(3, 0),
             end_time_utc=time(4, 0),
