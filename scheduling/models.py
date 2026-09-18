@@ -1,10 +1,14 @@
 """Scheduling: when a teacher is free, who is booked when, and who teaches it.
 
-Field sets mirror specs/phase-3-scheduling.md, specs/phase-4-routing.md and
-specs/phase-5-pricing-waitlist.md exactly. What is deliberately *not* here:
-pricing (that is the ``pricing`` app — a rate is a lookup, not a schedule) and
-rubric-based ranking, which Phase 4's spec names as out of scope and warns
-specifically against letting step 3's "most remaining capacity" rule grow into.
+**Domain Architecture:**
+* **Authoritative Models & Fields:**
+  - ``Availability``: Tenant-owned availability windows (``organization`` ForeignKey required).
+  - ``Booking``: 1:1 sessions or cohort seats. Academy ownership is derived canonically from ``level.track.organization``.
+  - ``Cohort``: Group class schedule. Organization derived from ``level.track.organization``.
+  - ``TeacherWaitlist``: Unmet scheduling requests. Organization derived from ``level.track.organization``.
+* **Compatibility Status:** Single-tenant global inference patterns (e.g. ``organization=None`` fallbacks) have been removed. All scheduling logic requires explicit organization context or derives it from canonical child objects.
+* **Transition Status:** Complete. Teaching eligibility is enforced via ``curriculum.TeacherTrack`` and teacher capacity/approval via ``accounts.OrganizationTeacherConfiguration``.
+* **Intended End State:** Strict tenant isolation across all scheduling, routing, cohort, and waitlist operations.
 
 Decisions worth knowing before reading:
 
@@ -28,11 +32,9 @@ Decisions worth knowing before reading:
   routing and Phase 5's waitlist promotion both write bookings through
   ``Booking.save()`` for exactly this reason — a ``bulk_create`` of cohort seats
   or promoted entries would bypass the lock and ``clean()`` alike.
-* Phase 4 adds two creation-time rules that apply to *every* booking, routed or
-  directly booked: the teacher must specialise in the level's track, and the
-  booking must not push them past ``max_weekly_hours``. Both are creation-only,
-  for the same reason the availability check is — a teacher whose specialties or
-  cap are edited later must not be left holding unsaveable bookings.
+* Specialty and capacity rules apply to *every* booking, routed or directly booked:
+  the teacher must hold active ``TeacherTrack`` eligibility for the level's track,
+  and the booking must not push them past ``max_weekly_hours`` in ``OrganizationTeacherConfiguration``.
 """
 
 import uuid

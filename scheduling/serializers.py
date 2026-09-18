@@ -79,6 +79,14 @@ class AcademyScopedSerializerMixin:
         fields = super().get_fields()
         organization = self.organization
         if organization is None:
+            # During OpenAPI schema generation (drf-spectacular), serializer context has no organization.
+            # Return fields without scoping querysets so schema inspection succeeds.
+            if (
+                getattr(self, "swagger_fake_view", False)
+                or (self.context and getattr(self.context.get("view"), "swagger_fake_view", False))
+                or not self.context
+            ):
+                return fields
             raise RuntimeError(f"{self.__class__.__name__} requires an organization in the context.")
         for name, build in self.scoped_querysets.items():
             if name in fields:

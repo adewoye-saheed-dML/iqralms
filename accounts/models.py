@@ -4,9 +4,9 @@ Field sets here mirror specs/phase-1-accounts.md, plus three additions that were
 each agreed explicitly rather than added silently:
 
 * ``User.signup_code``, the parent-link mechanism (see learnings.md).
-* ``TeacherProfile.specialties``, added by Phase 3 so booking can eventually
-  know which tracks a teacher may teach. Nothing enforces it yet.
-* ``OrganizationTeacherConfiguration``, added by SaaS Phase 2 so the same teacher
+* ``TeacherProfile.specialties``, legacy global ManyToMany field (non-authoritative;
+  authoritative teaching assignments are now academy-scoped via ``curriculum.TeacherTrack``).
+* ``OrganizationTeacherConfiguration``, established by SaaS Phase 2 so the same teacher
   can work for two academies on different terms.
 
 **What stays global, and what became per-academy.** ``User`` is one identity for
@@ -14,9 +14,8 @@ one person, and it gains no ``organization`` foreign key — a field like that w
 hard-code "one user, one academy" into the model the whole platform points at.
 ``ParentLink`` likewise stays a global family relationship. What is
 *organization-specific* is how a teacher operates inside a given academy — their
-approval, capacity and rate — and that is the new model rather than a change to
-the old one, because ``TeacherProfile`` is still what scheduling and payouts read
-(see its docstring).
+approval, capacity and rate — and that is captured in ``OrganizationTeacherConfiguration``,
+which scheduling now reads directly when operating in an organization context.
 
 Nothing about curriculum, booking or payment behaviour lives here.
 """
@@ -172,19 +171,19 @@ class ParentLink(models.Model):
 class TeacherProfile(models.Model):
     """Teaching-side attributes. Only for role 'lead' or 'sub'.
 
-    **Still the global profile, and still authoritative.** SaaS Phase 2 added
-    ``OrganizationTeacherConfiguration`` beside this model rather than moving
-    fields out of it, because every existing consumer reads *this* one:
-    ``scheduling.models.bookable_teacher_error`` and ``specialty_error``,
-    ``scheduling.routing.lead_teacher`` and ``matching_sub_teachers``, the weekly
-    capacity cap in ``Booking``/``route_session``, and
-    ``payouts.services.applicable_rate``. Phase 2 is explicitly forbidden from
-    rewriting scheduling or payout behaviour, so this stays the row they read and
-    the new model is written but not yet consulted by them.
+    **Global profile and fallback layer.** Stores person-level attributes (`bio`)
+    and global role alignment checks (`is_lead`).
 
-    The two therefore overlap on ``approved``, ``max_weekly_hours`` and
-    ``hourly_payout_rate`` for as long as the migration takes. That is a stated
-    interim state, not an oversight — see tech-debt.md.
+    **Domain Architecture:**
+    * **Authoritative fields:** ``bio`` (person-level), ``is_lead`` (validated against ``User.role``).
+    * **Legacy / Non-authoritative fields:**
+      - ``approved``: Legacy global approval. Authoritative academy-level approval is managed per-organization by ``OrganizationTeacherConfiguration.approved``.
+      - ``max_weekly_hours``: Legacy global capacity dial. Authoritative academy-level capacity is managed per-organization by ``OrganizationTeacherConfiguration.max_weekly_hours``.
+      - ``specialties``: Legacy global M2M to ``curriculum.Track``. Authoritative academy-level teaching assignment is managed by ``curriculum.TeacherTrack`` (via ``OrganizationMembership``).
+      - ``hourly_payout_rate``: Global fallback payout rate.
+
+    **Transition status:** Complete. Scheduling, routing, availability, and capacity validations enforce tenant-scoped configuration via ``OrganizationTeacherConfiguration`` and ``TeacherTrack``.
+    **Intended end state:** ``TeacherProfile`` holds person-level defaults (`bio`, global role checks); all academy-specific operations enforce ``OrganizationTeacherConfiguration`` and ``TeacherTrack``.
     """
 
     user = models.OneToOneField(
@@ -256,8 +255,7 @@ class TeacherProfile(models.Model):
 class OrganizationTeacherConfiguration(models.Model):
     """How one teacher operates inside one academy: approved, capacity, rate.
 
-    The model SaaS Phase 2 exists to establish. A teacher is one ``User`` and may
-    work for several academies on entirely different terms:
+    A teacher is one ``User`` and may work for several academies on entirely different terms:
 
     .. code-block:: text
 
@@ -265,28 +263,15 @@ class OrganizationTeacherConfiguration(models.Model):
             Academy A  ->  approved, 10 h/week, 10.00/hour
             Academy B  ->  not approved, 20 h/week, 15.00/hour
 
-    A ``OneToOneField(User)`` cannot represent that, and duplicating the ``User``
-    to make it fit would break the one thing the identity model guarantees. So the
-    configuration hangs off the *membership* — which already means "this user in
-    this academy", already carries the uniqueness rule for that pair, and already
-    knows whether the relationship is active. A ``(user, organization)`` pair here
-    would have been a second, weaker copy of ``OrganizationMembership``.
+    The configuration hangs off the *membership* (``OrganizationMembership``) — which means
+    "this user in this academy", carries the uniqueness rule for that pair, and knows whether
+    the relationship is active.
 
-    **Which fields are per-academy, and which are not.** Approval, weekly capacity
-    and payout rate describe how a teacher works *for one academy*, so they are
-    here. ``bio`` describes the person and stays on ``TeacherProfile``.
-    ``is_lead`` is deliberately *not* copied: academy leadership is already
-    ``OrganizationMembership.role``, and a third representation of it — after
-    ``User.role`` and ``TeacherProfile.is_lead``, which are validated to agree —
-    would be one more thing to keep in step. ``specialties`` is untouched, because
-    it points at ``curriculum.Track``, which is still global until curriculum
-    tenancy (see learnings.md).
-
-    **Nothing reads this yet.** Scheduling and payouts still read
-    ``TeacherProfile``; their own tenancy phases move them across. This model is
-    the storage boundary being put in place first, so those phases have somewhere
-    to read *from* rather than having to invent it while also rewriting booking or
-    payroll.
+    **Domain Architecture:**
+    * **Authoritative fields:** ``approved``, ``max_weekly_hours``, ``hourly_payout_rate`` for a teacher within a specific academy.
+    * **Compatibility fields:** N/A (this is the primary model for academy-scoped teacher configuration).
+    * **Transition status:** Complete. Scheduling and routing consume this configuration for active teacher membership, approval, and weekly capacity enforcement.
+    * **Intended end state:** All academy-scoped operations consult ``OrganizationTeacherConfiguration`` via the teacher's ``OrganizationMembership``.
 
     A suspended membership keeps its configuration. The row is a record of the
     terms this academy set; whether it grants access is

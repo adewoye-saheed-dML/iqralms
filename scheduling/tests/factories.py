@@ -56,15 +56,11 @@ DEFAULT_WINDOW_END = time(17, 0)
 def teaches(teacher, level):
     """Record ``level.track`` among ``teacher``'s specialties, and return them.
 
-    Phase 4 makes ``Booking.clean()`` reject a level whose track is not one the
-    teacher specialises in, so "bookable" is no longer a property of a teacher
-    alone — it is a property of a teacher *and* a level. Any test that builds a
-    booking without going through ``BookingFactory`` needs this first, and any
-    test asserting the rejection needs to *not* call it.
+    Phase B07: The authoritative assignment is now TeacherTrack (academy-scoped).
+    The legacy ``TeacherProfile.specialties`` M2M is no longer written to.
+    Any test that builds a booking without going through ``BookingFactory``
+    needs this first, and any test asserting the rejection needs to *not* call it.
     """
-    profile = getattr(teacher, "teacher_profile", None)
-    if profile is not None:
-        profile.specialties.add(level.track)
     if (
         hasattr(level, "track")
         and hasattr(level.track, "organization")

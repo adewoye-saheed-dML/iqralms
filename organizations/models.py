@@ -16,20 +16,11 @@ does this person have inside this tenant" — so the two are allowed to disagree
 and a ``student`` who creates an academy is its ``owner`` while remaining a
 student. Nothing in this module reads or writes ``User.role``.
 
-**This app imports nothing from the existing domains.** No ``organization`` foreign
-key is added to ``User``, ``TeacherProfile``, ``Track``, ``Level``,
-``Availability``, ``Booking``, ``Cohort``, ``PricingAgreement``,
-``SessionAssessment`` or ``TeacherPayout`` — the spec is explicit that the tenant
-boundary is proved on its own first, and the domains are migrated one bounded phase
-at a time afterwards. The only import here is ``accounts``: for the user a
-membership points at, and for the timezone validator, so there is one IANA rule in
-the codebase rather than two.
-
-Traffic in the other direction started with SaaS Phase 2, which was the accounts
-domain's turn: ``accounts.OrganizationTeacherConfiguration`` hangs off
-``OrganizationMembership`` (by string reference, so the import stays one-way), and
-``accounts.tenancy`` reads ``active_membership()`` rather than re-deriving what an
-active membership is. Nothing was added to ``User`` itself.
+**Domain Architecture & Tenant Boundaries:**
+* ``Organization`` and ``OrganizationMembership`` establish the foundational tenant and access model.
+* Subsequent domain migrations attached tenant boundaries to domain objects (e.g., ``Track.organization``, ``Availability.organization``, ``StudentEnrollment.organization``, and canonical properties on ``Level``, ``Booking``, ``Cohort``, ``TeacherWaitlist``).
+* Membership access (``active_membership()``) is the single source of truth for organization permission and authorization across all domain operations.
+* ``accounts.OrganizationTeacherConfiguration`` and ``curriculum.TeacherTrack`` hang off ``OrganizationMembership`` to provide tenant-scoped teacher configuration and eligibility.
 
 Ownership is a *membership*, never a second field on ``Organization``. One source
 of truth: the owner is the row whose role is ``owner``, and the database holds

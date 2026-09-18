@@ -2448,21 +2448,106 @@ paths:
           description: Not an owner or administrator here.
         '404':
           description: Not found or cross-tenant access attempt.
+  /api/organizations/{organization_pk}/invitations/:
+    get:
+      operationId: organizations_invitations_list
+      description: /api/organizations/{id}/invitations/
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+    post:
+      operationId: organizations_invitations_create
+      description: /api/organizations/{id}/invitations/
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationCreate'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitationCreate'
+          description: ''
+  /api/organizations/{organization_pk}/invitations/accept/:
+    post:
+      operationId: organizations_invitations_accept_create
+      description: POST /api/organizations/{id}/invitations/accept/
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationAccept'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationAccept'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationAccept'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
   /api/organizations/{organization_pk}/memberships/:
     get:
       operationId: organizations_memberships_list
       description: |-
         /api/organizations/{id}/memberships/ — the tenant's directory, owner/admin only.
 
-        GET lists the organization's memberships; POST adds an existing user as
-        ``admin``, ``staff`` or ``teacher``. Staff and teacher members are refused
-        both: an ordinary member does not receive the academy's member directory in
-        Phase 1, and cannot change who is in it.
-
-        The organization a new membership lands in comes from ``self.organization`` —
-        the caller's *verified* membership — so it cannot be a tenant the caller was
-        not admitted to, whatever the request body says. ``owner`` is not an
-        assignable role, so no request here can create a second owner.
+        GET lists the organization's memberships. Staff and teacher members are refused
+        this: an ordinary member does not receive the academy's member directory in
+        Phase 1.
       parameters:
       - in: path
         name: organization_pk
@@ -2483,57 +2568,6 @@ paths:
                 items:
                   $ref: '#/components/schemas/OrganizationMembership'
           description: ''
-        '401':
-          description: Not authenticated.
-        '403':
-          description: Not an owner or administrator here.
-    post:
-      operationId: organizations_memberships_create
-      description: |-
-        /api/organizations/{id}/memberships/ — the tenant's directory, owner/admin only.
-
-        GET lists the organization's memberships; POST adds an existing user as
-        ``admin``, ``staff`` or ``teacher``. Staff and teacher members are refused
-        both: an ordinary member does not receive the academy's member directory in
-        Phase 1, and cannot change who is in it.
-
-        The organization a new membership lands in comes from ``self.organization`` —
-        the caller's *verified* membership — so it cannot be a tenant the caller was
-        not admitted to, whatever the request body says. ``owner`` is not an
-        assignable role, so no request here can create a second owner.
-      parameters:
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      tags:
-      - organizations
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OrganizationMembershipCreate'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/OrganizationMembershipCreate'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/OrganizationMembershipCreate'
-        required: true
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '201':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrganizationMembership'
-          description: ''
-        '400':
-          description: Unknown user, already a member, or a role that is not assignable
-            ('owner' never is).
         '401':
           description: Not authenticated.
         '403':
@@ -5521,6 +5555,79 @@ components:
       - slug
       - timezone
       - updated_at
+    OrganizationInvitation:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+          description: The email address invited. Used to match the user on acceptance.
+        role:
+          allOf:
+          - $ref: '#/components/schemas/OrganizationRoleEnum'
+          readOnly: true
+          description: |-
+            The role the user will hold upon acceptance.
+
+            * `owner` - Owner
+            * `admin` - Administrator
+            * `staff` - Staff
+            * `teacher` - Teacher
+        status:
+          allOf:
+          - $ref: '#/components/schemas/OrganizationInvitationStatusEnum'
+          readOnly: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - email
+      - expires_at
+      - id
+      - role
+      - status
+    OrganizationInvitationAccept:
+      type: object
+      description: Accepts an invitation using its token.
+      properties:
+        token:
+          type: string
+      required:
+      - token
+    OrganizationInvitationCreate:
+      type: object
+      description: Creates a pending invitation for an email address.
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/AssignableOrganizationRoleEnum'
+      required:
+      - email
+      - role
+    OrganizationInvitationStatusEnum:
+      enum:
+      - pending
+      - accepted
+      - expired
+      - revoked
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `accepted` - Accepted
+        * `expired` - Expired
+        * `revoked` - Revoked
     OrganizationMembership:
       type: object
       description: |-
@@ -5588,28 +5695,6 @@ components:
       - updated_at
       - user
       - username
-    OrganizationMembershipCreate:
-      type: object
-      description: |-
-        Adding an existing user to this academy.
-
-        A plain ``Serializer`` rather than a ``ModelSerializer``, because the two
-        fields a caller may send are the only two it should be possible to send:
-        ``organization`` comes from the URL and the caller's verified membership, and
-        ``status`` starts ``active`` — a membership created suspended is not something
-        Phase 1 was asked for.
-
-        No user is created here. The account has to exist already; onboarding people
-        into an academy that has not met them yet needs invitations, which is a later
-        phase with email, token and expiry decisions of its own.
-      properties:
-        user:
-          type: integer
-        role:
-          $ref: '#/components/schemas/AssignableOrganizationRoleEnum'
-      required:
-      - role
-      - user
     OrganizationRoleEnum:
       enum:
       - owner
@@ -5847,6 +5932,12 @@ components:
       properties:
         status:
           $ref: '#/components/schemas/StudentEnrollmentUpdateStatusEnum'
+        track_id:
+          type: integer
+          nullable: true
+        level_id:
+          type: integer
+          nullable: true
     PatchedTeacherTrackUpdate:
       type: object
       description: |-
@@ -6705,6 +6796,12 @@ components:
       properties:
         user:
           type: integer
+        track_id:
+          type: integer
+          nullable: true
+        level_id:
+          type: integer
+          nullable: true
       required:
       - user
     StudentEnrollmentUpdateStatusEnum:
