@@ -64,3 +64,60 @@ class StudentEnrollmentTests(TestCase):
         
         self.assertEqual(StudentEnrollment.objects.count(), 2)
         self.assertListEqual(list(student.organization_enrollments.all()), [e1, e2])
+
+    def test_enrollment_track_must_belong_to_same_organization(self):
+        from curriculum.tests.factories import TrackFactory
+        org1 = OrganizationFactory()
+        org2 = OrganizationFactory()
+        student = UserFactory(role=Role.STUDENT)
+        track = TrackFactory(organization=org2)
+        
+        enrollment = StudentEnrollment(
+            organization=org1,
+            user=student,
+            track=track,
+        )
+        with self.assertRaises(ValidationError) as exc_info:
+            enrollment.full_clean()
+        self.assertIn("track", exc_info.exception.message_dict)
+
+    def test_enrollment_level_requires_track(self):
+        from curriculum.tests.factories import LevelFactory
+        org = OrganizationFactory()
+        student = UserFactory(role=Role.STUDENT)
+        level = LevelFactory(track__organization=org)
+        
+        enrollment = StudentEnrollment(
+            organization=org,
+            user=student,
+            level=level,
+        )
+        with self.assertRaises(ValidationError) as exc_info:
+            enrollment.full_clean()
+        self.assertIn("level", exc_info.exception.message_dict)
+        self.assertEqual(
+            exc_info.exception.message_dict["level"][0],
+            "Cannot set a level without a track."
+        )
+
+    def test_enrollment_level_must_belong_to_enrollment_track(self):
+        from curriculum.tests.factories import LevelFactory, TrackFactory
+        org = OrganizationFactory()
+        student = UserFactory(role=Role.STUDENT)
+        track1 = TrackFactory(organization=org)
+        track2 = TrackFactory(organization=org)
+        level2 = LevelFactory(track=track2)
+        
+        enrollment = StudentEnrollment(
+            organization=org,
+            user=student,
+            track=track1,
+            level=level2,
+        )
+        with self.assertRaises(ValidationError) as exc_info:
+            enrollment.full_clean()
+        self.assertIn("level", exc_info.exception.message_dict)
+        self.assertEqual(
+            exc_info.exception.message_dict["level"][0],
+            "The level belongs to a different track."
+        )

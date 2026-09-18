@@ -17,7 +17,7 @@ Two rules the admin keeps rather than relaxes:
 
 from django.contrib import admin
 
-from .models import Organization, OrganizationMembership
+from .models import Organization, OrganizationMembership, StudentEnrollment
 
 
 class OrganizationMembershipInline(admin.TabularInline):
@@ -30,6 +30,16 @@ class OrganizationMembershipInline(admin.TabularInline):
     autocomplete_fields = ("user",)
 
 
+class StudentEnrollmentInline(admin.TabularInline):
+    """Which students are enrolled in this academy, on the academy's own page."""
+
+    model = StudentEnrollment
+    extra = 0
+    fields = ("user", "track", "level", "status", "created_at", "updated_at")
+    readonly_fields = ("created_at", "updated_at")
+    autocomplete_fields = ("user",)
+
+
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
     list_display = ("name", "slug", "timezone", "is_active", "created_at")
@@ -37,13 +47,27 @@ class OrganizationAdmin(admin.ModelAdmin):
     search_fields = ("name", "slug")
     prepopulated_fields = {"slug": ("name",)}
     readonly_fields = ("created_at", "updated_at")
-    inlines = [OrganizationMembershipInline]
+    inlines = [OrganizationMembershipInline, StudentEnrollmentInline]
 
 
 @admin.register(OrganizationMembership)
 class OrganizationMembershipAdmin(admin.ModelAdmin):
     list_display = ("organization", "user", "role", "status", "created_at")
     list_filter = ("role", "status", "organization")
+    search_fields = (
+        "organization__name",
+        "organization__slug",
+        "user__username",
+        "user__email",
+    )
+    autocomplete_fields = ("organization", "user")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(StudentEnrollment)
+class StudentEnrollmentAdmin(admin.ModelAdmin):
+    list_display = ("organization", "user", "track", "level", "status", "created_at")
+    list_filter = ("status", "organization")
     search_fields = (
         "organization__name",
         "organization__slug",

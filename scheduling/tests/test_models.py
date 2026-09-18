@@ -251,7 +251,10 @@ class AvailabilityLocalConversionTests(TestCase):
 
     def test_a_local_window_is_stored_as_utc(self):
         teacher = BookableTeacherFactory(timezone="Africa/Lagos")  # UTC+1, no DST
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         windows = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.MONDAY,
             start_local=time(9, 0),
@@ -264,7 +267,10 @@ class AvailabilityLocalConversionTests(TestCase):
 
     def test_the_teachers_own_zone_is_the_default(self):
         teacher = BookableTeacherFactory(timezone="Asia/Karachi")  # UTC+5
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         window = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.TUESDAY,
             start_local=time(20, 0),
@@ -276,7 +282,10 @@ class AvailabilityLocalConversionTests(TestCase):
     def test_a_window_crossing_utc_midnight_is_stored_as_two_rows(self):
         """A Lagos small-hours window lands on two different UTC days."""
         teacher = BookableTeacherFactory(timezone="Africa/Lagos")
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         windows = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.MONDAY,
             start_local=time(0, 30),
@@ -293,7 +302,10 @@ class AvailabilityLocalConversionTests(TestCase):
     def test_conversion_can_shift_the_weekday_without_splitting(self):
         """A New Zealand morning is the previous UTC day, in one piece."""
         teacher = BookableTeacherFactory(timezone="Pacific/Auckland")  # UTC+12/+13
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         windows = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.MONDAY,
             start_local=time(9, 0),
@@ -318,7 +330,10 @@ class AvailabilityLocalConversionTests(TestCase):
 
     def test_a_stored_window_round_trips_through_the_teachers_zone(self):
         teacher = BookableTeacherFactory(timezone="America/New_York")
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         window = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.THURSDAY,
             start_local=time(14, 0),
@@ -340,7 +355,10 @@ class AvailabilityLocalConversionTests(TestCase):
         a session ending at UTC midnight still books.
         """
         teacher = BookableTeacherFactory(timezone="America/New_York")
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         windows = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.THURSDAY,
             start_local=time(18, 0),
@@ -360,7 +378,10 @@ class AvailabilityLocalConversionTests(TestCase):
     def test_a_session_ending_at_utc_midnight_still_books(self):
         """The end-of-day sentinel is applied on both sides, so it cancels out."""
         teacher = BookableTeacherFactory(timezone="America/New_York")
+        org = OrganizationFactory()
+        ensure_teacher_configured(teacher, org)
         window = Availability.create_from_local(
+            organization=org,
             teacher=teacher,
             weekday=Weekday.THURSDAY,
             start_local=time(18, 0),
@@ -1328,6 +1349,7 @@ class AvailabilityTenancyTests(TestCase):
         ensure_teacher_configured(single_org_teacher, single_org)
 
         windows = Availability.create_from_local(
+            organization=single_org,
             teacher=single_org_teacher,
             weekday=Weekday.TUESDAY,
             start_local=time(10, 0),
@@ -1444,7 +1466,6 @@ class TeacherConfigurationTenancyTests(TestCase):
         track_c = TrackFactory(organization=org_c)
         level_c = LevelFactory(track=track_c)
         admit(self.teacher, org_c)
-        self.teacher.teacher_profile.specialties.add(track_c)
         # Ensure no configuration exists in org_c
         OrganizationTeacherConfiguration.objects.filter(
             membership__user=self.teacher, membership__organization=org_c
@@ -1593,19 +1614,128 @@ class TeacherTrackSchedulingTenancyTests(TestCase):
         from scheduling.models import specialty_error
 
         # With active eligibility in Academy A
-        self.assertIsNone(specialty_error(self.teacher, self.level_a))
+        self.assertIsNone(specialty_error(self.teacher, self.level_a, organization=self.org_a))
 
         # Without eligibility in Academy B
-        err_b = specialty_error(self.teacher, self.level_b)
+        err_b = specialty_error(self.teacher, self.level_b, organization=self.org_b)
         self.assertIsNotNone(err_b)
         self.assertEqual(err_b.code, "teacher_lacks_specialty")
 
         # When deactivated in Academy A
         self.tt_a.active = False
         self.tt_a.save()
-        err_a = specialty_error(self.teacher, self.level_a)
+        err_a = specialty_error(self.teacher, self.level_a, organization=self.org_a)
         self.assertIsNotNone(err_a)
         self.assertEqual(err_a.code, "teacher_lacks_specialty")
+
+
+class SpecialtyMigrationB07Tests(TestCase):
+    """Phase B07 — Finish Teacher Specialty Migration.
+
+    Acceptance criteria:
+    1. teacher assigned track in academy A -> can teach A
+    2. same teacher not assigned track in B -> cannot teach B
+    3. same track name in A and B -> independent
+    4. global legacy specialty cannot grant academy B access
+    """
+
+    def setUp(self):
+        from curriculum.models import TeacherTrack
+
+        self.org_a = OrganizationFactory(name="Academy A", slug="academy-a-b07")
+        self.org_b = OrganizationFactory(name="Academy B", slug="academy-b-b07")
+
+        self.teacher = BookableTeacherFactory()
+        self.membership_a = admit(self.teacher, self.org_a)
+        self.membership_b = admit(self.teacher, self.org_b)
+        ensure_teacher_configured(self.teacher, self.org_a)
+        ensure_teacher_configured(self.teacher, self.org_b)
+
+        # Same track *name* in both academies — distinct Track objects
+        self.track_a = TrackFactory(organization=self.org_a, name="Tajweed")
+        self.level_a = LevelFactory(track=self.track_a, name="Level 1")
+        self.track_b = TrackFactory(organization=self.org_b, name="Tajweed")
+        self.level_b = LevelFactory(track=self.track_b, name="Level 1")
+
+        # Teacher is assigned track only in Academy A
+        TeacherTrack.objects.create(
+            membership=self.membership_a,
+            track=self.track_a,
+            active=True,
+        )
+
+        # Availability in both
+        Availability.objects.create(
+            organization=self.org_a, teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0), end_time_utc=time(17, 0),
+        )
+        Availability.objects.create(
+            organization=self.org_b, teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0), end_time_utc=time(17, 0),
+        )
+
+        self.student_a = StudentFactory()
+        admit(self.student_a, self.org_a)
+        self.student_b = StudentFactory()
+        admit(self.student_b, self.org_b)
+
+    def test_same_track_name_in_a_and_b_are_independent(self):
+        """Two tracks named 'Tajweed' in different academies are independent objects."""
+        from scheduling.models import specialty_error
+
+        # Teacher eligible for Tajweed in A
+        self.assertIsNone(specialty_error(self.teacher, self.level_a, organization=self.org_a))
+        # Teacher not eligible for Tajweed in B (different Track object, no TeacherTrack)
+        err = specialty_error(self.teacher, self.level_b, organization=self.org_b)
+        self.assertIsNotNone(err)
+        self.assertEqual(err.code, "teacher_lacks_specialty")
+
+    def test_global_legacy_specialty_cannot_grant_academy_b_access(self):
+        """Writing to TeacherProfile.specialties does NOT grant academy-scoped eligibility."""
+        from scheduling.models import specialty_error
+
+        # Simulate legacy: add track_b to the global specialties M2M
+        self.teacher.teacher_profile.specialties.add(self.track_b)
+
+        # Despite the legacy global specialty, academy-scoped check must still reject
+        err = specialty_error(self.teacher, self.level_b, organization=self.org_b)
+        self.assertIsNotNone(err)
+        self.assertEqual(err.code, "teacher_lacks_specialty")
+
+    def test_global_legacy_specialty_cannot_enable_booking_in_academy_b(self):
+        """A booking in Academy B is rejected even if legacy specialties include track B."""
+        self.teacher.teacher_profile.specialties.add(self.track_b)
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student_b,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn(
+            "teacher_lacks_specialty", error_codes(ctx.exception, field="level")
+        )
+
+    def test_lead_teacher_requires_organization(self):
+        """lead_teacher() raises ValueError when called without organization."""
+        from scheduling.routing import lead_teacher
+
+        with self.assertRaises(ValueError):
+            lead_teacher(organization=None)
+
+    def test_matching_sub_teachers_requires_organization(self):
+        """matching_sub_teachers() raises ValueError when called without organization."""
+        from scheduling.routing import matching_sub_teachers
+
+        with self.assertRaises(ValueError):
+            matching_sub_teachers(self.level_a, organization=None)
 
 
 class BookingAndCohortTenancyTests(TestCase):
@@ -1861,3 +1991,60 @@ class MigrationStateTests(TestCase):
     def test_no_model_changes_are_missing_a_migration(self):
         """Guards acceptance criterion 1 against later model edits."""
         call_command("makemigrations", "--check", "--dry-run", verbosity=0)
+
+class AvailabilityValidationTests(TestCase):
+    def test_missing_organization_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            Availability.create_from_local(
+                teacher=None,
+                weekday=Weekday.MONDAY,
+                start_local=time(10, 0),
+                end_local=time(12, 0),
+            )
+
+    def test_teacher_not_in_organization_raises_validation_error(self):
+        teacher = BookableTeacherFactory()
+        org = OrganizationFactory()
+        with self.assertRaises(ValidationError) as cm:
+            Availability.create_from_local(
+                organization=org,
+                teacher=teacher,
+                weekday=Weekday.MONDAY,
+                start_local=time(10, 0),
+                end_local=time(12, 0),
+            )
+        self.assertIn("active membership in the organization", str(cm.exception))
+
+    def test_teacher_not_configured_raises_validation_error(self):
+        teacher = BookableTeacherFactory()
+        org = OrganizationFactory()
+        # Give them membership, but no configuration
+        from organizations.models import OrganizationMembership, OrganizationRole
+        OrganizationMembership.objects.create(organization=org, user=teacher, role=OrganizationRole.TEACHER)
+        
+        with self.assertRaises(ValidationError) as cm:
+            Availability.create_from_local(
+                organization=org,
+                teacher=teacher,
+                weekday=Weekday.MONDAY,
+                start_local=time(10, 0),
+                end_local=time(12, 0),
+            )
+        self.assertIn("valid academy configuration", str(cm.exception))
+
+    def test_academy_a_teacher_availability_cannot_be_created_under_academy_b(self):
+        """An active, configured teacher in Academy A cannot have availability created in Academy B."""
+        org_a = OrganizationFactory(name="Academy A")
+        org_b = OrganizationFactory(name="Academy B")
+        teacher = BookableTeacherFactory()
+        ensure_teacher_configured(teacher, org_a)
+
+        with self.assertRaises(ValidationError) as cm:
+            Availability.create_from_local(
+                organization=org_b,
+                teacher=teacher,
+                weekday=Weekday.MONDAY,
+                start_local=time(10, 0),
+                end_local=time(12, 0),
+            )
+        self.assertIn("active membership in the organization", str(cm.exception))

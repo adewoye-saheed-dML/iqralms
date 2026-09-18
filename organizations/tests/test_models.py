@@ -224,6 +224,21 @@ class ActiveMembershipTests(TestCase):
         self.assertEqual(membership.role, OrganizationRole.OWNER)
         self.assertEqual(membership.organization, self.organization)
 
+    def test_inactive_organization_denies_active_member(self):
+        self.organization.is_active = False
+        self.organization.save()
+        self.assertIsNone(
+            active_membership(user=self.owner, organization=self.organization)
+        )
+
+    def test_inactive_organization_denies_suspended_member(self):
+        self.organization.is_active = False
+        self.organization.save()
+        suspended = SuspendedMembershipFactory(organization=self.organization)
+        self.assertIsNone(
+            active_membership(user=suspended.user, organization=self.organization)
+        )
+
     def test_an_organization_id_works_as_well_as_an_instance(self):
         self.assertIsNotNone(
             active_membership(user=self.owner, organization=self.organization.pk)

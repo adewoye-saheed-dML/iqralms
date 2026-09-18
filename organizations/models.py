@@ -16,25 +16,29 @@ does this person have inside this tenant" — so the two are allowed to disagree
 and a ``student`` who creates an academy is its ``owner`` while remaining a
 student. Nothing in this module reads or writes ``User.role``.
 
-**This app imports nothing from the existing domains.** No ``organization`` foreign
-key is added to ``User``, ``TeacherProfile``, ``Track``, ``Level``,
-``Availability``, ``Booking``, ``Cohort``, ``PricingAgreement``,
-``SessionAssessment`` or ``TeacherPayout`` — the spec is explicit that the tenant
-boundary is proved on its own first, and the domains are migrated one bounded phase
-at a time afterwards. The only import here is ``accounts``: for the user a
-membership points at, and for the timezone validator, so there is one IANA rule in
-the codebase rather than two.
-
-Traffic in the other direction started with SaaS Phase 2, which was the accounts
-domain's turn: ``accounts.OrganizationTeacherConfiguration`` hangs off
-``OrganizationMembership`` (by string reference, so the import stays one-way), and
-``accounts.tenancy`` reads ``active_membership()`` rather than re-deriving what an
-active membership is. Nothing was added to ``User`` itself.
+**Domain Architecture & Tenant Boundaries:**
+* ``Organization`` and ``OrganizationMembership`` establish the foundational tenant and access model.
+* Subsequent domain migrations attached tenant boundaries to domain objects (e.g., ``Track.organization``, ``Availability.organization``, ``StudentEnrollment.organization``, and canonical properties on ``Level``, ``Booking``, ``Cohort``, ``TeacherWaitlist``).
+* Membership access (``active_membership()``) is the single source of truth for organization permission and authorization across all domain operations.
+* ``accounts.OrganizationTeacherConfiguration`` and ``curriculum.TeacherTrack`` hang off ``OrganizationMembership`` to provide tenant-scoped teacher configuration and eligibility.
 
 Ownership is a *membership*, never a second field on ``Organization``. One source
 of truth: the owner is the row whose role is ``owner``, and the database holds
 "at most one of those per organization" as a constraint rather than trusting the
 code that writes it.
+
+**Membership vs Enrollment (B02):**
+
+    Membership means *what authority a person holds inside this academy*;
+    enrollment means *which academic programme a student is placed in here*.
+
+Membership is the tenant-access relation: it decides whether a user may act inside
+an academy and as what role (owner, admin, staff, teacher). Enrollment is the
+academic-placement relation: it records which student is studying which track at
+which level inside an academy. A student who is enrolled is not automatically a
+membership-level participant, and a staff member who holds a membership is not
+automatically a student. The two answer different questions and neither implies the
+other.
 """
 
 from django.core.exceptions import ValidationError
@@ -306,7 +310,42 @@ def active_membership(*, user, organization):
         return None
     return (
         OrganizationMembership.objects.active()
-        .filter(user=user, organization_id=organization_id)
+        .filter(
+            user=user,
+            organization_id=organization_id,
+            organization__is_active=True,
+        )
+        .select_related("organization")
+        .first()
+    )
+
+
+def active_enrollment(*, user, organization):
+    """The student's active enrollment in that organization, or ``None``.
+
+    The one function that answers "is this student an active participant in
+    this academy". Uses ``StudentEnrollment`` — the canonical academic
+    participation relation established in B02 — rather than
+    ``OrganizationMembership``, which answers a different question (authority).
+
+    Accepts an ``Organization`` or a bare pk, because callers have the URL's id
+    rather than the object. Returns ``None`` for an anonymous user, a non-enrolled
+    student, and an inactive enrollment alike.
+    """
+    # Import here to avoid circular reference at module level; StudentEnrollment
+    # is defined later in this same file.
+    if not getattr(user, "is_authenticated", False):
+        return None
+    organization_id = getattr(organization, "pk", organization)
+    if organization_id is None:
+        return None
+    return (
+        StudentEnrollment.objects.active()
+        .filter(
+            user=user,
+            organization_id=organization_id,
+            organization__is_active=True,
+        )
         .select_related("organization")
         .first()
     )
@@ -319,11 +358,44 @@ class EnrollmentStatus(models.TextChoices):
     INACTIVE = "inactive", "Inactive"
 
 
-class StudentEnrollment(models.Model):
-    """A student's enrollment in an academy.
+class StudentEnrollmentQuerySet(models.QuerySet):
+    def active(self):
+        """The enrollments that represent active student participation in an academy.
 
-    Records whether a student user participates in an academy. This is separate
-    from OrganizationMembership which defines administrative authority.
+        One definition, used everywhere. Mirrors ``OrganizationMembershipQuerySet.active()``
+        for the enrollment relation: an inactive enrollment is a record, not participation.
+        """
+        return self.filter(status=EnrollmentStatus.ACTIVE)
+
+
+class StudentEnrollment(models.Model):
+    """A student's academic placement in one academy — *which programme they study here*.
+
+    **Membership means what authority a person holds inside this academy;
+    enrollment means which academic programme a student is placed in here.**
+
+    This model answers the academy-specific academic questions:
+
+    .. code-block:: text
+
+        academy          → organization
+        student          → user (must have role 'student')
+        programme/track  → track (must belong to this organization)
+        level/placement  → level (must belong to the enrollment's track)
+        status           → active or inactive
+
+    It is deliberately separate from ``OrganizationMembership``, which answers
+    the authority question — a staff member who holds a membership is not a
+    student, and a student who is enrolled is not automatically an admin. The
+    two relations answer different questions and neither implies the other.
+
+    Invariants enforced in ``clean()``:
+
+    * ``user.role == 'student'``
+    * ``organization == track.organization`` (when track is set)
+    * ``level.track == track`` (when both are set)
+    * A level cannot be set without a track
+    * Enrollment does not cross academy boundaries
     """
 
     organization = models.ForeignKey(
@@ -338,6 +410,23 @@ class StudentEnrollment(models.Model):
         related_name="organization_enrollments",
         help_text="The student user.",
     )
+
+    track = models.ForeignKey(
+        "curriculum.Track",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="student_enrollments",
+        help_text="The academic track the student is enrolled in.",
+    )
+    level = models.ForeignKey(
+        "curriculum.Level",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="student_enrollments",
+        help_text="The student's current level in the track.",
+    )
     status = models.CharField(
         max_length=16,
         choices=EnrollmentStatus.choices,
@@ -346,6 +435,8 @@ class StudentEnrollment(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StudentEnrollmentQuerySet.as_manager()
 
     class Meta:
         ordering = ["organization_id", "pk"]
@@ -365,6 +456,36 @@ class StudentEnrollment(models.Model):
 
     def clean(self):
         from accounts.models import Role
+
+        if getattr(self, "track_id", None):
+            if self.track.organization_id != self.organization_id:
+                raise ValidationError(
+                    {
+                        "track": ValidationError(
+                            "The track belongs to a different organization.",
+                            code="track_organization_mismatch",
+                        )
+                    }
+                )
+        if getattr(self, "level_id", None):
+            if not getattr(self, "track_id", None):
+                raise ValidationError(
+                    {
+                        "level": ValidationError(
+                            "Cannot set a level without a track.",
+                            code="level_without_track",
+                        )
+                    }
+                )
+            if self.level.track_id != self.track_id:
+                raise ValidationError(
+                    {
+                        "level": ValidationError(
+                            "The level belongs to a different track.",
+                            code="level_track_mismatch",
+                        )
+                    }
+                )
         if self.user_id and self.user.role != Role.STUDENT:
             raise ValidationError(
                 {
@@ -381,3 +502,80 @@ class StudentEnrollment(models.Model):
 
     def __str__(self):
         return f"{self.user.username} enrolled in {self.organization.slug} ({self.status})"
+
+class InvitationStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    ACCEPTED = "accepted", "Accepted"
+    EXPIRED = "expired", "Expired"
+    REVOKED = "revoked", "Revoked"
+
+
+class OrganizationInvitation(models.Model):
+    """An invitation to join an academy with a specific role.
+
+    Phase B04's implementation of a real invitation lifecycle. Unlike the
+    original behaviour of creating an active membership immediately, this
+    model tracks the invitation's state, preventing the invited user from
+    gaining access until they explicitly accept.
+
+    It also permits inviting email addresses that do not yet correspond to
+    a registered user, and matches them up when they sign up and accept.
+    """
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="invitations",
+    )
+    email = models.EmailField(
+        help_text="The email address invited. Used to match the user on acceptance.",
+        db_index=True,
+    )
+    role = models.CharField(
+        max_length=16,
+        choices=OrganizationRole.choices,
+        help_text="The role the user will hold upon acceptance.",
+    )
+    token_digest = models.CharField(
+        max_length=128,
+        unique=True,
+        help_text="Hashed version of the token sent to the user.",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=InvitationStatus.choices,
+        default=InvitationStatus.PENDING,
+    )
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "email"],
+                condition=models.Q(status="pending"),
+                name="unique_pending_invitation_per_email",
+                violation_error_message="A pending invitation already exists for this email in this academy.",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.email} -> {self.organization.slug} ({self.status})"
+
+    def is_valid(self) -> bool:
+        """Returns True if the invitation is pending and not expired."""
+        from django.utils import timezone
+
+        return self.status == InvitationStatus.PENDING and self.expires_at > timezone.now()
+
+    @classmethod
+    def generate_token_and_digest(cls) -> tuple[str, str]:
+        """Generate a random secure token and its SHA-256 digest."""
+        import secrets
+        import hashlib
+
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        return token, digest

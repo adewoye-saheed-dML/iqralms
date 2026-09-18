@@ -171,7 +171,7 @@ def _candidate(*, student, teacher, level, start_time_utc, duration_minutes, rea
     return booking, None
 
 
-def lead_teacher(organization=None, track=None):
+def lead_teacher(*, organization, track=None):
     """The academy's lead teacher, or None if there isn't a bookable one.
 
     SaaS Phase 4: Lead candidate resolution is academy-scoped.
@@ -180,36 +180,30 @@ def lead_teacher(organization=None, track=None):
     - active membership in organization
     - approved OrganizationTeacherConfiguration
     - active TeacherTrack for requested track (if track provided)
+
+    Phase B07: organization is mandatory. The legacy single-tenant fallback
+    via TeacherProfile has been removed.
     """
-    if organization is not None:
-        from organizations.models import MembershipStatus
+    if organization is None:
+        raise ValueError("lead_teacher() requires an explicit organization.")
 
-        qs = User.objects.filter(
-            role=Role.LEAD,
-            organization_memberships__organization=organization,
-            organization_memberships__status=MembershipStatus.ACTIVE,
-            organization_memberships__teacher_configuration__approved=True,
-        )
-        if track is not None:
-            qs = qs.filter(
-                organization_memberships__teacher_tracks__track=track,
-                organization_memberships__teacher_tracks__active=True,
-            )
-        return qs.order_by("pk").distinct().first()
+    from organizations.models import MembershipStatus
 
-    return (
-        User.objects.filter(
-            role=Role.LEAD,
-            teacher_profile__is_lead=True,
-            teacher_profile__approved=True,
-        )
-        .select_related("teacher_profile")
-        .order_by("pk")
-        .first()
+    qs = User.objects.filter(
+        role=Role.LEAD,
+        organization_memberships__organization=organization,
+        organization_memberships__status=MembershipStatus.ACTIVE,
+        organization_memberships__teacher_configuration__approved=True,
     )
+    if track is not None:
+        qs = qs.filter(
+            organization_memberships__teacher_tracks__track=track,
+            organization_memberships__teacher_tracks__active=True,
+        )
+    return qs.order_by("pk").distinct().first()
 
 
-def matching_sub_teachers(level, organization=None):
+def matching_sub_teachers(level, *, organization):
     """Approved sub-teachers who specialise in ``level``'s track in ``organization``.
 
     SaaS Phase 4: Sub-teacher candidate resolution is academy-scoped using TeacherTrack.
@@ -218,33 +212,24 @@ def matching_sub_teachers(level, organization=None):
     - active organization membership
     - approved organization teacher configuration
     - active TeacherTrack for requested track
+
+    Phase B07: organization is mandatory. The legacy single-tenant fallback
+    via TeacherProfile.specialties has been removed.
     """
-    if organization is None and hasattr(level, "track") and hasattr(level.track, "organization"):
-        organization = level.track.organization
+    if organization is None:
+        raise ValueError("matching_sub_teachers() requires an explicit organization.")
 
-    if organization is not None:
-        from organizations.models import MembershipStatus
-
-        return (
-            User.objects.filter(
-                role=Role.SUB,
-                organization_memberships__organization=organization,
-                organization_memberships__status=MembershipStatus.ACTIVE,
-                organization_memberships__teacher_configuration__approved=True,
-                organization_memberships__teacher_tracks__track=level.track,
-                organization_memberships__teacher_tracks__active=True,
-            )
-            .distinct()
-            .order_by("pk")
-        )
+    from organizations.models import MembershipStatus
 
     return (
         User.objects.filter(
             role=Role.SUB,
-            teacher_profile__approved=True,
-            teacher_profile__specialties=level.track,
+            organization_memberships__organization=organization,
+            organization_memberships__status=MembershipStatus.ACTIVE,
+            organization_memberships__teacher_configuration__approved=True,
+            organization_memberships__teacher_tracks__track=level.track,
+            organization_memberships__teacher_tracks__active=True,
         )
-        .select_related("teacher_profile")
         .distinct()
         .order_by("pk")
     )
@@ -284,7 +269,7 @@ def _waitlist(*, student, teacher, level, start_time_utc, duration_minutes, why_
     )
 
 
-def _resolve_preferred(*, student, teacher, level, start_time_utc, duration_minutes, organization=None):
+def _resolve_preferred(*, student, teacher, level, start_time_utc, duration_minutes, organization):
     """The whole preferred-teacher path (Phase 5). Returns a ``Routed`` or raises.
 
     The spec's four steps, in order:
@@ -361,7 +346,7 @@ def _resolve_preferred(*, student, teacher, level, start_time_utc, duration_minu
     raise as_validation_error(why_not)
 
 
-def _route_to_cohort(*, student, level, start_time_utc, duration_minutes, organization=None):
+def _route_to_cohort(*, student, level, start_time_utc, duration_minutes, organization):
     """Step 1. Returns ``((booking, cohort) | None, why_not)``.
 
     ``why_not`` is filled in whether or not the step succeeds, so a caller can
@@ -419,10 +404,8 @@ def _route_to_cohort(*, student, level, start_time_utc, duration_minutes, organi
     return None, rejected
 
 
-def _route_to_lead(*, student, level, start_time_utc, duration_minutes, organization=None):
+def _route_to_lead(*, student, level, start_time_utc, duration_minutes, organization):
     """Step 2. Returns ``(booking | None, why_not)``."""
-    if organization is None and hasattr(level, "track") and hasattr(level.track, "organization"):
-        organization = level.track.organization
     track = getattr(level, "track", None)
     lead = lead_teacher(organization=organization, track=track)
     if lead is None:
@@ -438,7 +421,7 @@ def _route_to_lead(*, student, level, start_time_utc, duration_minutes, organiza
     return booking, ({} if why_not is None else {lead.username: why_not})
 
 
-def _route_to_sub(*, student, level, start_time_utc, duration_minutes, organization=None):
+def _route_to_sub(*, student, level, start_time_utc, duration_minutes, organization):
     """Step 3. Returns ``(booking | None, why_not)``.
 
     Every specialty match is tested, then the eligible ones are ranked by
@@ -450,8 +433,6 @@ def _route_to_sub(*, student, level, start_time_utc, duration_minutes, organizat
     The teachers who were ruled out come back even when one is chosen, so a caller
     can report who was considered rather than only who won.
     """
-    if organization is None and hasattr(level, "track") and hasattr(level.track, "organization"):
-        organization = level.track.organization
     subs = list(matching_sub_teachers(level, organization=organization))
     if not subs:
         return None, f"No approved sub-teacher specialises in {level.track.name}."
@@ -496,7 +477,7 @@ def route_session(
     start_time_utc,
     duration_minutes=None,
     preferred_teacher=None,
-    organization=None,
+    organization,
 ):
     """Assign a teacher for ``student`` at ``start_time_utc`` and book it.
 
@@ -529,12 +510,6 @@ def route_session(
     than being quietly reassigned to a teacher the student was never matched
     with.
     """
-    if (
-        organization is None
-        and hasattr(level, "track")
-        and hasattr(level.track, "organization")
-    ):
-        organization = level.track.organization
 
     if (
         organization is not None
@@ -608,7 +583,7 @@ def route_session(
 
 
 def promote_waitlist_entry(
-    entry, *, start_time_utc=None, duration_minutes=None, organization=None
+    entry, *, start_time_utc=None, duration_minutes=None, organization
 ):
     """Turn an open ``TeacherWaitlist`` entry into the session it was waiting for.
 

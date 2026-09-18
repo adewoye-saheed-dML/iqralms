@@ -24,7 +24,7 @@ from django.test import TestCase
 from django.utils import timezone as dj_timezone
 
 from accounts.tests.factories import StudentFactory
-from curriculum.tests.factories import LevelFactory, admit
+from curriculum.tests.factories import LevelFactory, GroupEligibleLevelFactory, admit
 from scheduling.models import (
     Availability,
     Booking,
@@ -111,8 +111,12 @@ class WeeklyCommittedMinutesTests(TestCase):
     """What counts towards a teacher's week, and what does not."""
 
     def setUp(self):
+        from organizations.tests.factories import OrganizationFactory
+        from scheduling.tests.factories import ensure_teacher_configured
+        self.organization = OrganizationFactory()
         self.teacher = BookableTeacherFactory()
-        self.level = LevelFactory()
+        ensure_teacher_configured(self.teacher, self.organization)
+        self.level = GroupEligibleLevelFactory(track__organization=self.organization)
         teaches(self.teacher, self.level)
         # A full-day window on every weekday, so availability can never be the
         # reason a booking below is refused.
@@ -152,7 +156,7 @@ class WeeklyCommittedMinutesTests(TestCase):
         return booking
 
     def committed(self, moment=None):
-        return weekly_committed_minutes(self.teacher.pk, moment or A_MONDAY)
+        return weekly_committed_minutes(self.teacher.pk, moment or A_MONDAY, organization=self.organization)
 
     def test_an_empty_week_is_zero(self):
         self.assertEqual(self.committed(), 0)
@@ -222,22 +226,22 @@ class WeeklyCommittedMinutesTests(TestCase):
         lever this phase exists for — look more expensive than the 1:1 sessions
         they replace, and a six-seat class would eat three hours of a cap.
         """
-        cohort = CohortFactory(teacher=self.teacher, max_students=6)
+        cohort = CohortFactory(teacher=self.teacher, max_students=6, level=self.level)
         for _ in range(4):
             self.book(cohort.schedule_start_utc, minutes=30, cohort=cohort)
 
         moment = cohort.schedule_start_utc
-        self.assertEqual(weekly_committed_minutes(self.teacher.pk, moment), 30)
+        self.assertEqual(weekly_committed_minutes(self.teacher.pk, moment, organization=self.organization), 30)
 
     def test_two_different_cohorts_count_separately(self):
-        first = CohortFactory(teacher=self.teacher)
+        first = CohortFactory(teacher=self.teacher, level=self.level)
         second = CohortFactory(teacher=self.teacher, level=first.level)
         self.book(A_MONDAY + timedelta(hours=9), minutes=30, cohort=first)
         self.book(A_MONDAY + timedelta(hours=11), minutes=30, cohort=second)
         self.assertEqual(self.committed(), 60)
 
     def test_a_cohort_and_a_one_to_one_session_both_count(self):
-        cohort = CohortFactory(teacher=self.teacher)
+        cohort = CohortFactory(teacher=self.teacher, level=self.level)
         self.book(A_MONDAY + timedelta(hours=9), minutes=30, cohort=cohort)
         self.book(A_MONDAY + timedelta(hours=14), minutes=30)
         self.assertEqual(self.committed(), 60)
@@ -247,19 +251,19 @@ class WeeklyCommittedMinutesTests(TestCase):
         self.book(A_MONDAY + timedelta(hours=10), minutes=30)
         self.assertEqual(
             weekly_committed_minutes(
-                self.teacher.pk, A_MONDAY, including=(None, 45)
+                self.teacher.pk, A_MONDAY, including=(None, 45), organization=self.organization
             ),
             75,
         )
 
     def test_including_a_seat_in_an_already_counted_cohort_adds_nothing(self):
-        cohort = CohortFactory(teacher=self.teacher)
+        cohort = CohortFactory(teacher=self.teacher, level=self.level)
         self.book(cohort.schedule_start_utc, minutes=30, cohort=cohort)
         self.assertEqual(
             weekly_committed_minutes(
                 self.teacher.pk,
                 cohort.schedule_start_utc,
-                including=(cohort.pk, 30),
+                including=(cohort.pk, 30), organization=self.organization,
             ),
             30,
         )
@@ -268,7 +272,7 @@ class WeeklyCommittedMinutesTests(TestCase):
         booking = self.book(A_MONDAY + timedelta(hours=10), minutes=30)
         self.assertEqual(
             weekly_committed_minutes(
-                self.teacher.pk, A_MONDAY, excluding_pk=booking.pk
+                self.teacher.pk, A_MONDAY, excluding_pk=booking.pk, organization=self.organization
             ),
             0,
         )
@@ -307,7 +311,9 @@ class WeeklyCapEnforcementTests(TestCase):
     """The cap refuses bookings — the rule Phase 4 actually turns on."""
 
     def setUp(self):
-        self.level = LevelFactory()
+        from organizations.tests.factories import OrganizationFactory
+        self.organization = OrganizationFactory()
+        self.level = GroupEligibleLevelFactory(track__organization=self.organization)
         self.window_start = time(0, 0)
 
     def teacher_with_cap(self, hours, factory=BookableTeacherFactory):
@@ -358,7 +364,7 @@ class WeeklyCapEnforcementTests(TestCase):
         self.book(teacher, timedelta(hours=9), minutes=30)
         self.book(teacher, timedelta(hours=10), minutes=30)
         self.assertEqual(
-            weekly_committed_minutes(teacher.pk, self.next_monday()), 60
+            weekly_committed_minutes(teacher.pk, self.next_monday(), organization=self.organization), 60
         )
 
     def test_a_booking_over_the_cap_is_rejected(self):
@@ -434,7 +440,7 @@ class WeeklyCapEnforcementTests(TestCase):
                 start_time_utc=cohort.schedule_start_utc,
             )
         self.assertEqual(
-            weekly_committed_minutes(teacher.pk, cohort.schedule_start_utc), 30
+            weekly_committed_minutes(teacher.pk, cohort.schedule_start_utc, organization=self.organization), 30
         )
 
     def test_lowering_a_cap_does_not_freeze_existing_bookings(self):

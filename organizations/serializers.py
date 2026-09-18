@@ -180,6 +180,7 @@ class OrganizationMembershipCreateSerializer(serializers.Serializer):
     phase with email, token and expiry decisions of its own.
     """
 
+
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
     role = serializers.ChoiceField(choices=ASSIGNABLE_ORGANIZATION_ROLES)
 
@@ -257,6 +258,8 @@ class StudentListSerializer(serializers.ModelSerializer):
     date_of_birth = serializers.DateField(source="user.date_of_birth", read_only=True)
     is_minor = serializers.BooleanField(source="user.is_minor", read_only=True)
     enrollment_status = serializers.CharField(source="status", read_only=True)
+    track_id = serializers.IntegerField(source="track.id", read_only=True, allow_null=True)
+    level_id = serializers.IntegerField(source="level.id", read_only=True, allow_null=True)
 
     class Meta:
         from .models import StudentEnrollment
@@ -271,7 +274,11 @@ class StudentListSerializer(serializers.ModelSerializer):
             "last_name",
             "date_of_birth",
             "is_minor",
+
             "enrollment_status",
+            "track_id",
+            "level_id",
+
             "created_at",
             "updated_at",
         ]
@@ -286,7 +293,16 @@ class StudentDetailSerializer(StudentListSerializer):
 class StudentEnrollmentCreateSerializer(serializers.Serializer):
     """Enrolling an existing student user into an academy."""
 
+
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    from curriculum.models import Track, Level
+    track_id = serializers.PrimaryKeyRelatedField(
+        queryset=Track.objects.all(), source="track", required=False, allow_null=True
+    )
+    level_id = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.all(), source="level", required=False, allow_null=True
+    )
+
 
     def validate_user(self, user):
         from accounts.models import Role
@@ -305,11 +321,15 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         from .models import StudentEnrollment, EnrollmentStatus
         
+
         enrollment = StudentEnrollment(
             organization=self.context["organization"],
             user=validated_data["user"],
+            track=validated_data.get("track"),
+            level=validated_data.get("level"),
             status=EnrollmentStatus.ACTIVE,
         )
+
         try:
             enrollment.save()
         except DjangoValidationError as exc:
@@ -320,14 +340,149 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
 class StudentEnrollmentUpdateSerializer(serializers.Serializer):
     """Updating a student's enrollment status."""
 
+
     from .models import EnrollmentStatus
-    status = serializers.ChoiceField(choices=EnrollmentStatus.choices)
+    from curriculum.models import Track, Level
+    status = serializers.ChoiceField(choices=EnrollmentStatus.choices, required=False)
+    track_id = serializers.PrimaryKeyRelatedField(
+        queryset=Track.objects.all(), source="track", required=False, allow_null=True
+    )
+    level_id = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.all(), source="level", required=False, allow_null=True
+    )
+
 
     def update(self, enrollment, validated_data):
+
         if "status" in validated_data:
             enrollment.status = validated_data["status"]
+        if "track" in validated_data:
+            enrollment.track = validated_data["track"]
+        if "level" in validated_data:
+            enrollment.level = validated_data["level"]
+
         try:
             enrollment.save()
         except DjangoValidationError as exc:
             raise as_drf_error(exc) from exc
         return enrollment
+
+from .models import OrganizationInvitation, InvitationStatus
+
+class OrganizationInvitationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrganizationInvitation
+        fields = ["id", "email", "role", "status", "expires_at", "created_at"]
+        read_only_fields = fields
+
+
+class OrganizationInvitationCreateSerializer(serializers.Serializer):
+    """Creates a pending invitation for an email address."""
+    email = serializers.EmailField()
+    role = serializers.ChoiceField(choices=ASSIGNABLE_ORGANIZATION_ROLES)
+
+    def validate_email(self, email):
+        organization = self.context["organization"]
+        # If user with email exists, are they already a member?
+        # Note: B04 allows inviting an email that doesn't have an account yet.
+        user = User.objects.filter(email=email).first()
+        if user and OrganizationMembership.objects.filter(
+            organization=organization, user=user
+        ).exists():
+            raise serializers.ValidationError(
+                "A user with this email is already a member of this organization."
+            )
+        
+        # Check if pending invitation exists
+        if OrganizationInvitation.objects.filter(
+            organization=organization, email=email, status=InvitationStatus.PENDING
+        ).exists():
+            raise serializers.ValidationError(
+                "A pending invitation already exists for this email."
+            )
+        return email
+
+    def save(self):
+        email = self.validated_data["email"]
+        role = self.validated_data["role"]
+        organization = self.context["organization"]
+        from django.utils import timezone
+        import datetime
+        
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        
+        invitation = OrganizationInvitation.objects.create(
+            organization=organization,
+            email=email,
+            role=role,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING
+        )
+        
+        # We attach the raw token to the instance for the view to use
+        invitation.raw_token = token
+        return invitation
+
+
+class OrganizationInvitationAcceptSerializer(serializers.Serializer):
+    """Accepts an invitation using its token."""
+    token = serializers.CharField()
+
+    def validate(self, attrs):
+        token = attrs["token"]
+        organization = self.context["organization"]
+        user = self.context["request"].user
+
+        import hashlib
+        digest = hashlib.sha256(token.encode()).hexdigest()
+
+        invitation = OrganizationInvitation.objects.filter(
+            organization=organization,
+            token_digest=digest
+        ).first()
+
+        if not invitation:
+            raise serializers.ValidationError({"token": "Invalid invitation token."})
+        
+        if invitation.status != InvitationStatus.PENDING:
+            raise serializers.ValidationError({"token": "This invitation is no longer pending."})
+
+        if not invitation.is_valid():
+            invitation.status = InvitationStatus.EXPIRED
+            invitation.save(update_fields=["status"])
+            raise serializers.ValidationError({"token": "This invitation has expired."})
+            
+        if user.email != invitation.email:
+            raise serializers.ValidationError({"token": "This invitation was sent to a different email address."})
+
+        attrs["invitation"] = invitation
+        return attrs
+
+    def save(self):
+        invitation = self.validated_data["invitation"]
+        user = self.context["request"].user
+        from django.utils import timezone
+
+        # 1. Mark invitation as accepted
+        invitation.status = InvitationStatus.ACCEPTED
+        invitation.accepted_at = timezone.now()
+        invitation.save(update_fields=["status", "accepted_at"])
+
+        # 2. Create the membership
+        membership, created = OrganizationMembership.objects.get_or_create(
+            organization=invitation.organization,
+            user=user,
+            defaults={"role": invitation.role, "status": MembershipStatus.ACTIVE}
+        )
+        
+        # If they somehow had a suspended membership, we might want to activate it and update role?
+        # The prompt says: "already-member handling is deterministic". 
+        # If they are already a member, `get_or_create` will just return the existing one.
+        # We'll update the role and status to reflect the invitation.
+        if not created:
+            membership.role = invitation.role
+            membership.status = MembershipStatus.ACTIVE
+            membership.save(update_fields=["role", "status"])
+
+        return membership

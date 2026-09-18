@@ -38,9 +38,23 @@ BELONGS = OrganizationRole.STAFF
 
 
 def admit(organization, user, role=BELONGS, **kwargs):
-    return OrganizationMembershipFactory(
-        organization=organization, user=user, role=role, **kwargs
+    membership = OrganizationMembershipFactory(
+        organization=organization,
+        user=user,
+        role=role,
+        **kwargs,
     )
+    if getattr(user, "is_student", False) or getattr(user, "role", None) == "student":
+        from organizations.models import StudentEnrollment, EnrollmentStatus
+        
+        status_val = str(kwargs.get("status", ""))
+        status = EnrollmentStatus.INACTIVE if "suspended" in status_val else EnrollmentStatus.ACTIVE
+        StudentEnrollment.objects.get_or_create(
+            organization=organization, 
+            user=user,
+            defaults={"status": status}
+        )
+    return membership
 
 
 def children_url(organization):

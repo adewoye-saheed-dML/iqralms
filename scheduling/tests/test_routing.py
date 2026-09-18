@@ -205,6 +205,8 @@ class RoutingWorld:
 
             if active_membership(user=kwargs["student"], organization=org) is None:
                 admit(kwargs["student"], org)
+        if "organization" not in kwargs:
+            kwargs["organization"] = org
         return route_session(**kwargs)
 
 
@@ -218,42 +220,42 @@ class RoutingHelperTests(RoutingWorld, TestCase):
 
     def test_lead_teacher_finds_the_approved_lead(self):
         lead = self.available_teacher(lead=True)
-        self.assertEqual(lead_teacher(), lead)
+        self.assertEqual(lead_teacher(organization=self.level.track.organization), lead)
 
     def test_lead_teacher_is_none_when_there_is_no_lead(self):
         self.available_teacher()  # a sub, not a lead
-        self.assertIsNone(lead_teacher())
+        self.assertIsNone(lead_teacher(organization=self.level.track.organization))
 
     def test_lead_teacher_ignores_an_unapproved_lead(self):
         lead = BookableLeadTeacherFactory()
         profile = lead.teacher_profile
         profile.approved = False
         profile.save()
-        self.assertIsNone(lead_teacher())
+        self.assertIsNone(lead_teacher(organization=self.level.track.organization))
 
     def test_matching_sub_teachers_finds_a_specialist(self):
         sub = self.available_teacher()
-        self.assertEqual(list(matching_sub_teachers(self.level)), [sub])
+        self.assertEqual(list(matching_sub_teachers(self.level, organization=self.level.track.organization)), [sub])
 
     def test_matching_sub_teachers_excludes_a_non_specialist(self):
         self.available_teacher(teaches_level=False)
-        self.assertEqual(list(matching_sub_teachers(self.level)), [])
+        self.assertEqual(list(matching_sub_teachers(self.level, organization=self.level.track.organization)), [])
 
     def test_matching_sub_teachers_excludes_an_unapproved_specialist(self):
         self.available_teacher(approved=False)
-        self.assertEqual(list(matching_sub_teachers(self.level)), [])
+        self.assertEqual(list(matching_sub_teachers(self.level, organization=self.level.track.organization)), [])
 
     def test_matching_sub_teachers_excludes_the_lead(self):
         """Step 3 is about subs; the lead had their own turn in step 2."""
         self.available_teacher(lead=True)
-        self.assertEqual(list(matching_sub_teachers(self.level)), [])
+        self.assertEqual(list(matching_sub_teachers(self.level, organization=self.level.track.organization)), [])
 
     def test_a_teacher_with_several_specialties_appears_once(self):
         """The join could duplicate them; ``distinct()`` is what stops it."""
         sub = self.available_teacher()
         teaches(sub, LevelFactory())
         teaches(sub, LevelFactory())
-        self.assertEqual(list(matching_sub_teachers(self.level)), [sub])
+        self.assertEqual(list(matching_sub_teachers(self.level, organization=self.level.track.organization)), [sub])
 
 
 class RouteToCohortTests(RoutingWorld, TestCase):
@@ -640,9 +642,9 @@ class NoCapacityTests(RoutingWorld, TestCase):
     def test_the_failure_names_every_step_that_declined(self):
         """The response has to be explainable, which is what ``considered`` is for."""
         self.available_teacher(lead=True, hours=1)
-        self.fill_week(lead_teacher(), 60)
+        self.fill_week(lead_teacher(organization=self.level.track.organization), 60)
         self.available_teacher(hours=1)
-        self.fill_week(matching_sub_teachers(self.level).first(), 60)
+        self.fill_week(matching_sub_teachers(self.level, organization=self.level.track.organization).first(), 60)
 
         exc = self.assert_refused()
         self.assertIn("not group-eligible", exc.considered["cohort"])
@@ -668,7 +670,7 @@ class NoCapacityTests(RoutingWorld, TestCase):
         for teacher in (lead, sub):
             with self.subTest(teacher=teacher.username):
                 self.assertEqual(
-                    weekly_committed_minutes(teacher.pk, self.slot),
+                    weekly_committed_minutes(teacher.pk, self.slot, organization=self.level.track.organization),
                     60,
                     "their week must be exactly as full as it was",
                 )

@@ -36,7 +36,12 @@ boundary — it answers with the linked children who are active members *here*, 
 an academy never sees a student it has not admitted.
 """
 
-from organizations.models import OrganizationMembership, active_membership
+from organizations.models import (
+    OrganizationMembership,
+    StudentEnrollment,
+    active_enrollment,
+    active_membership,
+)
 
 from .models import TEACHER_ROLES, Role, User
 
@@ -88,19 +93,22 @@ def active_parent_membership(*, user, organization):
 
 
 def children_in_organization(*, parent, organization):
-    """``parent``'s linked students who are also active members of ``organization``.
+    """``parent``'s linked students who are active participants of ``organization``.
 
-    The Phase 2 tenant-isolation rule, as a queryset:
+    The B03 tenant-isolation rule, as a queryset:
 
     .. code-block:: text
 
-        parent active in organization  AND  student active in organization
+        parent active in organization (membership)
+        AND child actively enrolled in organization (enrollment)
+        AND ParentLink exists
 
-    Both halves are required, so the answer is empty when the caller's own
-    membership is missing or suspended, and a linked child the academy has not
-    admitted (or has suspended) is absent from it. A parent in two academies gets
-    two different lists from the same global set of ``ParentLink`` rows, which is
-    the point.
+    Both halves are required. The parent's access is checked via active
+    membership (parents hold authority, not enrollment). The child's
+    participation is checked via active enrollment — the canonical academic
+    relation established in B02 — not membership. A linked child the academy
+    has not enrolled (or whose enrollment is inactive) is absent from the
+    result, even if they hold a membership with a staff/admin role.
 
     Accepts an ``Organization`` or a bare pk, because callers have the URL's id.
     """
@@ -108,11 +116,12 @@ def children_in_organization(*, parent, organization):
     if membership is None:
         return User.objects.none()
 
-    # Reusing .active() rather than re-filtering on status: "which memberships
-    # grant access" is the organization app's definition to own, and a copy of it
-    # here is the one that would eventually disagree.
-    members_here = (
-        OrganizationMembership.objects.active()
+    # Use the canonical enrollment relation (B02) rather than membership for
+    # child participation. "Which enrollments grant participation" is the
+    # organizations app's definition to own via StudentEnrollment.objects.active(),
+    # and a copy of it here is the one that would eventually disagree.
+    enrolled_here = (
+        StudentEnrollment.objects.active()
         .filter(organization=membership.organization)
         .values("user_id")
     )
@@ -122,7 +131,7 @@ def children_in_organization(*, parent, organization):
             # afterwards would leave the row behind; a child is a student now.
             role=Role.STUDENT,
             parent_links__parent=parent,
-            pk__in=members_here,
+            pk__in=enrolled_here,
         )
         .distinct()
         .order_by("username")

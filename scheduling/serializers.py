@@ -79,14 +79,22 @@ class AcademyScopedSerializerMixin:
         fields = super().get_fields()
         organization = self.organization
         if organization is None:
-            return fields
+            # During OpenAPI schema generation (drf-spectacular), serializer context has no organization.
+            # Return fields without scoping querysets so schema inspection succeeds.
+            if (
+                getattr(self, "swagger_fake_view", False)
+                or (self.context and getattr(self.context.get("view"), "swagger_fake_view", False))
+                or not self.context
+            ):
+                return fields
+            raise RuntimeError(f"{self.__class__.__name__} requires an organization in the context.")
         for name, build in self.scoped_querysets.items():
             if name in fields:
                 fields[name].queryset = build(organization)
         return fields
 
 
-def resolve_requested_student(caller, student, organization=None):
+def resolve_requested_student(caller, student, *, organization):
     """Which student a request is for, given the caller, an optional id, and optional organization.
 
     Shared by direct booking and routing so the two cannot drift: a student acts
@@ -103,19 +111,12 @@ def resolve_requested_student(caller, student, organization=None):
         raise serializers.ValidationError(
             {"student": ["Required: which of your children this is for."]}
         )
-    if organization is not None:
-        from accounts.tenancy import children_in_organization
-
-        children = children_in_organization(parent=caller, organization=organization)
-        if not children.filter(pk=student.pk).exists():
-            raise serializers.ValidationError(
-                {"student": ["No linked student found for that id."]}
-            )
-    else:
-        if not ParentLink.objects.filter(parent=caller, student=student).exists():
-            raise serializers.ValidationError(
-                {"student": ["No linked student found for that id."]}
-            )
+    from accounts.tenancy import children_in_organization
+    children = children_in_organization(parent=caller, organization=organization)
+    if not children.filter(pk=student.pk).exists():
+        raise serializers.ValidationError(
+            {"student": ["No linked student found for that id."]}
+        )
     return student
 
 

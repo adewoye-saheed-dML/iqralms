@@ -374,8 +374,7 @@ class MultiAcademyTeacherScenarioTests(APITestCase):
             end_time_utc=time(18, 0),
         )
 
-        # Global teacher profile specialties (required by legacy check)
-        self.teacher_t.teacher_profile.specialties.add(self.track_tajweed, self.track_arabic)
+
 
         self.student_a = admit(
             StudentFactory(username="student-a-47"), self.academy_a, OrganizationRole.STAFF

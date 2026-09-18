@@ -287,8 +287,7 @@ class TeacherTrackQuerySet(models.QuerySet):
 class TeacherTrack(models.Model):
     """A teacher's eligibility to teach one track, inside one academy.
 
-    The model SaaS Phase 3 exists to establish, and the reason it hangs off
-    ``OrganizationMembership`` rather than ``TeacherProfile``:
+    The eligibility hangs off ``OrganizationMembership`` rather than ``TeacherProfile``:
 
     .. code-block:: text
 
@@ -296,20 +295,11 @@ class TeacherTrack(models.Model):
             Academy A  ->  Tajweed, Hifz
             Academy B  ->  Arabic
 
-    ``TeacherProfile.specialties`` is a global many-to-many to ``Track`` and
-    cannot express that — it says "T teaches these tracks", full stop, and with
-    tracks now academy-owned that would let one academy's roster decide what T may
-    teach in another. The membership already means "this user in this academy",
-    already carries the uniqueness rule for that pair, and already knows whether
-    the relationship is live, which is the same reasoning
-    ``accounts.OrganizationTeacherConfiguration`` follows.
-
-    **The legacy relation is still there and still read.** Scheduling enforces
-    ``TeacherProfile.specialties`` in ``Booking.clean()`` and ``routing``; Phase 3
-    is explicitly forbidden from rewriting either, so nothing here is consumed by
-    them yet. SaaS Phase 4 is what switches the readers over. Until it does, this
-    table is the tenant-safe record and that one is the compatibility layer (see
-    tech-debt.md).
+    **Domain Architecture:**
+    * **Authoritative fields:** ``membership``, ``track``, ``active``. Defines whether a teacher has active authority to teach a specific track in a specific academy.
+    * **Compatibility fields:** ``TeacherProfile.specialties`` is retained as non-authoritative legacy data only.
+    * **Transition status:** Complete. All scheduling validations (``specialty_error()``, ``Booking.clean()``, ``Cohort.clean()``, ``route_session()``, ``matching_sub_teachers()``, ``lead_teacher()``) enforce ``TeacherTrack`` within organization context.
+    * **Intended end state:** ``TeacherTrack`` is the single authoritative model for academy-scoped teaching authority.
     """
 
     membership = models.ForeignKey(
