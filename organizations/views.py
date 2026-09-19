@@ -43,10 +43,17 @@ from .permissions import (
 )
 from .serializers import (
     MyOrganizationMembershipSerializer,
+    OrganizationInvitationAcceptSerializer,
+    OrganizationInvitationCreateSerializer,
+    OrganizationInvitationSerializer,
     OrganizationMembershipCreateSerializer,
     OrganizationMembershipSerializer,
     OrganizationMembershipUpdateSerializer,
     OrganizationSerializer,
+    StudentDetailSerializer,
+    StudentEnrollmentCreateSerializer,
+    StudentEnrollmentUpdateSerializer,
+    StudentListSerializer,
 )
 
 
@@ -364,7 +371,7 @@ class StudentEnrollmentListCreateView(OrganizationScopedMixin, generics.ListCrea
 
     @extend_schema(
         responses={
-            200: OpenApiResponse(description="List of students"),
+            200: StudentListSerializer(many=True),
             401: OpenApiResponse(description="Not authenticated."),
             403: OpenApiResponse(description="Not an owner or administrator here."),
         }
@@ -373,8 +380,9 @@ class StudentEnrollmentListCreateView(OrganizationScopedMixin, generics.ListCrea
         return super().get(request, *args, **kwargs)
 
     @extend_schema(
+        request=StudentEnrollmentCreateSerializer,
         responses={
-            201: OpenApiResponse(description="Student attached successfully"),
+            201: StudentListSerializer,
             400: OpenApiResponse(description="Unknown user, not a student, or already enrolled"),
             401: OpenApiResponse(description="Not authenticated."),
             403: OpenApiResponse(description="Not an owner or administrator here."),
@@ -420,7 +428,7 @@ class StudentEnrollmentDetailView(OrganizationScopedMixin, generics.RetrieveUpda
 
     @extend_schema(
         responses={
-            200: OpenApiResponse(description="Student enrollment details"),
+            200: StudentDetailSerializer,
             401: OpenApiResponse(description="Not authenticated."),
             403: OpenApiResponse(description="Not an owner or administrator here."),
             404: OpenApiResponse(description="No such student in this organization."),
@@ -430,8 +438,9 @@ class StudentEnrollmentDetailView(OrganizationScopedMixin, generics.RetrieveUpda
         return super().get(request, *args, **kwargs)
 
     @extend_schema(
+        request=StudentEnrollmentUpdateSerializer,
         responses={
-            200: OpenApiResponse(description="Student enrollment updated"),
+            200: StudentDetailSerializer,
             400: OpenApiResponse(description="Nothing to change or invalid status"),
             401: OpenApiResponse(description="Not authenticated."),
             403: OpenApiResponse(description="Not an owner or administrator here."),
@@ -451,11 +460,6 @@ class StudentEnrollmentDetailView(OrganizationScopedMixin, generics.RetrieveUpda
         ).data
         return Response(body, status=status.HTTP_200_OK)
 
-from .serializers import (
-    OrganizationInvitationSerializer,
-    OrganizationInvitationCreateSerializer,
-    OrganizationInvitationAcceptSerializer
-)
 from .models import OrganizationInvitation
 
 class OrganizationInvitationListCreateView(OrganizationScopedMixin, generics.ListCreateAPIView):
@@ -486,11 +490,30 @@ class OrganizationInvitationListCreateView(OrganizationScopedMixin, generics.Lis
             notify_teacher_invitation(invitation)
         return invitation
 
-    def create(self, request, *args, **kwargs):
+    @extend_schema(
+        responses={
+            200: OrganizationInvitationSerializer(many=True),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Not an owner or administrator here."),
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        request=OrganizationInvitationCreateSerializer,
+        responses={
+            201: OrganizationInvitationSerializer,
+            400: OpenApiResponse(description="Invalid invitation data."),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Not an owner or administrator here."),
+        }
+    )
+    def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         invitation = self.perform_create(serializer)
-        
+
         data = OrganizationInvitationSerializer(invitation).data
         return Response(data, status=status.HTTP_201_CREATED)
 

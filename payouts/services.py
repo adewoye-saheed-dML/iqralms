@@ -112,18 +112,30 @@ class Statement:
     payouts: list
 
 
-def applicable_rate(teacher):
+def applicable_rate(teacher, *, organization=None):
     """The rate ``teacher`` earns per hour today, or None if they have none.
 
-    ``TeacherProfile.hourly_payout_rate`` is the single source of truth for this
-    (Phase 8 deliberately adds no second rate model), and null is a real answer
-    rather than a missing one: the lead is not paid per hour, so a lead-taught
-    session earns no payout record at all.
-
-    A teacher with no profile row also lands here — that is a teacher who was
-    never set up, which is the same "no rate" outcome and not an exception worth
-    raising in the middle of a payroll run.
+    B07: The authoritative rate source is ``OrganizationTeacherConfiguration.hourly_payout_rate``
+    for the teacher's active membership in ``organization``.
+    Falls back to ``TeacherProfile.hourly_payout_rate`` when unconfigured on the academy config.
     """
+    if organization is not None:
+        from accounts.models import OrganizationTeacherConfiguration
+        from organizations.models import active_membership
+
+        membership = active_membership(user=teacher, organization=organization)
+        if membership is None:
+            return None
+
+        config = OrganizationTeacherConfiguration.objects.filter(
+            membership=membership,
+        ).first()
+        if config is not None:
+            if not config.approved:
+                return None
+            if config.hourly_payout_rate is not None:
+                return config.hourly_payout_rate
+
     profile = getattr(teacher, "teacher_profile", None)
     if profile is None:
         return None
@@ -230,7 +242,7 @@ def generate_payouts(*, organization, period_start, period_end, teacher=None):
                 )
                 continue
 
-        rate = applicable_rate(booking.teacher)
+        rate = applicable_rate(booking.teacher, organization=organization)
         if rate is None:
             # The lead teaching their own session lands here, by decision: they
             # are not paid per hour. Reported, so a genuinely unset sub-teacher

@@ -157,10 +157,12 @@ def ensure_teacher_configured(teacher, organization):
             profile = getattr(teacher, "teacher_profile", None)
             approved = getattr(profile, "approved", True)
             max_hours = getattr(profile, "max_weekly_hours", 20) or 20
+            payout_rate = getattr(profile, "hourly_payout_rate", None)
             OrganizationTeacherConfiguration.objects.create(
                 membership=m,
                 approved=approved,
                 max_weekly_hours=max_hours,
+                hourly_payout_rate=payout_rate,
             )
 
 

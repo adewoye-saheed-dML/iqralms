@@ -453,8 +453,15 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
             invitation.save(update_fields=["status"])
             raise serializers.ValidationError({"token": "This invitation has expired."})
             
-        if user.email != invitation.email:
+        if user.email.lower() != invitation.email.lower():
             raise serializers.ValidationError({"token": "This invitation was sent to a different email address."})
+
+        if OrganizationMembership.objects.filter(
+            organization=organization, user=user
+        ).exists():
+            raise serializers.ValidationError(
+                {"detail": "You are already a member of this organization."}
+            )
 
         attrs["invitation"] = invitation
         return attrs
@@ -462,27 +469,21 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
     def save(self):
         invitation = self.validated_data["invitation"]
         user = self.context["request"].user
+        from django.db import transaction
         from django.utils import timezone
 
-        # 1. Mark invitation as accepted
-        invitation.status = InvitationStatus.ACCEPTED
-        invitation.accepted_at = timezone.now()
-        invitation.save(update_fields=["status", "accepted_at"])
+        with transaction.atomic():
+            # 1. Mark invitation as accepted
+            invitation.status = InvitationStatus.ACCEPTED
+            invitation.accepted_at = timezone.now()
+            invitation.save(update_fields=["status", "accepted_at"])
 
-        # 2. Create the membership
-        membership, created = OrganizationMembership.objects.get_or_create(
-            organization=invitation.organization,
-            user=user,
-            defaults={"role": invitation.role, "status": MembershipStatus.ACTIVE}
-        )
-        
-        # If they somehow had a suspended membership, we might want to activate it and update role?
-        # The prompt says: "already-member handling is deterministic". 
-        # If they are already a member, `get_or_create` will just return the existing one.
-        # We'll update the role and status to reflect the invitation.
-        if not created:
-            membership.role = invitation.role
-            membership.status = MembershipStatus.ACTIVE
-            membership.save(update_fields=["role", "status"])
+            # 2. Create the active membership
+            membership = OrganizationMembership.objects.create(
+                organization=invitation.organization,
+                user=user,
+                role=invitation.role,
+                status=MembershipStatus.ACTIVE,
+            )
 
         return membership
