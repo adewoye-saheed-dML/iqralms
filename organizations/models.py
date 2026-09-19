@@ -182,11 +182,11 @@ class OrganizationMembershipQuerySet(models.QuerySet):
         """The memberships that grant tenant access. One definition, used everywhere.
 
         Phase 1's tenant rule is ``organization access == active
-        OrganizationMembership``, so every endpoint that asks "may this caller
-        reach this academy" comes through here — a suspended row is a record, not
-        a key.
+        OrganizationMembership`` in an active organization, so every endpoint
+        that asks "may this caller reach this academy" comes through here — a
+        suspended row or inactive organization is a record, not a key.
         """
-        return self.filter(status=MembershipStatus.ACTIVE)
+        return self.filter(status=MembershipStatus.ACTIVE, organization__is_active=True)
 
 
 class OrganizationMembership(models.Model):

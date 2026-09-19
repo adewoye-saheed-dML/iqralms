@@ -22,11 +22,13 @@ from accounts.models import Role, User
 from accounts.tests.factories import StudentFactory, SubTeacherFactory, UserFactory
 
 from organizations.models import (
+    InvitationStatus,
     OrganizationInvitation,
     MembershipStatus,
     Organization,
     OrganizationMembership,
     OrganizationRole,
+    active_membership,
 )
 from organizations.tests.factories import (
     OrganizationMembershipFactory,
@@ -310,6 +312,11 @@ class MyOrganizationsAPITests(TenantWorld):
 
     def test_a_suspended_membership_is_not_listed(self):
         self.assertEqual(self.as_user(self.suspended_a).get(MINE_URL).data, [])
+
+    def test_an_inactive_organization_is_not_listed(self):
+        self.org_a.is_active = False
+        self.org_a.save()
+        self.assertEqual(self.as_user(self.teacher_a).get(MINE_URL).data, [])
 
     def test_an_unauthenticated_caller_gets_nothing(self):
         self.assertEqual(
@@ -654,3 +661,256 @@ class MembershipUpdateAPITests(TenantWorld):
             {"status": MembershipStatus.SUSPENDED},
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class InvitationLifecycleAPITests(TenantWorld):
+    """Real invitation lifecycle tests: pending -> accepted/expired/revoked."""
+
+    def test_new_email_invitation(self):
+        """Inviting an email that has no existing user creates pending invitation."""
+        response = self.as_user(self.owner_a).post(
+            invitations_url(self.org_a),
+            {"email": "brandnew@example.com", "role": OrganizationRole.TEACHER},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["email"], "brandnew@example.com")
+        self.assertEqual(response.data["status"], InvitationStatus.PENDING)
+        inv = OrganizationInvitation.objects.get(email="brandnew@example.com", organization=self.org_a)
+        self.assertEqual(inv.role, OrganizationRole.TEACHER)
+        self.assertEqual(inv.status, InvitationStatus.PENDING)
+
+    def test_existing_account_invitation(self):
+        """Inviting an existing user creates pending invitation without access."""
+        user = UserFactory(email="existing@example.com")
+        response = self.as_user(self.owner_a).post(
+            invitations_url(self.org_a),
+            {"email": user.email, "role": OrganizationRole.TEACHER},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(active_membership(user=user, organization=self.org_a))
+
+    def test_duplicate_pending_invitation(self):
+        """Cannot create a second pending invitation for the same email."""
+        self.as_user(self.owner_a).post(
+            invitations_url(self.org_a),
+            {"email": "dup@example.com", "role": OrganizationRole.TEACHER},
+        )
+        second = self.as_user(self.owner_a).post(
+            invitations_url(self.org_a),
+            {"email": "dup@example.com", "role": OrganizationRole.TEACHER},
+        )
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_expired_invitation(self):
+        """Accepting an expired invitation is rejected."""
+        import datetime
+        from django.utils import timezone
+
+        user = UserFactory(email="expired@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.TEACHER,
+            token_digest=digest,
+            expires_at=timezone.now() - datetime.timedelta(days=1),
+            status=InvitationStatus.PENDING,
+        )
+        response = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("token", response.data)
+
+    def test_revoked_invitation(self):
+        """Accepting a revoked invitation is rejected."""
+        import datetime
+        from django.utils import timezone
+
+        user = UserFactory(email="revoked@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.TEACHER,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.REVOKED,
+        )
+        response = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_token(self):
+        """Accepting with invalid token is rejected."""
+        user = UserFactory(email="valid@example.com")
+        response = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": "completely-bogus-token"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_wrong_email(self):
+        """Accepting an invitation from a different account is rejected."""
+        import datetime
+        from django.utils import timezone
+
+        invited_email = "target@example.com"
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=invited_email,
+            role=OrganizationRole.TEACHER,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+        imposter = UserFactory(email="imposter@example.com")
+        response = self.as_user(imposter).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_accepted_invitation(self):
+        """Accepting valid invitation creates active membership atomically."""
+        import datetime
+        from django.utils import timezone
+
+        user = UserFactory(email="accepted@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        inv = OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.TEACHER,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+        response = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, InvitationStatus.ACCEPTED)
+        self.assertIsNotNone(inv.accepted_at)
+        membership = active_membership(user=user, organization=self.org_a)
+        self.assertIsNotNone(membership)
+        self.assertEqual(membership.role, OrganizationRole.TEACHER)
+
+    def test_second_acceptance(self):
+        """Cannot accept an already accepted invitation."""
+        import datetime
+        from django.utils import timezone
+
+        user = UserFactory(email="once@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.TEACHER,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+        first = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+
+        # Second attempt
+        second = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_existing_membership_edge_case(self):
+        """If user is already a member, acceptance is rejected with clear error."""
+        import datetime
+        from django.utils import timezone
+
+        # teacher_a is already a member of org_a
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=self.teacher_a.email,
+            role=OrganizationRole.ADMIN,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+        response = self.as_user(self.teacher_a).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already a member", str(response.data))
+
+    def test_invited_teacher_has_no_membership_before_acceptance(self):
+        """An invited teacher cannot access academy before accepting."""
+        import datetime
+        from django.utils import timezone
+
+        user = UserFactory(email="notyet@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.TEACHER,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+        self.assertIsNone(active_membership(user=user, organization=self.org_a))
+        response = self.as_user(user).get(detail_url(self.org_a))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_accepted_teacher_gets_membership_only_after_acceptance(self):
+        """An invited teacher gains access only after accepting."""
+        import datetime
+        from django.utils import timezone
+
+        user = UserFactory(email="nowmember@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.TEACHER,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+        # Before
+        self.assertEqual(
+            self.as_user(user).get(detail_url(self.org_a)).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        # Accept
+        accept_res = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(accept_res.status_code, status.HTTP_200_OK)
+        # After
+        self.assertEqual(
+            self.as_user(user).get(detail_url(self.org_a)).status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_cross_organization_invitation_token_rejected(self):
+        """Token from academy A cannot be accepted against academy B."""
+        import datetime
+        from django.utils import timezone
+
+        user = UserFactory(email="crossorg@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.TEACHER,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+        # Attempt to accept against org_b
+        response = self.as_user(user).post(
+            accept_invitation_url(self.org_b), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

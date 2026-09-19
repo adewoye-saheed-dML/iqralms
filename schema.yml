@@ -2472,6 +2472,10 @@ paths:
                 items:
                   $ref: '#/components/schemas/OrganizationInvitation'
           description: ''
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Not an owner or administrator here.
     post:
       operationId: organizations_invitations_create
       description: /api/organizations/{id}/invitations/
@@ -2503,8 +2507,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OrganizationInvitationCreate'
+                $ref: '#/components/schemas/OrganizationInvitation'
           description: ''
+        '400':
+          description: Invalid invitation data.
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Not an owner or administrator here.
   /api/organizations/{organization_pk}/invitations/accept/:
     post:
       operationId: organizations_invitations_accept_create
@@ -2655,7 +2665,13 @@ paths:
       - cookieAuth: []
       responses:
         '200':
-          description: List of students
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StudentList'
+          description: ''
         '401':
           description: Not authenticated.
         '403':
@@ -2691,7 +2707,11 @@ paths:
       - cookieAuth: []
       responses:
         '201':
-          description: Student attached successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentList'
+          description: ''
         '400':
           description: Unknown user, not a student, or already enrolled
         '401':
@@ -2724,7 +2744,11 @@ paths:
       - cookieAuth: []
       responses:
         '200':
-          description: Student enrollment details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentDetail'
+          description: ''
         '401':
           description: Not authenticated.
         '403':
@@ -2767,7 +2791,11 @@ paths:
       - cookieAuth: []
       responses:
         '200':
-          description: Student enrollment updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentDetail'
+          description: ''
         '400':
           description: Nothing to change or invalid status
         '401':
@@ -6790,6 +6818,68 @@ components:
         * `generated` - Generated, none finalized
         * `partly_finalized` - Partly finalized
         * `finalized` - Fully finalized
+    StudentDetail:
+      type: object
+      description: A student's enrollment, as seen in the academy's detail view.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user_id:
+          type: integer
+          readOnly: true
+        username:
+          type: string
+          readOnly: true
+        email:
+          type: string
+          readOnly: true
+        first_name:
+          type: string
+          readOnly: true
+        last_name:
+          type: string
+          readOnly: true
+        date_of_birth:
+          type: string
+          format: date
+          readOnly: true
+        is_minor:
+          type: boolean
+          readOnly: true
+        enrollment_status:
+          type: string
+          readOnly: true
+        track_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        level_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - date_of_birth
+      - email
+      - enrollment_status
+      - first_name
+      - id
+      - is_minor
+      - last_name
+      - level_id
+      - track_id
+      - updated_at
+      - user_id
+      - username
     StudentEnrollmentCreate:
       type: object
       description: Enrolling an existing student user into an academy.
@@ -6812,6 +6902,68 @@ components:
       description: |-
         * `active` - Active
         * `inactive` - Inactive
+    StudentList:
+      type: object
+      description: A student's enrollment, as seen in the academy's list.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user_id:
+          type: integer
+          readOnly: true
+        username:
+          type: string
+          readOnly: true
+        email:
+          type: string
+          readOnly: true
+        first_name:
+          type: string
+          readOnly: true
+        last_name:
+          type: string
+          readOnly: true
+        date_of_birth:
+          type: string
+          format: date
+          readOnly: true
+        is_minor:
+          type: boolean
+          readOnly: true
+        enrollment_status:
+          type: string
+          readOnly: true
+        track_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        level_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - date_of_birth
+      - email
+      - enrollment_status
+      - first_name
+      - id
+      - is_minor
+      - last_name
+      - level_id
+      - track_id
+      - updated_at
+      - user_id
+      - username
     StudentProgress:
       type: object
       description: |-

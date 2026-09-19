@@ -440,3 +440,101 @@ class PayoutTenantIsolationTests(TwoAcademiesPayoutFixture):
             TeacherPayout.objects.in_organization(self.org_a).count(),
             created_count,
         )
+
+    def test_cross_tenant_teacher_id_lookup_is_rejected(self):
+        """Phase B08: Cross-tenant teacher lookup must be rejected with 400, never return 0 or leak."""
+        self.client.force_authenticate(user=self.lead_a)
+
+        # Lead A asks for teacher_b1 (who has no active membership in Academy A) in lead listing
+        resp_lead = self.client.get(self.lead_url(self.org_a), {"teacher_id": self.teacher_b1.pk})
+        self.assertEqual(resp_lead.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("teacher_id", resp_lead.data)
+
+        # Lead A asks for teacher_b1 in statements
+        resp_statement = self.client.get(
+            self.statements_url(self.org_a),
+            {"teacher_id": self.teacher_b1.pk, **self.period},
+        )
+        self.assertEqual(resp_statement.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("teacher_id", resp_statement.data)
+
+    def test_multi_academy_teacher_separate_generation_and_rates(self):
+        """Phase B08: Two academies with same teacher, different rates and bookings.
+
+        Run generation separately and verify no cross-tenant records appear.
+        """
+        from accounts.models import OrganizationTeacherConfiguration
+
+        # Configure different rates in Academy A vs Academy B for the shared teacher
+        OrganizationTeacherConfiguration.objects.filter(
+            membership=self.shared_teacher_m_a
+        ).update(hourly_payout_rate=Decimal("4000.00"), approved=True)
+        OrganizationTeacherConfiguration.objects.filter(
+            membership=self.shared_teacher_m_b
+        ).update(hourly_payout_rate=Decimal("8000.00"), approved=True)
+
+        payload = {
+            "period_start": self.period_start.isoformat(),
+            "period_end": self.period_end.isoformat(),
+        }
+
+        # 1. Run generation in Academy A
+        self.client.force_authenticate(user=self.lead_a)
+        resp_a = self.client.post(self.generate_url(self.org_a), payload)
+        self.assertEqual(resp_a.status_code, status.HTTP_201_CREATED)
+
+        # Payout for booking_shared_a in Academy A must have rate 4000.00
+        payout_a = TeacherPayout.objects.get(booking=self.booking_shared_a)
+        self.assertEqual(payout_a.rate_used, Decimal("4000.00"))
+        self.assertEqual(payout_a.amount, Decimal("4000.00"))
+        self.assertEqual(payout_a.organization, self.org_a)
+
+        # Academy B has 0 payouts
+        self.assertEqual(
+            TeacherPayout.objects.in_organization(self.org_b).count(), 0
+        )
+
+        # 2. Run generation in Academy B
+        self.client.force_authenticate(user=self.lead_b)
+        resp_b = self.client.post(self.generate_url(self.org_b), payload)
+        self.assertEqual(resp_b.status_code, status.HTTP_201_CREATED)
+
+        # Payout for booking_shared_b in Academy B must have rate 8000.00
+        payout_b = TeacherPayout.objects.get(booking=self.booking_shared_b)
+        self.assertEqual(payout_b.rate_used, Decimal("8000.00"))
+        self.assertEqual(payout_b.amount, Decimal("8000.00"))
+        self.assertEqual(payout_b.organization, self.org_b)
+
+        # 3. Statements for the shared teacher in Academy A vs Academy B
+        self.client.force_authenticate(user=self.lead_a)
+        resp_stmt_a = self.client.get(
+            self.statements_url(self.org_a),
+            {"teacher_id": self.shared_teacher.pk, **self.period},
+        )
+        self.assertEqual(resp_stmt_a.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(str(resp_stmt_a.data["total_amount"])), Decimal("4000.00"))
+
+        self.client.force_authenticate(user=self.lead_b)
+        resp_stmt_b = self.client.get(
+            self.statements_url(self.org_b),
+            {"teacher_id": self.shared_teacher.pk, **self.period},
+        )
+        self.assertEqual(resp_stmt_b.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(str(resp_stmt_b.data["total_amount"])), Decimal("8000.00"))
+
+        # 4. Teacher's own statements in Academy A vs Academy B
+        self.client.force_authenticate(user=self.shared_teacher)
+        resp_my_a = self.client.get(
+            self.my_statement_url(self.org_a),
+            self.period,
+        )
+        self.assertEqual(resp_my_a.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(str(resp_my_a.data["total_amount"])), Decimal("4000.00"))
+
+        resp_my_b = self.client.get(
+            self.my_statement_url(self.org_b),
+            self.period,
+        )
+        self.assertEqual(resp_my_b.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(str(resp_my_b.data["total_amount"])), Decimal("8000.00"))
+

@@ -183,6 +183,10 @@ class RateTests(TestCase):
         profile = teacher.teacher_profile
         profile.hourly_payout_rate = Decimal("7000.00")
         profile.save()
+        from accounts.models import OrganizationTeacherConfiguration
+        OrganizationTeacherConfiguration.objects.filter(
+            membership__user=teacher
+        ).update(hourly_payout_rate=Decimal("7000.00"))
 
         february = past_session(
             teacher=teacher,
@@ -490,3 +494,113 @@ class PayoutTenancyServiceTests(TestCase):
         )
         self.assertEqual(stmt_b.session_count, 1)
         self.assertEqual(stmt_b.payouts[0].booking, booking_b)
+
+    def test_multi_academy_teacher_different_rates(self):
+        """B07: Teacher earns rate A in academy A and rate B in academy B."""
+        from accounts.models import OrganizationTeacherConfiguration
+        from organizations.models import OrganizationMembership, MembershipStatus, OrganizationRole
+        from scheduling.tests.factories import BookableTeacherFactory
+        from payouts.services import applicable_rate
+
+        teacher = BookableTeacherFactory()
+        # Admit to Academy A
+        m_a, _ = OrganizationMembership.objects.get_or_create(
+            organization=self.org_a,
+            user=teacher,
+            defaults={"role": OrganizationRole.TEACHER, "status": MembershipStatus.ACTIVE},
+        )
+        config_a, _ = OrganizationTeacherConfiguration.objects.get_or_create(
+            membership=m_a,
+            defaults={"approved": True, "max_weekly_hours": 20, "hourly_payout_rate": Decimal("5000.00")},
+        )
+        config_a.approved = True
+        config_a.hourly_payout_rate = Decimal("5000.00")
+        config_a.save()
+
+        # Admit to Academy B
+        m_b, _ = OrganizationMembership.objects.get_or_create(
+            organization=self.org_b,
+            user=teacher,
+            defaults={"role": OrganizationRole.TEACHER, "status": MembershipStatus.ACTIVE},
+        )
+        config_b, _ = OrganizationTeacherConfiguration.objects.get_or_create(
+            membership=m_b,
+            defaults={"approved": True, "max_weekly_hours": 20, "hourly_payout_rate": Decimal("8000.00")},
+        )
+        config_b.approved = True
+        config_b.hourly_payout_rate = Decimal("8000.00")
+        config_b.save()
+
+        # Check applicable_rate per academy
+        self.assertEqual(applicable_rate(teacher, organization=self.org_a), Decimal("5000.00"))
+        self.assertEqual(applicable_rate(teacher, organization=self.org_b), Decimal("8000.00"))
+
+        # Create booking in A and booking in B
+        booking_a = past_session(
+            level=self.level_a,
+            teacher=teacher,
+            start_time_utc=PERIOD_START + timedelta(days=1),
+            duration_minutes=60,
+        )
+        booking_b = past_session(
+            level=self.level_b,
+            teacher=teacher,
+            start_time_utc=PERIOD_START + timedelta(days=2),
+            duration_minutes=60,
+        )
+
+        res_a = generate_payouts(organization=self.org_a, period_start=PERIOD_START, period_end=PERIOD_END)
+        res_b = generate_payouts(organization=self.org_b, period_start=PERIOD_START, period_end=PERIOD_END)
+
+        self.assertEqual(len(res_a.created), 1)
+        self.assertEqual(len(res_b.created), 1)
+        payout_a = TeacherPayout.objects.get(booking=booking_a)
+        payout_b = TeacherPayout.objects.get(booking=booking_b)
+
+        self.assertEqual(payout_a.rate_used, Decimal("5000.00"))
+        self.assertEqual(payout_a.amount, Decimal("5000.00"))
+        self.assertEqual(payout_b.rate_used, Decimal("8000.00"))
+        self.assertEqual(payout_b.amount, Decimal("8000.00"))
+
+    def test_unapproved_teacher_has_no_applicable_rate(self):
+        """An unapproved teacher in an academy earns no rate for that academy."""
+        from accounts.models import OrganizationTeacherConfiguration
+        from organizations.models import OrganizationMembership, MembershipStatus, OrganizationRole
+        from scheduling.tests.factories import BookableTeacherFactory
+        from payouts.services import applicable_rate
+
+        teacher = BookableTeacherFactory()
+        m, _ = OrganizationMembership.objects.get_or_create(
+            organization=self.org_a,
+            user=teacher,
+            defaults={"role": OrganizationRole.TEACHER, "status": MembershipStatus.ACTIVE},
+        )
+        config, _ = OrganizationTeacherConfiguration.objects.get_or_create(
+            membership=m,
+            defaults={"approved": False, "max_weekly_hours": 20, "hourly_payout_rate": Decimal("6000.00")},
+        )
+        config.approved = False
+        config.save()
+
+        self.assertIsNone(applicable_rate(teacher, organization=self.org_a))
+
+    def test_suspended_membership_has_no_applicable_rate(self):
+        """A suspended teacher membership earns no rate."""
+        from accounts.models import OrganizationTeacherConfiguration
+        from organizations.models import OrganizationMembership, MembershipStatus, OrganizationRole
+        from accounts.tests.factories import SubTeacherFactory
+        from payouts.services import applicable_rate
+
+        teacher = SubTeacherFactory()
+        m, _ = OrganizationMembership.objects.get_or_create(
+            organization=self.org_a,
+            user=teacher,
+            defaults={"role": OrganizationRole.TEACHER, "status": MembershipStatus.SUSPENDED},
+        )
+        m.status = MembershipStatus.SUSPENDED
+        m.save()
+        config, _ = OrganizationTeacherConfiguration.objects.get_or_create(
+            membership=m,
+            defaults={"approved": True, "max_weekly_hours": 20, "hourly_payout_rate": Decimal("6000.00")},
+        )
+        self.assertIsNone(applicable_rate(teacher, organization=self.org_a))
