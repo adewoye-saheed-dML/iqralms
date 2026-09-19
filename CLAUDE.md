@@ -1,6 +1,6 @@
 # Quran Academy SaaS Development Rules — Phase 12
 
-Repository: `adewoye-saheed-dML/quran_acad`
+Repository: `adewoye-saheed-dML/iqralms`
 Target branch: `main`
 
 Verified current head:
@@ -421,9 +421,19 @@ Expected:
 **SaaS Phase 13 — Frontend Foundation / Web Application**
 
 Finalize Phase 13 only after Phase 12 identifies and closes API gaps that block frontend work.
-# Phase 12 API Contract Decisions
-- **Baseline**: `81c79dbceb50858c64a2c94eb36c52e3ed957e9a` (feat(Audit): completed).
-- **API Decisions**: Documented the API strictly as it exists in `specs/saas/API_CONTRACT.md`. Enums, pagination, tenancy, and role matrices remain as built. Request correlation uses `X-Request-ID`.
-- **Breaking Changes**: None. We avoided cosmetic API changes and retained backward compatibility.
-- **Known Gaps / Deferrals**: No refresh-token mechanism exists natively (only long-lived tokens). No explicit rate-limiting infrastructure is built, deferred to deployment configuration.
+# Phase 12 API Contract Decisions & Current Architecture
+- **Repository**: `adewoye-saheed-dML/iqralms` (target branch `main`).
+- **Authority vs Participation**:
+  - `OrganizationMembership` = authority and access to the academy.
+  - `StudentEnrollment` = academic participation in the academy (`StudentEnrollment.objects.active()`, `active_enrollment()`, `is_active_student_participant()`).
+- **Academy Configuration Authoritative**:
+  - `OrganizationTeacherConfiguration` is authoritative for academy-scoped teacher approval (`approved`), weekly capacity (`max_weekly_hours`), and hourly payout rates (`hourly_payout_rate`).
+  - No fallback to global `TeacherProfile` for academy-scoped scheduling or payouts.
+- **Invitation Acceptance**:
+  - Atomic transaction: validates invitation, creates active membership, then marks invitation accepted.
+  - Rejects existing members (active or suspended) without modifying membership role or status. Owner role cannot be invited.
+- **Organization Listing**:
+  - `/api/organizations/mine/` filters `organization__is_active=True`.
+- **OpenAPI Contract**:
+  - Concrete request/response serializers for student enrollment collection and detail endpoints.
 - **Next Phase**: SaaS Phase 13 — Frontend Foundation / Web Application.

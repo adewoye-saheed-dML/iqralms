@@ -2048,3 +2048,372 @@ class AvailabilityValidationTests(TestCase):
                 end_local=time(12, 0),
             )
         self.assertIn("active membership in the organization", str(cm.exception))
+
+
+class AcademyTeacherConfigurationAuthoritativeTests(TestCase):
+    """Specification Section 5: Academy teacher configuration is strictly authoritative."""
+
+    def setUp(self):
+        from organizations.models import OrganizationRole
+        self.org_a = OrganizationFactory(name="Academy A")
+        self.org_b = OrganizationFactory(name="Academy B")
+
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.level_a = LevelFactory(track=self.track_a)
+
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_b = LevelFactory(track=self.track_b)
+
+        self.teacher = BookableTeacherFactory()
+        admit(self.teacher, self.org_a, role=OrganizationRole.TEACHER)
+        admit(self.teacher, self.org_b, role=OrganizationRole.TEACHER)
+        ensure_teacher_configured(self.teacher, self.org_a)
+        ensure_teacher_configured(self.teacher, self.org_b)
+        teaches(self.teacher, self.level_a)
+        teaches(self.teacher, self.level_b)
+
+        self.student = StudentFactory()
+        admit(self.student, self.org_a)
+        admit(self.student, self.org_b)
+
+    def test_global_teacher_profile_unapproved_but_academy_configuration_approved_allows_booking(self):
+        """TeacherProfile.approved = False, OrganizationTeacherConfiguration.approved = True -> booking succeeds."""
+        from accounts.models import OrganizationTeacherConfiguration
+
+        # Global profile is NOT approved
+        self.teacher.teacher_profile.approved = False
+        self.teacher.teacher_profile.save()
+
+        # Academy A configuration IS approved
+        config = OrganizationTeacherConfiguration.objects.get(
+            membership__user=self.teacher,
+            membership__organization=self.org_a,
+        )
+        config.approved = True
+        config.save()
+
+        # Availability in Academy A
+        Availability.objects.create(
+            organization=self.org_a,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        booking.full_clean()
+        booking.save()
+        self.assertEqual(booking.status, BookingStatus.SCHEDULED)
+
+    def test_global_teacher_profile_approved_but_academy_configuration_unapproved_rejects_booking(self):
+        """TeacherProfile.approved = True, OrganizationTeacherConfiguration.approved = False -> booking rejected."""
+        from accounts.models import OrganizationTeacherConfiguration
+
+        self.teacher.teacher_profile.approved = True
+        self.teacher.teacher_profile.save()
+
+        config = OrganizationTeacherConfiguration.objects.get(
+            membership__user=self.teacher,
+            membership__organization=self.org_a,
+        )
+        config.approved = False
+        config.save()
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn("teacher_not_approved", error_codes(ctx.exception, field="teacher"))
+
+    def test_different_weekly_limits_for_same_teacher_in_two_academies(self):
+        """Academy A cap = 1 hr (60 min), Academy B cap = 2 hrs (120 min). Each enforces its own limit."""
+        from accounts.models import OrganizationTeacherConfiguration
+
+        # Global limit is 50 hours (should NOT be used)
+        self.teacher.teacher_profile.max_weekly_hours = 50
+        self.teacher.teacher_profile.save()
+
+        config_a = OrganizationTeacherConfiguration.objects.get(
+            membership__user=self.teacher,
+            membership__organization=self.org_a,
+        )
+        config_a.max_weekly_hours = 1
+        config_a.approved = True
+        config_a.save()
+
+        config_b = OrganizationTeacherConfiguration.objects.get(
+            membership__user=self.teacher,
+            membership__organization=self.org_b,
+        )
+        config_b.max_weekly_hours = 2
+        config_b.approved = True
+        config_b.save()
+
+        Availability.objects.create(
+            organization=self.org_a,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        Availability.objects.create(
+            organization=self.org_b,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc_1 = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+        start_utc_2 = dj_timezone.make_aware(datetime.combine(start, time(11, 0)), UTC)
+        start_utc_3 = dj_timezone.make_aware(datetime.combine(start, time(12, 0)), UTC)
+        start_utc_4 = dj_timezone.make_aware(datetime.combine(start, time(13, 0)), UTC)
+
+        # In Academy A: 60 min booking succeeds (reaches 60 min limit)
+        booking_a1 = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc_1,
+            duration_minutes=60,
+        )
+        booking_a1.full_clean()
+        booking_a1.save()
+
+        # In Academy A: additional 30 min booking exceeds 60 min limit
+        booking_a2 = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc_2,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking_a2.full_clean()
+        self.assertIn("teacher_weekly_capacity_exceeded", [e.code for e in ctx.exception.error_dict[NON_FIELD_ERRORS]])
+
+        # In Academy B: teacher has 0 committed minutes. 60 min booking succeeds!
+        booking_b1 = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc_2,
+            duration_minutes=60,
+        )
+        booking_b1.full_clean()
+        booking_b1.save()
+
+        # In Academy B: second 60 min booking succeeds (total 120 min, reaches 2 hr limit)
+        booking_b2 = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc_3,
+            duration_minutes=60,
+        )
+        booking_b2.full_clean()
+        booking_b2.save()
+
+        # In Academy B: third 30 min booking exceeds 120 min limit
+        booking_b3 = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc_4,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking_b3.full_clean()
+        self.assertIn("teacher_weekly_capacity_exceeded", [e.code for e in ctx.exception.error_dict[NON_FIELD_ERRORS]])
+
+
+class StudentParticipationSemanticsTests(TestCase):
+    """Specification Section 4: Student participation semantics consistency tests."""
+
+    def setUp(self):
+        from organizations.models import OrganizationMembership, StudentEnrollment
+        self.org_a = OrganizationFactory(name="Academy A")
+        self.org_b = OrganizationFactory(name="Academy B")
+
+        self.track_a = TrackFactory(organization=self.org_a)
+        self.level_a = LevelFactory(track=self.track_a)
+
+        self.track_b = TrackFactory(organization=self.org_b)
+        self.level_b = LevelFactory(track=self.track_b)
+
+        self.teacher = BookableTeacherFactory()
+        ensure_teacher_configured(self.teacher, self.org_a)
+        ensure_teacher_configured(self.teacher, self.org_b)
+        teaches(self.teacher, self.level_a)
+        teaches(self.teacher, self.level_b)
+
+        Availability.objects.create(
+            organization=self.org_a,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+        Availability.objects.create(
+            organization=self.org_b,
+            teacher=self.teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(9, 0),
+            end_time_utc=time(17, 0),
+        )
+
+        self.student = StudentFactory()
+
+    def test_active_enrollment_allows_booking_without_membership(self):
+        """A student with active StudentEnrollment and NO OrganizationMembership can be booked."""
+        from organizations.models import EnrollmentStatus, OrganizationMembership, StudentEnrollment
+
+        # Ensure no membership
+        self.assertFalse(
+            OrganizationMembership.objects.filter(
+                organization=self.org_a, user=self.student
+            ).exists()
+        )
+        # Create active enrollment
+        StudentEnrollment.objects.create(
+            organization=self.org_a,
+            user=self.student,
+            track=self.track_a,
+            level=self.level_a,
+            status=EnrollmentStatus.ACTIVE,
+        )
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        booking.full_clean()
+        booking.save()
+        self.assertEqual(booking.status, BookingStatus.SCHEDULED)
+
+    def test_inactive_enrollment_does_not_count_as_active_participation(self):
+        """Inactive enrollment is rejected even if an active membership exists."""
+        from organizations.models import EnrollmentStatus, OrganizationMembership, OrganizationRole, StudentEnrollment
+
+        # Active membership
+        OrganizationMembership.objects.create(
+            organization=self.org_a,
+            user=self.student,
+            role=OrganizationRole.STAFF,
+            status=MembershipStatus.ACTIVE,
+        )
+        # Inactive enrollment
+        StudentEnrollment.objects.create(
+            organization=self.org_a,
+            user=self.student,
+            track=self.track_a,
+            level=self.level_a,
+            status=EnrollmentStatus.INACTIVE,
+        )
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_a,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn("student_not_active_member", error_codes(ctx.exception, field="student"))
+
+    def test_cross_academy_enrollment_cannot_grant_access(self):
+        """Student enrolled in Academy A cannot be booked in Academy B."""
+        from organizations.models import EnrollmentStatus, StudentEnrollment
+
+        StudentEnrollment.objects.create(
+            organization=self.org_a,
+            user=self.student,
+            track=self.track_a,
+            level=self.level_a,
+            status=EnrollmentStatus.ACTIVE,
+        )
+
+        start = next_date_for_weekday(Weekday.MONDAY)
+        start_utc = dj_timezone.make_aware(datetime.combine(start, time(10, 0)), UTC)
+
+        booking = Booking(
+            student=self.student,
+            teacher=self.teacher,
+            level=self.level_b,
+            start_time_utc=start_utc,
+            duration_minutes=30,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            booking.full_clean()
+        self.assertIn("student_not_active_member", error_codes(ctx.exception, field="student"))
+
+    def test_parent_access_requires_parent_membership_and_child_active_enrollment(self):
+        """Parent access requires parent's academy access + child's valid enrollment."""
+        from accounts.models import ParentLink
+        from accounts.tenancy import children_in_organization
+        from organizations.models import EnrollmentStatus, OrganizationMembership, OrganizationRole, StudentEnrollment
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        from scheduling.serializers import resolve_requested_student
+
+        parent = ParentFactory()
+        ParentLink.objects.create(parent=parent, student=self.student)
+
+        # Parent is active in Academy A
+        OrganizationMembership.objects.create(
+            organization=self.org_a,
+            user=parent,
+            role=OrganizationRole.STAFF,
+            status=MembershipStatus.ACTIVE,
+        )
+
+        # Child has inactive enrollment
+        enrollment = StudentEnrollment.objects.create(
+            organization=self.org_a,
+            user=self.student,
+            status=EnrollmentStatus.INACTIVE,
+        )
+
+        # Parent cannot see child in organization
+        self.assertFalse(children_in_organization(parent=parent, organization=self.org_a).exists())
+
+        # Parent attempting to resolve student fails
+        with self.assertRaises(DRFValidationError):
+            resolve_requested_student(parent, self.student, organization=self.org_a)
+
+        # Activate child enrollment
+        enrollment.status = EnrollmentStatus.ACTIVE
+        enrollment.save()
+
+        # Now parent sees child and can resolve student
+        self.assertTrue(children_in_organization(parent=parent, organization=self.org_a).exists())
+        resolved = resolve_requested_student(parent, self.student, organization=self.org_a)
+        self.assertEqual(resolved, self.student)

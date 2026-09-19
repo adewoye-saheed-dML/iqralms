@@ -173,22 +173,21 @@ def bookable_teacher_error(user, *, organization):
             code="no_teacher_profile",
             params={"username": user.username},
         )
-    if not profile.approved:
-        return ValidationError(
-            "%(username)s's teacher profile is not approved yet.",
-            code="teacher_not_approved",
-            params={"username": user.username},
-        )
-
-    from accounts.models import OrganizationTeacherConfiguration
-    from organizations.models import active_membership, MembershipStatus
-
     if organization is None:
+        if not profile.approved:
+            return ValidationError(
+                "%(username)s's teacher profile is not approved yet.",
+                code="teacher_not_approved",
+                params={"username": user.username},
+            )
         return ValidationError(
             "%(username)s's scheduling operations require an organization context.",
             code="organization_context_required",
             params={"username": user.username},
         )
+
+    from accounts.models import OrganizationTeacherConfiguration
+    from organizations.models import active_membership, MembershipStatus
 
     membership = active_membership(user=user, organization=organization)
     if membership is None:
@@ -920,9 +919,9 @@ class Booking(models.Model):
                 code="student_not_fully_active",
             )
         elif self.organization is not None and self._state.adding:
-            from organizations.models import active_membership
+            from accounts.tenancy import is_active_student_participant
 
-            if active_membership(user=self.student, organization=self.organization) is None:
+            if not is_active_student_participant(user=self.student, organization=self.organization):
                 errors["student"] = ValidationError(
                     "%(username)s is not an active member of %(organization)s.",
                     code="student_not_active_member",
@@ -1010,12 +1009,14 @@ class Booking(models.Model):
         config = get_teacher_configuration(self.teacher, organization=org)
         if config is not None:
             cap_hours = config.max_weekly_hours
-        else:
+        elif org is None:
             profile = getattr(self.teacher, "teacher_profile", None)
             if profile is not None:
                 cap_hours = profile.max_weekly_hours
             else:
                 return
+        else:
+            return
 
         cap_minutes = cap_hours * MINUTES_PER_HOUR
         projected = weekly_committed_minutes(
@@ -1252,12 +1253,14 @@ def remaining_weekly_minutes(teacher, moment, *, organization):
     config = get_teacher_configuration(teacher, organization=organization)
     if config is not None:
         cap_minutes = config.max_weekly_hours * MINUTES_PER_HOUR
-    else:
+    elif organization is None:
         profile = getattr(teacher, "teacher_profile", None)
         if profile is not None:
             cap_minutes = profile.max_weekly_hours * MINUTES_PER_HOUR
         else:
             return 0
+    else:
+        return 0
     return cap_minutes - weekly_committed_minutes(
         teacher.pk, moment, organization=organization
     )

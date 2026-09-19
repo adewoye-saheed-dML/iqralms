@@ -622,6 +622,12 @@ class PromotionTests(PreferredTeacherWorld, TestCase):
         profile = entry.requested_teacher.teacher_profile
         profile.approved = False
         profile.save()
+        from accounts.models import OrganizationTeacherConfiguration
+
+        OrganizationTeacherConfiguration.objects.filter(
+            membership__user=entry.requested_teacher,
+            membership__organization=entry.level.track.organization,
+        ).update(approved=False)
 
         with self.assertRaises(ValidationError):
             promote_waitlist_entry(entry, organization=entry.level.track.organization)

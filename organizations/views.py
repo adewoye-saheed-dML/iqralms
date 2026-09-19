@@ -46,7 +46,6 @@ from .serializers import (
     OrganizationInvitationAcceptSerializer,
     OrganizationInvitationCreateSerializer,
     OrganizationInvitationSerializer,
-    OrganizationMembershipCreateSerializer,
     OrganizationMembershipSerializer,
     OrganizationMembershipUpdateSerializer,
     OrganizationSerializer,
@@ -150,7 +149,7 @@ class MyOrganizationListView(generics.ListAPIView):
         # could widen this to another user's memberships.
         return (
             OrganizationMembership.objects.active()
-            .filter(user=self.request.user)
+            .filter(user=self.request.user, organization__is_active=True)
             .select_related("organization")
         )
 

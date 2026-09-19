@@ -28,8 +28,10 @@ from scheduling.tests.factories import (
     CohortFactory,
 )
 
+from accounts.models import OrganizationTeacherConfiguration
 from payouts.exceptions import PayoutAlreadyFinalized
 from payouts.models import PayoutStatus, TeacherPayout, payout_amount
+from payouts.services import applicable_rate
 from payouts.tests.factories import (
     FinalizedPayoutFactory,
     TeacherPayoutFactory,
@@ -114,7 +116,7 @@ class PayoutEligibilityTests(TestCase):
         self.assertIn("booking", caught.exception.message_dict)
 
     def _payout_for(self, booking):
-        rate = booking.teacher.teacher_profile.hourly_payout_rate or Decimal("5000.00")
+        rate = applicable_rate(booking.teacher, organization=booking.organization) or Decimal("5000.00")
         return TeacherPayout(
             teacher=booking.teacher,
             booking=booking,
@@ -131,7 +133,7 @@ class CohortPayoutTests(TestCase):
     def test_second_seat_of_the_same_cohort_cannot_be_paid(self):
         seats = self._cohort_seats(2)
         TeacherPayoutFactory(booking=seats[0])
-        rate = seats[1].teacher.teacher_profile.hourly_payout_rate
+        rate = applicable_rate(seats[1].teacher, organization=seats[1].organization)
         duplicate = TeacherPayout(
             teacher=seats[1].teacher,
             booking=seats[1],
@@ -152,7 +154,7 @@ class CohortPayoutTests(TestCase):
             teacher=seats[0].teacher,
             cohort=None,
             minutes_paid=seats[0].duration_minutes,
-            rate_used=seats[0].teacher.teacher_profile.hourly_payout_rate,
+            rate_used=applicable_rate(seats[0].teacher, organization=seats[0].organization),
         )
         payout.amount = payout_amount(payout.minutes_paid, payout.rate_used)
         with self.assertRaises(ValidationError) as caught:
@@ -211,6 +213,13 @@ class PayoutImmutabilityTests(TestCase):
         profile = payout.teacher.teacher_profile
         profile.hourly_payout_rate = original_rate * 2
         profile.save()
+        config = OrganizationTeacherConfiguration.objects.filter(
+            membership__user=payout.teacher,
+            membership__organization=payout.booking.organization,
+        ).first()
+        if config:
+            config.hourly_payout_rate = original_rate * 2
+            config.save()
         payout.refresh_from_db()
         self.assertEqual(payout.rate_used, original_rate)
         self.assertEqual(payout.amount, original_amount)
@@ -272,7 +281,7 @@ class PayoutTenancyModelTests(TestCase):
             teacher=booking.teacher,
             cohort=booking.cohort,
             minutes_paid=booking.duration_minutes,
-            rate_used=booking.teacher.teacher_profile.hourly_payout_rate,
+            rate_used=applicable_rate(booking.teacher, organization=booking.organization) or Decimal("5000.00"),
         )
         payout.amount = payout_amount(payout.minutes_paid, payout.rate_used)
         with self.assertRaises(ValidationError) as caught:
@@ -299,7 +308,7 @@ class PayoutTenancyModelTests(TestCase):
             teacher=booking_a.teacher,
             cohort=cohort_b,
             minutes_paid=booking_a.duration_minutes,
-            rate_used=booking_a.teacher.teacher_profile.hourly_payout_rate,
+            rate_used=applicable_rate(booking_a.teacher, organization=booking_a.organization) or Decimal("5000.00"),
         )
         payout.amount = payout_amount(payout.minutes_paid, payout.rate_used)
         with self.assertRaises(ValidationError) as caught:

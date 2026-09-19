@@ -41,7 +41,12 @@ def past_session(*, weeks_ago=1, **kwargs):
 
 def _rate_for(booking):
     """The booking teacher's hourly rate. Factories build rated teachers."""
-    return booking.teacher.teacher_profile.hourly_payout_rate
+    from payouts.services import applicable_rate
+    rate = applicable_rate(booking.teacher, organization=booking.organization)
+    if rate is not None:
+        return rate
+    profile = getattr(booking.teacher, "teacher_profile", None)
+    return getattr(profile, "hourly_payout_rate", None)
 
 
 class TeacherPayoutFactory(factory.django.DjangoModelFactory):

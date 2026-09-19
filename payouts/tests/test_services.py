@@ -604,3 +604,107 @@ class PayoutTenancyServiceTests(TestCase):
             defaults={"approved": True, "max_weekly_hours": 20, "hourly_payout_rate": Decimal("6000.00")},
         )
         self.assertIsNone(applicable_rate(teacher, organization=self.org_a))
+
+    def test_changing_rate_in_academy_a_does_not_affect_academy_b(self):
+        """Changing Academy A's rate does not affect Academy B."""
+        from accounts.models import OrganizationTeacherConfiguration
+        from organizations.models import OrganizationMembership, MembershipStatus, OrganizationRole
+        from scheduling.tests.factories import BookableTeacherFactory
+        from payouts.services import applicable_rate
+
+        teacher = BookableTeacherFactory()
+        m_a = OrganizationMembership.objects.create(
+            organization=self.org_a,
+            user=teacher,
+            role=OrganizationRole.TEACHER,
+            status=MembershipStatus.ACTIVE,
+        )
+        config_a = OrganizationTeacherConfiguration.objects.create(
+            membership=m_a,
+            approved=True,
+            max_weekly_hours=20,
+            hourly_payout_rate=Decimal("5000.00"),
+        )
+
+        m_b = OrganizationMembership.objects.create(
+            organization=self.org_b,
+            user=teacher,
+            role=OrganizationRole.TEACHER,
+            status=MembershipStatus.ACTIVE,
+        )
+        config_b = OrganizationTeacherConfiguration.objects.create(
+            membership=m_b,
+            approved=True,
+            max_weekly_hours=20,
+            hourly_payout_rate=Decimal("8000.00"),
+        )
+
+        # Update Academy A rate to 6000
+        config_a.hourly_payout_rate = Decimal("6000.00")
+        config_a.save()
+
+        # Academy B must remain 8000
+        self.assertEqual(applicable_rate(teacher, organization=self.org_a), Decimal("6000.00"))
+        self.assertEqual(applicable_rate(teacher, organization=self.org_b), Decimal("8000.00"))
+
+        booking_a = past_session(
+            level=self.level_a,
+            teacher=teacher,
+            start_time_utc=PERIOD_START + timedelta(days=1),
+            duration_minutes=60,
+        )
+        booking_b = past_session(
+            level=self.level_b,
+            teacher=teacher,
+            start_time_utc=PERIOD_START + timedelta(days=2),
+            duration_minutes=60,
+        )
+
+        res_a = generate_payouts(organization=self.org_a, period_start=PERIOD_START, period_end=PERIOD_END)
+        res_b = generate_payouts(organization=self.org_b, period_start=PERIOD_START, period_end=PERIOD_END)
+
+        payout_a = TeacherPayout.objects.get(booking=booking_a)
+        payout_b = TeacherPayout.objects.get(booking=booking_b)
+
+        self.assertEqual(payout_a.rate_used, Decimal("6000.00"))
+        self.assertEqual(payout_b.rate_used, Decimal("8000.00"))
+
+    def test_missing_academy_rate_produces_no_rate_behaviour(self):
+        """Missing academy rate produces no-rate behaviour, even if global profile has rate."""
+        from accounts.models import OrganizationTeacherConfiguration
+        from organizations.models import OrganizationMembership, MembershipStatus, OrganizationRole
+        from scheduling.tests.factories import BookableTeacherFactory
+        from payouts.services import applicable_rate
+
+        teacher = BookableTeacherFactory()
+        # Set global rate to a non-null value
+        teacher.teacher_profile.hourly_payout_rate = Decimal("9999.00")
+        teacher.teacher_profile.save()
+
+        m_a = OrganizationMembership.objects.create(
+            organization=self.org_a,
+            user=teacher,
+            role=OrganizationRole.TEACHER,
+            status=MembershipStatus.ACTIVE,
+        )
+        # Academy config with no hourly_payout_rate
+        OrganizationTeacherConfiguration.objects.create(
+            membership=m_a,
+            approved=True,
+            max_weekly_hours=20,
+            hourly_payout_rate=None,
+        )
+
+        # Must return None, not the global fallback 9999.00
+        self.assertIsNone(applicable_rate(teacher, organization=self.org_a))
+
+        booking = past_session(
+            level=self.level_a,
+            teacher=teacher,
+            start_time_utc=PERIOD_START + timedelta(days=1),
+            duration_minutes=60,
+        )
+        res = generate_payouts(organization=self.org_a, period_start=PERIOD_START, period_end=PERIOD_END)
+        self.assertEqual(len(res.created), 0)
+        self.assertEqual(len(res.skipped), 1)
+        self.assertEqual(res.skipped[0].reason, SKIP_NO_PAYOUT_RATE)

@@ -1,6 +1,0 @@
-# Phase 12 API Contract Decisions
-- **Baseline**: `81c79dbceb50858c64a2c94eb36c52e3ed957e9a` (feat(Audit): completed).
-- **API Decisions**: Documented the API strictly as it exists in `specs/saas/API_CONTRACT.md`. Enums, pagination, tenancy, and role matrices remain as built. Request correlation uses `X-Request-ID`.
-- **Breaking Changes**: None. We avoided cosmetic API changes and retained backward compatibility.
-- **Known Gaps / Deferrals**: No refresh-token mechanism exists natively (only long-lived tokens). No explicit rate-limiting infrastructure is built, deferred to deployment configuration.
-- **Next Phase**: SaaS Phase 13 — Frontend Foundation / Web Application.

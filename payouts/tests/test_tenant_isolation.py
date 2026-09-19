@@ -409,9 +409,16 @@ class PayoutTenantIsolationTests(TwoAcademiesPayoutFixture):
         payout = TeacherPayoutFactory(booking=self.booking_a1)
         payout.finalize()
 
-        # Update teacher profile rate
+        # Update teacher profile rate and academy configuration rate
         self.teacher_a1.teacher_profile.hourly_payout_rate = Decimal("9999.00")
         self.teacher_a1.teacher_profile.save()
+        from accounts.models import OrganizationTeacherConfiguration
+        config = OrganizationTeacherConfiguration.objects.filter(
+            membership=self.teacher_a1_membership
+        ).first()
+        if config:
+            config.hourly_payout_rate = Decimal("9999.00")
+            config.save()
 
         payout.refresh_from_db()
         self.assertEqual(payout.rate_used, Decimal("5000.00"))

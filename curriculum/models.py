@@ -617,15 +617,19 @@ class PlacementResult(models.Model):
             errors["audio_sample"] = exc
 
     def _is_active_here(self, user) -> bool:
-        """Is ``user`` an active member of the academy that owns this track?
+        """Is ``user`` an active member/participant of the academy that owns this track?
 
-        Goes through ``organizations.active_membership()`` rather than filtering
-        memberships here, because "which memberships grant access" is one
-        question with one answer in this codebase, and a second copy of it is the
-        one that would eventually disagree. Passing the bare organization id keeps
-        this to a single query — the ``Organization`` row itself is not needed to
-        answer the question.
+        Goes through ``organizations.active_membership()`` or ``is_active_student_participant()``
+        rather than filtering memberships directly.
         """
+        if not self.track_id or not user:
+            return False
+        if getattr(user, "role", None) == Role.STUDENT:
+            from accounts.tenancy import is_active_student_participant
+
+            return is_active_student_participant(
+                user=user, organization=self.track.organization_id
+            )
         return (
             active_membership(user=user, organization=self.track.organization_id)
             is not None

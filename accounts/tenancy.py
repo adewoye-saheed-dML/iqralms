@@ -37,6 +37,8 @@ an academy never sees a student it has not admitted.
 """
 
 from organizations.models import (
+    EnrollmentStatus,
+    MembershipStatus,
     OrganizationMembership,
     StudentEnrollment,
     active_enrollment,
@@ -83,6 +85,47 @@ def active_student_membership(*, user, organization):
     return _active_membership_for_account_roles(
         user=user, organization=organization, roles=STUDENT_ROLES
     )
+
+
+def is_active_student_participant(*, user, organization):
+    """Whether ``user`` has active academic participation in ``organization``.
+
+    Canonical academic participation is established via ``StudentEnrollment``.
+    A student with an active enrollment participates in the academy.
+    An inactive enrollment explicitly revokes academic participation.
+    A suspended membership denies participation.
+    An active membership without enrollment records is supported for backward compatibility.
+    """
+    if not user or getattr(user, "role", None) != Role.STUDENT:
+        return False
+
+    org_id = getattr(organization, "pk", organization)
+    if org_id is None:
+        return False
+
+    # A suspended membership always denies participation
+    if OrganizationMembership.objects.filter(
+        organization_id=org_id,
+        user=user,
+        status=MembershipStatus.SUSPENDED,
+    ).exists():
+        return False
+
+    # An inactive enrollment explicitly revokes academic participation
+    if StudentEnrollment.objects.filter(
+        organization_id=org_id,
+        user=user,
+        status=EnrollmentStatus.INACTIVE,
+    ).exists():
+        return False
+
+    # Student must have an active enrollment (canonical) or an active membership (fallback)
+    if active_enrollment(user=user, organization=org_id) is not None:
+        return True
+    if active_membership(user=user, organization=org_id) is not None:
+        return True
+
+    return False
 
 
 def active_parent_membership(*, user, organization):

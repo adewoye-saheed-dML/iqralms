@@ -115,9 +115,9 @@ class Statement:
 def applicable_rate(teacher, *, organization=None):
     """The rate ``teacher`` earns per hour today, or None if they have none.
 
-    B07: The authoritative rate source is ``OrganizationTeacherConfiguration.hourly_payout_rate``
+    The authoritative rate source is ``OrganizationTeacherConfiguration.hourly_payout_rate``
     for the teacher's active membership in ``organization``.
-    Falls back to ``TeacherProfile.hourly_payout_rate`` when unconfigured on the academy config.
+    Does not use the global ``TeacherProfile.hourly_payout_rate`` as a fallback for an academy-scoped payout.
     """
     if organization is not None:
         from accounts.models import OrganizationTeacherConfiguration
@@ -130,11 +130,9 @@ def applicable_rate(teacher, *, organization=None):
         config = OrganizationTeacherConfiguration.objects.filter(
             membership=membership,
         ).first()
-        if config is not None:
-            if not config.approved:
-                return None
-            if config.hourly_payout_rate is not None:
-                return config.hourly_payout_rate
+        if config is None or not config.approved:
+            return None
+        return config.hourly_payout_rate
 
     profile = getattr(teacher, "teacher_profile", None)
     if profile is None:

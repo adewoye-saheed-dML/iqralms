@@ -106,6 +106,13 @@ def resolve_requested_student(caller, student, *, organization):
             raise serializers.ValidationError(
                 {"student": ["You can only book sessions for yourself."]}
             )
+        if organization is not None:
+            from accounts.tenancy import is_active_student_participant
+
+            if not is_active_student_participant(user=caller, organization=organization):
+                raise serializers.ValidationError(
+                    {"student": ["You are not an active member of this organization."]}
+                )
         return caller
     if student is None:
         raise serializers.ValidationError(

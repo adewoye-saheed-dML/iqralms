@@ -166,51 +166,6 @@ class MyOrganizationMembershipSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class OrganizationMembershipCreateSerializer(serializers.Serializer):
-    """Adding an existing user to this academy.
-
-    A plain ``Serializer`` rather than a ``ModelSerializer``, because the two
-    fields a caller may send are the only two it should be possible to send:
-    ``organization`` comes from the URL and the caller's verified membership, and
-    ``status`` starts ``active`` — a membership created suspended is not something
-    Phase 1 was asked for.
-
-    No user is created here. The account has to exist already; onboarding people
-    into an academy that has not met them yet needs invitations, which is a later
-    phase with email, token and expiry decisions of its own.
-    """
-
-
-    user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
-    role = serializers.ChoiceField(choices=ASSIGNABLE_ORGANIZATION_ROLES)
-
-    def validate_user(self, user):
-        organization = self.context["organization"]
-        if OrganizationMembership.objects.filter(
-            organization=organization, user=user
-        ).exists():
-            # A friendlier 400 than the unique constraint's, and on the right
-            # field. The constraint still holds underneath, including for a
-            # suspended row — reactivating is a change to the membership that
-            # exists, not a second one.
-            raise serializers.ValidationError(
-                "That user is already a member of this organization."
-            )
-        return user
-
-    def create(self, validated_data):
-        membership = OrganizationMembership(
-            organization=self.context["organization"],
-            user=validated_data["user"],
-            role=validated_data["role"],
-        )
-        try:
-            membership.save()
-        except DjangoValidationError as exc:
-            raise as_drf_error(exc) from exc
-        return membership
-
-
 class OrganizationMembershipUpdateSerializer(serializers.Serializer):
     """Suspending, reactivating, or changing what a member may do here.
 
@@ -456,6 +411,11 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
         if user.email.lower() != invitation.email.lower():
             raise serializers.ValidationError({"token": "This invitation was sent to a different email address."})
 
+        if invitation.role == OrganizationRole.OWNER:
+            raise serializers.ValidationError(
+                {"detail": "Owner cannot be created through an invitation."}
+            )
+
         if OrganizationMembership.objects.filter(
             organization=organization, user=user
         ).exists():
@@ -473,17 +433,17 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
         from django.utils import timezone
 
         with transaction.atomic():
-            # 1. Mark invitation as accepted
-            invitation.status = InvitationStatus.ACCEPTED
-            invitation.accepted_at = timezone.now()
-            invitation.save(update_fields=["status", "accepted_at"])
-
-            # 2. Create the active membership
+            # 1. Create the active membership
             membership = OrganizationMembership.objects.create(
                 organization=invitation.organization,
                 user=user,
                 role=invitation.role,
                 status=MembershipStatus.ACTIVE,
             )
+
+            # 2. Mark invitation as accepted
+            invitation.status = InvitationStatus.ACCEPTED
+            invitation.accepted_at = timezone.now()
+            invitation.save(update_fields=["status", "accepted_at"])
 
         return membership

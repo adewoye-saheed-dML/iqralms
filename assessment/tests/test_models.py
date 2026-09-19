@@ -289,6 +289,12 @@ class SessionAssessmentSubmissionTests(TestCase):
         profile = self.teacher.teacher_profile
         profile.approved = False
         profile.save()
+        from accounts.models import OrganizationTeacherConfiguration
+
+        OrganizationTeacherConfiguration.objects.filter(
+            membership__user=self.teacher,
+            membership__organization=self.booking.organization,
+        ).update(approved=False)
 
         with self.assertRaises(ValidationError) as ctx:
             self.submit()

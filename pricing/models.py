@@ -176,13 +176,19 @@ class PricingAgreement(models.Model):
         return None
 
     def _is_active_here(self, user):
-        """Is ``user`` an active member of the academy that owns this level?
+        """Is ``user`` an active member/participant of the academy that owns this level?
 
-        Goes through ``organizations.active_membership()`` rather than querying
-        memberships directly.
+        Goes through ``organizations.active_membership()`` or ``is_active_student_participant()``
+        rather than querying memberships directly.
         """
         if not self.organization or not user:
             return False
+        if getattr(user, "role", None) == Role.STUDENT:
+            from accounts.tenancy import is_active_student_participant
+
+            return is_active_student_participant(
+                user=user, organization=self.organization
+            )
         return (
             active_membership(user=user, organization=self.organization)
             is not None

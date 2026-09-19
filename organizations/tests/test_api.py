@@ -914,3 +914,138 @@ class InvitationLifecycleAPITests(TenantWorld):
             accept_invitation_url(self.org_b), {"token": token}
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_existing_suspended_membership_rejected_and_not_reactivated(self):
+        """Accepting an invitation when member is suspended must be rejected, role & status preserved."""
+        import datetime
+        from django.utils import timezone
+
+        user = self.suspended_a
+        original_role = self.suspended_membership_a.role
+        original_status = self.suspended_membership_a.status
+        self.assertEqual(original_status, MembershipStatus.SUSPENDED)
+
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        invitation = OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.ADMIN,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+
+        response = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already a member", str(response.data))
+
+        # Check membership status and role untouched
+        self.suspended_membership_a.refresh_from_db()
+        self.assertEqual(self.suspended_membership_a.status, original_status)
+        self.assertEqual(self.suspended_membership_a.role, original_role)
+
+        # Check invitation remains pending
+        invitation.refresh_from_db()
+        self.assertEqual(invitation.status, InvitationStatus.PENDING)
+        self.assertIsNone(invitation.accepted_at)
+
+    def test_existing_active_membership_rejected_role_unchanged_invitation_pending(self):
+        """Accepting an invitation when member is active must be rejected, role unchanged, invitation pending."""
+        import datetime
+        from django.utils import timezone
+
+        user = self.teacher_a
+        original_role = self.teacher_membership_a.role
+        self.assertEqual(original_role, OrganizationRole.TEACHER)
+
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        invitation = OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.ADMIN,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+
+        response = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Role remains unchanged
+        self.teacher_membership_a.refresh_from_db()
+        self.assertEqual(self.teacher_membership_a.role, original_role)
+
+        # Invitation remains pending
+        invitation.refresh_from_db()
+        self.assertEqual(invitation.status, InvitationStatus.PENDING)
+        self.assertIsNone(invitation.accepted_at)
+
+    def test_owner_cannot_be_created_through_an_invitation(self):
+        """An invitation with owner role cannot be accepted."""
+        import datetime
+        from django.utils import timezone
+
+        user = UserFactory(email="ownerinv@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        invitation = OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.OWNER,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+
+        response = self.as_user(user).post(
+            accept_invitation_url(self.org_a), {"token": token}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Owner cannot be created", str(response.data))
+
+        # No membership created
+        self.assertFalse(
+            OrganizationMembership.objects.filter(
+                organization=self.org_a, user=user
+            ).exists()
+        )
+        invitation.refresh_from_db()
+        self.assertEqual(invitation.status, InvitationStatus.PENDING)
+
+    def test_invitation_acceptance_atomicity_rollback(self):
+        """If transaction fails during acceptance, rollback leaves invitation pending and no membership."""
+        import datetime
+        from django.utils import timezone
+        from unittest.mock import patch
+
+        user = UserFactory(email="rollback@example.com")
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        invitation = OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email=user.email,
+            role=OrganizationRole.STAFF,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+
+        # Simulate exception during invitation.save update_fields
+        with patch.object(OrganizationInvitation, "save", side_effect=RuntimeError("Database explosion")):
+            with self.assertRaises(RuntimeError):
+                self.as_user(user).post(
+                    accept_invitation_url(self.org_a), {"token": token}
+                )
+
+        # Verify rollback: no membership created
+        self.assertFalse(
+            OrganizationMembership.objects.filter(
+                organization=self.org_a, user=user
+            ).exists()
+        )
+        # Verify invitation remains pending
+        invitation.refresh_from_db()
+        self.assertEqual(invitation.status, InvitationStatus.PENDING)
+        self.assertIsNone(invitation.accepted_at)
