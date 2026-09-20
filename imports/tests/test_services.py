@@ -76,7 +76,7 @@ class ImportServicesTests(TestCase):
     def test_parent_child_link(self):
         # Create a parent
         parent = UserFactory(email="parent@example.com", role=Role.PARENT)
-        OrganizationMembership.objects.create(user=parent, organization=self.org, role=OrganizationRole.STAFF)
+        OrganizationMembership.objects.create(user=parent, organization=self.org, role=OrganizationRole.PARENT)
         
         rows = [
             {

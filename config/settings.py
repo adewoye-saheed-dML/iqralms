@@ -117,6 +117,11 @@ CORS_ALLOWED_ORIGINS = env_list(
     default=[] if PRODUCTION else ["http://localhost:3000", "http://127.0.0.1:3000"],
 )
 
+FRONTEND_BASE_URL = env_str(
+    "FRONTEND_BASE_URL",
+    default="http://localhost:3000",
+)
+
 
 # --- Applications -----------------------------------------------------------
 
@@ -490,6 +495,9 @@ SPECTACULAR_SETTINGS = {
         "OrganizationRoleEnum": "organizations.models.OrganizationRole.choices",
         "AssignableOrganizationRoleEnum": (
             "organizations.serializers.ASSIGNABLE_ORGANIZATION_ROLES"
+        ),
+        "InvitableOrganizationRoleEnum": (
+            "organizations.serializers.INVITABLE_ORGANIZATION_ROLES"
         ),
         "MembershipStatusEnum": "organizations.models.MembershipStatus.choices",
     },

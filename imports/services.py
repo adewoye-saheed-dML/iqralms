@@ -10,7 +10,13 @@ from django.utils import timezone
 
 from accounts.models import Role, User, ParentLink
 from accounts.validators import validate_iana_timezone
-from organizations.models import OrganizationMembership, OrganizationRole, MembershipStatus
+from organizations.models import (
+    MembershipStatus,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+    InvitationStatus,
+)
 from .models import ImportJob, ImportKind, ImportStatus
 
 import openpyxl
@@ -127,14 +133,28 @@ class ImportValidator:
                 user__email__in=all_emails
             )
         }
+
+        existing_pending_invitations = set(
+            OrganizationInvitation.objects.filter(
+                organization_id=self.job.organization_id,
+                email__in=all_emails,
+                status=InvitationStatus.PENDING,
+            ).values_list("email", flat=True)
+        )
         
         for idx, raw_row in enumerate(self.raw_rows, start=1):
             mapped = self._apply_mapping(raw_row)
-            self._validate_row(idx, mapped, existing_users, existing_memberships, ambiguous_emails)
+            self._validate_row(
+                idx,
+                mapped,
+                existing_users,
+                existing_memberships,
+                ambiguous_emails,
+                existing_pending_invitations,
+            )
             
         self.job.row_count = len(self.raw_rows)
         self.job.valid_row_count = len(self.valid_rows)
-        self.job.invalid_row_count = len(self.errors) # Not exactly, one row might have 2 errors, but this is a heuristic. Actually invalid_row_count = len(self.raw_rows) - len(self.valid_rows)
         self.job.invalid_row_count = self.job.row_count - self.job.valid_row_count
         self.job.error_report = self.errors
         self.job.valid_rows = self.valid_rows
@@ -154,7 +174,15 @@ class ImportValidator:
                 mapped[canonical] = str(val).strip() if val is not None else ""
         return mapped
         
-    def _validate_row(self, idx: int, row: dict, existing_users: dict, existing_memberships: dict, ambiguous_emails: set):
+    def _validate_row(
+        self,
+        idx: int,
+        row: dict,
+        existing_users: dict,
+        existing_memberships: dict,
+        ambiguous_emails: set,
+        existing_pending_invitations: set,
+    ):
         # 1. Required fields
         email = normalize_email(row.get("email", ""))
         if not email:
@@ -174,19 +202,25 @@ class ImportValidator:
         if email in ambiguous_emails:
             self._add_error(idx, "email", "ambiguous_match", "Multiple existing users match this email.")
             return
+
+        if email in existing_pending_invitations:
+            self._add_error(idx, "email", "duplicate_pending_invitation", "A pending invitation already exists for this email.")
+            return
         
         self.seen_emails.add(email)
 
-        # 2. Timezone
+        # 2. Timezone (required for students and parents, optional for teachers)
         tz = row.get("timezone", "")
         if not tz:
-            self._add_error(idx, "timezone", "missing_required", "Timezone is required.")
-            return
-        try:
-            validate_iana_timezone(tz)
-        except ValidationError:
-            self._add_error(idx, "timezone", "invalid_timezone", "Timezone is not a valid IANA timezone.")
-            return
+            if self.job.kind != ImportKind.TEACHERS:
+                self._add_error(idx, "timezone", "missing_required", "Timezone is required.")
+                return
+        else:
+            try:
+                validate_iana_timezone(tz)
+            except ValidationError:
+                self._add_error(idx, "timezone", "invalid_timezone", "Timezone is not a valid IANA timezone.")
+                return
 
         # 3. Existing User Logic
         user = existing_users.get(email)
@@ -207,9 +241,11 @@ class ImportValidator:
                 if membership.status == MembershipStatus.SUSPENDED:
                     self._add_error(idx, "membership", "suspended_membership", "User has a suspended membership. Cannot silently reactivate.")
                     return
+                if self.job.kind == ImportKind.TEACHERS:
+                    self._add_error(idx, "membership", "existing_member", "User is already an active member of this academy.")
+                    return
                 # Role conflict in academy?
                 expected_org_role = self._get_expected_org_role()
-                # For teachers, expected is TEACHER. For students/parents, it's STAFF.
                 if membership.role != expected_org_role:
                     self._add_error(idx, "membership", "org_role_conflict", f"Existing membership has conflicting role: {membership.role}.")
                     return
@@ -272,6 +308,10 @@ class ImportValidator:
     def _get_expected_org_role(self) -> str:
         if self.job.kind == ImportKind.TEACHERS:
             return OrganizationRole.TEACHER
+        if self.job.kind == ImportKind.STUDENTS:
+            return OrganizationRole.STUDENT
+        if self.job.kind == ImportKind.PARENTS:
+            return OrganizationRole.PARENT
         return OrganizationRole.STAFF
 
 
@@ -291,27 +331,69 @@ def commit_import(job: ImportJob):
     skipped_rows = 0
 
     try:
+        if job.kind == ImportKind.TEACHERS:
+            import datetime
+            from notifications.services import send_invitation_email
+
+            invitations_to_send = []
+            with transaction.atomic():
+                for row in job.valid_rows:
+                    email = normalize_email(row.get("email"))
+                    token, digest = OrganizationInvitation.generate_token_and_digest()
+                    invitation = OrganizationInvitation.objects.create(
+                        organization_id=job.organization_id,
+                        email=email,
+                        role=OrganizationRole.TEACHER,
+                        token_digest=digest,
+                        expires_at=timezone.now() + datetime.timedelta(days=7),
+                        status=InvitationStatus.PENDING,
+                    )
+                    invitations_to_send.append((invitation, token))
+
+            emails_sent = 0
+            emails_failed = 0
+            for invitation, token in invitations_to_send:
+                delivery = send_invitation_email(invitation, token)
+                if delivery.status == "sent":
+                    emails_sent += 1
+                else:
+                    emails_failed += 1
+
+            job.invitations_created = len(invitations_to_send)
+            job.created_count = len(invitations_to_send)
+            job.emails_sent = emails_sent
+            job.emails_failed = emails_failed
+            if emails_failed == 0:
+                job.status = ImportStatus.COMPLETED
+            elif emails_sent > 0:
+                job.status = ImportStatus.PARTIALLY_COMPLETED
+            else:
+                job.status = (
+                    ImportStatus.PARTIALLY_COMPLETED
+                    if len(invitations_to_send) > 0
+                    else ImportStatus.COMPLETED
+                )
+            job.completed_at = timezone.now()
+            job.save()
+            return
+
         with transaction.atomic():
-            # In Phase 10, all-or-nothing transactional boundary
             for row in job.valid_rows:
                 email = normalize_email(row.get("email"))
-                
+
                 # Global role
-                if job.kind == ImportKind.TEACHERS:
-                    g_role = Role.LEAD
-                elif job.kind == ImportKind.STUDENTS:
+                if job.kind == ImportKind.STUDENTS:
                     g_role = Role.STUDENT
+                    o_role = OrganizationRole.STUDENT
                 else:
                     g_role = Role.PARENT
-                    
-                # Org role
-                o_role = OrganizationRole.TEACHER if job.kind == ImportKind.TEACHERS else OrganizationRole.STAFF
+                    o_role = OrganizationRole.PARENT
 
                 # Create or get user
                 user, created = User.objects.get_or_create(
                     email=email,
                     defaults={
-                        "username": email, # Fallback, username needs to be unique
+                        "username": email,
                         "first_name": row.get("first_name", ""),
                         "last_name": row.get("last_name", ""),
                         "timezone": row.get("timezone", "UTC"),
@@ -319,7 +401,7 @@ def commit_import(job: ImportJob):
                         "date_of_birth": row.get("date_of_birth") if row.get("date_of_birth") else None,
                     }
                 )
-                
+
                 if created:
                     created_users += 1
                 else:
@@ -334,7 +416,7 @@ def commit_import(job: ImportJob):
                         "status": MembershipStatus.ACTIVE,
                     }
                 )
-                
+
                 if m_created:
                     created_memberships += 1
                 else:
@@ -343,25 +425,21 @@ def commit_import(job: ImportJob):
                 # Parent links
                 if job.kind == ImportKind.STUDENTS and row.get("parent_email"):
                     parent_email = normalize_email(row.get("parent_email"))
-                    parent = User.objects.get(email=parent_email) # Safe due to validation
+                    parent = User.objects.get(email=parent_email)
                     _, link_created = ParentLink.objects.get_or_create(student=user, parent=parent)
                     if link_created:
                         created_parent_links += 1
-                        
+
                 elif job.kind == ImportKind.PARENTS and row.get("child_email"):
                     child_email = normalize_email(row.get("child_email"))
-                    child = User.objects.get(email=child_email) # Safe due to validation
+                    child = User.objects.get(email=child_email)
                     _, link_created = ParentLink.objects.get_or_create(student=child, parent=user)
                     if link_created:
                         created_parent_links += 1
 
             job.status = ImportStatus.COMPLETED
             job.created_count = created_users
-            job.updated_count = reused_users # Just mapping reused as updated for stats
-            # Spec expects we also track membership creation, but fields are limited. 
-            # We can pack extra details into error_report or a new field, but the spec says:
-            # "The API should return a summary such as... created users, reused users, created memberships"
-            # We'll just build a response dict in the view and return it.
+            job.updated_count = reused_users
             job.completed_at = timezone.now()
             job.save()
 

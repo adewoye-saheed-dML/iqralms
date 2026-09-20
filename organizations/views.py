@@ -32,10 +32,16 @@ from functools import cached_property
 
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import generics, status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import OrganizationMembership, active_membership, OrganizationRole
+from .models import (
+    InvitationStatus,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+    active_membership,
+)
 from .permissions import (
     CanManageOrganizationMemberships,
     IsOrganizationMember,
@@ -45,6 +51,7 @@ from .serializers import (
     MyOrganizationMembershipSerializer,
     OrganizationInvitationAcceptSerializer,
     OrganizationInvitationCreateSerializer,
+    OrganizationInvitationPreviewSerializer,
     OrganizationInvitationSerializer,
     OrganizationMembershipSerializer,
     OrganizationMembershipUpdateSerializer,
@@ -483,10 +490,33 @@ class OrganizationInvitationListCreateView(OrganizationScopedMixin, generics.Lis
 
     def perform_create(self, serializer):
         invitation = serializer.save()
-        # notify teacher invitation
-        if invitation.role == OrganizationRole.TEACHER:
-            from notifications.services import notify_teacher_invitation
-            notify_teacher_invitation(invitation)
+        raw_token = getattr(invitation, "raw_token", "")
+        from notifications.services import send_invitation_email
+        send_invitation_email(invitation, raw_token)
+
+        from audit_logs.models import AuditAction
+        from audit_logs.services import record_event
+        record_event(
+            organization=self.organization,
+            actor=self.request.user,
+            action=AuditAction.INVITATION_CREATED,
+            target=invitation,
+            metadata={
+                "email": invitation.email,
+                "role": invitation.role,
+            },
+        )
+        if invitation.email_delivery_status == "failed":
+            record_event(
+                organization=self.organization,
+                actor=self.request.user,
+                action=AuditAction.INVITATION_EMAIL_FAILED,
+                target=invitation,
+                metadata={
+                    "email": invitation.email,
+                    "role": invitation.role,
+                },
+            )
         return invitation
 
     @extend_schema(
@@ -515,6 +545,172 @@ class OrganizationInvitationListCreateView(OrganizationScopedMixin, generics.Lis
 
         data = OrganizationInvitationSerializer(invitation).data
         return Response(data, status=status.HTTP_201_CREATED)
+
+
+class OrganizationInvitationPreviewView(generics.GenericAPIView):
+    """GET /api/organizations/{organization_pk}/invitations/preview/?token=<token>
+    Safe public preview of an invitation before authentication/acceptance.
+    """
+    permission_classes = [AllowAny]
+    serializer_class = OrganizationInvitationPreviewSerializer
+
+    @extend_schema(
+        responses={
+            200: OpenApiResponse(response=OrganizationInvitationPreviewSerializer),
+            400: OpenApiResponse(description="Missing token query parameter."),
+            404: OpenApiResponse(description="Invitation not found."),
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        token = request.query_params.get("token")
+        if not token:
+            return Response(
+                {"token": "Token query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        import hashlib
+        digest = hashlib.sha256(token.encode()).hexdigest()
+
+        invitation = OrganizationInvitation.objects.filter(
+            organization_id=self.kwargs["organization_pk"],
+            token_digest=digest,
+        ).select_related("organization").first()
+
+        if not invitation:
+            return Response(
+                {"detail": "Invitation not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if invitation.status == InvitationStatus.PENDING and not invitation.is_valid():
+            invitation.status = InvitationStatus.EXPIRED
+            invitation.save(update_fields=["status"])
+
+        data = OrganizationInvitationPreviewSerializer(invitation).data
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class OrganizationInvitationResendView(OrganizationScopedMixin, generics.GenericAPIView):
+    """POST /api/organizations/{organization_pk}/invitations/{pk}/resend/
+    Resends an invitation with a fresh token and resets expiry.
+    """
+    permission_classes = [IsAuthenticated, CanManageOrganizationMemberships]
+    organization_url_kwarg = "organization_pk"
+    serializer_class = OrganizationInvitationSerializer
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: OpenApiResponse(response=OrganizationInvitationSerializer),
+            400: OpenApiResponse(description="Invitation cannot be resent (accepted or revoked)."),
+            404: OpenApiResponse(description="Invitation not found in this organization."),
+        }
+    )
+    def post(self, request, *args, **kwargs):
+        import datetime
+        from django.utils import timezone
+        from django.shortcuts import get_object_or_404
+        from notifications.services import send_invitation_email
+        from audit_logs.models import AuditAction
+        from audit_logs.services import record_event
+
+        invitation = get_object_or_404(
+            OrganizationInvitation,
+            pk=kwargs["pk"],
+            organization_id=self.organization_id,
+        )
+
+        if invitation.status not in (InvitationStatus.PENDING, InvitationStatus.EXPIRED):
+            return Response(
+                {"detail": f"Cannot resend an invitation that is {invitation.status}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        token, digest = OrganizationInvitation.generate_token_and_digest()
+        invitation.token_digest = digest
+        invitation.expires_at = timezone.now() + datetime.timedelta(days=7)
+        invitation.status = InvitationStatus.PENDING
+        invitation.save(update_fields=["token_digest", "expires_at", "status"])
+        invitation.raw_token = token
+
+        send_invitation_email(invitation, token)
+
+        record_event(
+            organization=self.organization,
+            actor=request.user,
+            action=AuditAction.INVITATION_RESENT,
+            target=invitation,
+            metadata={
+                "email": invitation.email,
+                "role": invitation.role,
+            },
+        )
+        if invitation.email_delivery_status == "failed":
+            record_event(
+                organization=self.organization,
+                actor=request.user,
+                action=AuditAction.INVITATION_EMAIL_FAILED,
+                target=invitation,
+                metadata={
+                    "email": invitation.email,
+                    "role": invitation.role,
+                },
+            )
+
+        data = OrganizationInvitationSerializer(invitation).data
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class OrganizationInvitationRevokeView(OrganizationScopedMixin, generics.GenericAPIView):
+    """POST /api/organizations/{organization_pk}/invitations/{pk}/revoke/
+    Explicitly revokes a pending invitation.
+    """
+    permission_classes = [IsAuthenticated, CanManageOrganizationMemberships]
+    organization_url_kwarg = "organization_pk"
+    serializer_class = OrganizationInvitationSerializer
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: OpenApiResponse(response=OrganizationInvitationSerializer),
+            400: OpenApiResponse(description="Only pending invitations can be revoked."),
+            404: OpenApiResponse(description="Invitation not found in this organization."),
+        }
+    )
+    def post(self, request, *args, **kwargs):
+        from django.shortcuts import get_object_or_404
+        from audit_logs.models import AuditAction
+        from audit_logs.services import record_event
+
+        invitation = get_object_or_404(
+            OrganizationInvitation,
+            pk=kwargs["pk"],
+            organization_id=self.organization_id,
+        )
+
+        if invitation.status != InvitationStatus.PENDING:
+            return Response(
+                {"detail": "Only pending invitations can be revoked."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        invitation.status = InvitationStatus.REVOKED
+        invitation.save(update_fields=["status"])
+
+        record_event(
+            organization=self.organization,
+            actor=request.user,
+            action=AuditAction.INVITATION_REVOKED,
+            target=invitation,
+            metadata={
+                "email": invitation.email,
+                "role": invitation.role,
+            },
+        )
+
+        data = OrganizationInvitationSerializer(invitation).data
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class OrganizationInvitationAcceptView(generics.GenericAPIView):

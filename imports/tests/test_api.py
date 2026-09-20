@@ -51,13 +51,16 @@ class ImportAPITests(APITestCase):
         
         self.assertEqual(commit_response.data["status"], ImportStatus.COMPLETED)
         self.assertEqual(commit_response.data["created_count"], 2)
+        self.assertEqual(commit_response.data["invitations_created"], 2)
+        self.assertEqual(commit_response.data["emails_sent"], 2)
         
-        # Verify db
-        u1 = User.objects.get(email="teacher1@example.com")
-        self.assertEqual(u1.role, Role.LEAD)
-        
-        m1 = OrganizationMembership.objects.get(user=u1, organization=self.org)
-        self.assertEqual(m1.role, OrganizationRole.TEACHER)
+        # Verify db: invitations are pending and no membership is created yet
+        from organizations.models import OrganizationInvitation, InvitationStatus
+        inv1 = OrganizationInvitation.objects.get(email="teacher1@example.com", organization=self.org)
+        self.assertEqual(inv1.role, OrganizationRole.TEACHER)
+        self.assertEqual(inv1.status, InvitationStatus.PENDING)
+        self.assertEqual(inv1.email_delivery_status, "sent")
+        self.assertFalse(OrganizationMembership.objects.filter(user__email="teacher1@example.com", organization=self.org).exists())
 
     def test_tenant_isolation_cannot_access_other_org(self):
         other_owner = UserFactory()

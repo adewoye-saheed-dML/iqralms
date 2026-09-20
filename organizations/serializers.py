@@ -40,15 +40,21 @@ from .models import (
     OrganizationRole,
 )
 
-#: The organization roles a membership request may ask for. ``owner`` is absent on
-#: purpose: it is created once, by organization creation, and moved never. Keeping
-#: the subset here (rather than filtering choices inline) is the same convention
-#: ``accounts.serializers.SELF_REGISTERABLE_ROLES`` follows, and it gives the
-#: OpenAPI schema a name of its own.
+#: The organization roles a membership request may ask for.
 ASSIGNABLE_ORGANIZATION_ROLES = (
     OrganizationRole.ADMIN.value,
     OrganizationRole.STAFF.value,
     OrganizationRole.TEACHER.value,
+    OrganizationRole.PARENT.value,
+    OrganizationRole.STUDENT.value,
+)
+
+#: The organization roles an invitation may ask for. owner and staff are excluded.
+INVITABLE_ORGANIZATION_ROLES = (
+    OrganizationRole.ADMIN.value,
+    OrganizationRole.TEACHER.value,
+    OrganizationRole.PARENT.value,
+    OrganizationRole.STUDENT.value,
 )
 
 
@@ -325,56 +331,82 @@ class StudentEnrollmentUpdateSerializer(serializers.Serializer):
 from .models import OrganizationInvitation, InvitationStatus
 
 class OrganizationInvitationSerializer(serializers.ModelSerializer):
+    email_delivery_status = serializers.CharField(read_only=True)
+
     class Meta:
         model = OrganizationInvitation
-        fields = ["id", "email", "role", "status", "expires_at", "created_at"]
+        fields = [
+            "id",
+            "email",
+            "role",
+            "status",
+            "expires_at",
+            "created_at",
+            "email_delivery_status",
+        ]
         read_only_fields = fields
+
+
+class OrganizationInvitationPreviewSerializer(serializers.Serializer):
+    """Safe public representation of an invitation for the acceptance screen."""
+    organization_id = serializers.IntegerField(source="organization.id", read_only=True)
+    organization_name = serializers.CharField(source="organization.name", read_only=True)
+    role = serializers.CharField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    expires_at = serializers.DateTimeField(read_only=True)
 
 
 class OrganizationInvitationCreateSerializer(serializers.Serializer):
     """Creates a pending invitation for an email address."""
     email = serializers.EmailField()
-    role = serializers.ChoiceField(choices=ASSIGNABLE_ORGANIZATION_ROLES)
+    role = serializers.ChoiceField(choices=INVITABLE_ORGANIZATION_ROLES)
 
     def validate_email(self, email):
         organization = self.context["organization"]
-        # If user with email exists, are they already a member?
-        # Note: B04 allows inviting an email that doesn't have an account yet.
-        user = User.objects.filter(email=email).first()
-        if user and OrganizationMembership.objects.filter(
-            organization=organization, user=user
-        ).exists():
-            raise serializers.ValidationError(
-                "A user with this email is already a member of this organization."
-            )
-        
+        norm_email = email.strip().lower()
+
+        # If user with email exists, are they already a member or suspended?
+        user = User.objects.filter(email__iexact=norm_email).first()
+        if user:
+            existing_membership = OrganizationMembership.objects.filter(
+                organization=organization, user=user
+            ).first()
+            if existing_membership:
+                if existing_membership.status == MembershipStatus.SUSPENDED:
+                    raise serializers.ValidationError(
+                        "A user with this email has a suspended membership in this organization."
+                    )
+                raise serializers.ValidationError(
+                    "A user with this email is already a member of this organization."
+                )
+
         # Check if pending invitation exists
         if OrganizationInvitation.objects.filter(
-            organization=organization, email=email, status=InvitationStatus.PENDING
+            organization=organization, email__iexact=norm_email, status=InvitationStatus.PENDING
         ).exists():
             raise serializers.ValidationError(
                 "A pending invitation already exists for this email."
             )
-        return email
+        return norm_email
 
     def save(self):
-        email = self.validated_data["email"]
+        email = self.validated_data["email"].strip().lower()
         role = self.validated_data["role"]
         organization = self.context["organization"]
         from django.utils import timezone
         import datetime
-        
+
         token, digest = OrganizationInvitation.generate_token_and_digest()
-        
+
         invitation = OrganizationInvitation.objects.create(
             organization=organization,
             email=email,
             role=role,
             token_digest=digest,
             expires_at=timezone.now() + datetime.timedelta(days=7),
-            status=InvitationStatus.PENDING
+            status=InvitationStatus.PENDING,
         )
-        
+
         # We attach the raw token to the instance for the view to use
         invitation.raw_token = token
         return invitation
@@ -399,7 +431,7 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
 
         if not invitation:
             raise serializers.ValidationError({"token": "Invalid invitation token."})
-        
+
         if invitation.status != InvitationStatus.PENDING:
             raise serializers.ValidationError({"token": "This invitation is no longer pending."})
 
@@ -407,7 +439,7 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
             invitation.status = InvitationStatus.EXPIRED
             invitation.save(update_fields=["status"])
             raise serializers.ValidationError({"token": "This invitation has expired."})
-            
+
         if user.email.lower() != invitation.email.lower():
             raise serializers.ValidationError({"token": "This invitation was sent to a different email address."})
 
@@ -416,9 +448,37 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
                 {"detail": "Owner cannot be created through an invitation."}
             )
 
-        if OrganizationMembership.objects.filter(
+        if invitation.role == OrganizationRole.STAFF:
+            raise serializers.ValidationError(
+                {"detail": "Staff cannot be created through an invitation."}
+            )
+
+        # Role compatibility check
+        from accounts.models import Role
+        if invitation.role == OrganizationRole.TEACHER:
+            if user.role not in {Role.LEAD, Role.SUB}:
+                raise serializers.ValidationError(
+                    {"detail": "Your account role is not compatible with a teacher invitation."}
+                )
+        elif invitation.role == OrganizationRole.PARENT:
+            if user.role != Role.PARENT:
+                raise serializers.ValidationError(
+                    {"detail": "Your account role is not compatible with a parent invitation."}
+                )
+        elif invitation.role == OrganizationRole.STUDENT:
+            if user.role != Role.STUDENT:
+                raise serializers.ValidationError(
+                    {"detail": "Your account role is not compatible with a student invitation."}
+                )
+
+        existing_membership = OrganizationMembership.objects.filter(
             organization=organization, user=user
-        ).exists():
+        ).first()
+        if existing_membership:
+            if existing_membership.status == MembershipStatus.SUSPENDED:
+                raise serializers.ValidationError(
+                    {"detail": "You are already a member of this organization (suspended)."}
+                )
             raise serializers.ValidationError(
                 {"detail": "You are already a member of this organization."}
             )
@@ -431,6 +491,8 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
         user = self.context["request"].user
         from django.db import transaction
         from django.utils import timezone
+        from audit_logs.models import AuditAction
+        from audit_logs.services import record_event
 
         with transaction.atomic():
             # 1. Create the active membership
@@ -445,5 +507,18 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
             invitation.status = InvitationStatus.ACCEPTED
             invitation.accepted_at = timezone.now()
             invitation.save(update_fields=["status", "accepted_at"])
+
+            # 3. Record audit log
+            record_event(
+                organization=invitation.organization,
+                actor=user,
+                action=AuditAction.INVITATION_ACCEPTED,
+                target=invitation,
+                metadata={
+                    "email": invitation.email,
+                    "role": invitation.role,
+                    "membership_id": membership.id,
+                },
+            )
 
         return membership

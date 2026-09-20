@@ -18,6 +18,13 @@ class AuditAction(models.TextChoices):
     MEMBERSHIP_SUSPENDED = "membership.suspended"
     MEMBERSHIP_REACTIVATED = "membership.reactivated"
 
+    # Invitations
+    INVITATION_CREATED = "invitation.created"
+    INVITATION_RESENT = "invitation.resent"
+    INVITATION_REVOKED = "invitation.revoked"
+    INVITATION_ACCEPTED = "invitation.accepted"
+    INVITATION_EMAIL_FAILED = "invitation.email_failed"
+
     # Permissions
     PERMISSION_CHANGED = "permission.changed"
 

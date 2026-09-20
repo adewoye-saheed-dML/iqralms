@@ -48,7 +48,11 @@ class ImportJob(models.Model):
     updated_count = models.PositiveIntegerField(default=0)
     skipped_count = models.PositiveIntegerField(default=0)
     error_count = models.PositiveIntegerField(default=0)
-    
+
+    invitations_created = models.PositiveIntegerField(default=0)
+    emails_sent = models.PositiveIntegerField(default=0)
+    emails_failed = models.PositiveIntegerField(default=0)
+
     error_report = models.JSONField(default=list, blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True)

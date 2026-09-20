@@ -19,11 +19,10 @@ class ImportValidateView(AcademyScopedView, generics.CreateAPIView):
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
-        operation_id="imports_validate",
         summary="Upload and validate an import file",
         responses={201: ImportJobResponseSerializer}
     )
-    def create(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
@@ -121,6 +120,9 @@ class ImportCommitView(AcademyScopedView, generics.GenericAPIView):
                         "valid_row_count": job.valid_row_count,
                         "created_count": job.created_count,
                         "updated_count": job.updated_count,
+                        "invitations_created": job.invitations_created,
+                        "emails_sent": job.emails_sent,
+                        "emails_failed": job.emails_failed,
                         "error_count": len(job.error_report) if job.error_report else 0,
                     }
                 )

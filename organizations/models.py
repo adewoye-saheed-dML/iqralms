@@ -62,6 +62,8 @@ class OrganizationRole(models.TextChoices):
     ADMIN = "admin", "Administrator"
     STAFF = "staff", "Staff"
     TEACHER = "teacher", "Teacher"
+    PARENT = "parent", "Parent"
+    STUDENT = "student", "Student"
 
 
 class MembershipStatus(models.TextChoices):
@@ -570,6 +572,12 @@ class OrganizationInvitation(models.Model):
 
         return self.status == InvitationStatus.PENDING and self.expires_at > timezone.now()
 
+    @property
+    def email_delivery_status(self) -> str | None:
+        """The latest delivery status for this invitation, or None."""
+        latest = self.deliveries.order_by("-created_at", "-pk").first()
+        return latest.status if latest else None
+
     @classmethod
     def generate_token_and_digest(cls) -> tuple[str, str]:
         """Generate a random secure token and its SHA-256 digest."""
@@ -579,3 +587,73 @@ class OrganizationInvitation(models.Model):
         token = secrets.token_urlsafe(32)
         digest = hashlib.sha256(token.encode()).hexdigest()
         return token, digest
+
+
+class InvitationDelivery(models.Model):
+    """Auditable delivery attempt of an invitation through a provider channel."""
+
+    invitation = models.ForeignKey(
+        OrganizationInvitation,
+        on_delete=models.CASCADE,
+        related_name="deliveries",
+        help_text="The invitation this delivery attempt was for.",
+    )
+    channel = models.CharField(
+        max_length=32,
+        default="email",
+        help_text="Channel used for delivery.",
+    )
+    provider = models.CharField(
+        max_length=64,
+        help_text="Provider adapter identifier (e.g. 'email_smtp').",
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=[
+            ("pending", "Pending"),
+            ("sent", "Sent"),
+            ("delivered", "Delivered"),
+            ("failed", "Failed"),
+        ],
+        default="pending",
+        db_index=True,
+        help_text="Delivery status outcome.",
+    )
+    attempt_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of delivery attempts executed.",
+    )
+    provider_message_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Identifier returned by the external provider.",
+    )
+    error_code = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="Machine-readable error code if failed.",
+    )
+    error_message = models.TextField(
+        blank=True,
+        help_text="Human-readable error details if failed.",
+    )
+    attempted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp of the latest delivery attempt.",
+    )
+    delivered_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when delivery was confirmed.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+    def __str__(self):
+        return (
+            f"Delivery #{self.pk} for invitation #{self.invitation_id} "
+            f"via {self.channel} ({self.status})"
+        )

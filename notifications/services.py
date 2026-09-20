@@ -472,29 +472,105 @@ def notify_progress_ready(
     return notifications
 
 
+def send_invitation_email(
+    invitation: "organizations.models.OrganizationInvitation",
+    raw_token: str,
+) -> "organizations.models.InvitationDelivery":
+    """Send an invitation email using Django's email infrastructure and record the delivery outcome.
+
+    Invariants:
+    - Provider failures are recorded on the InvitationDelivery record.
+    - Provider failures NEVER roll back or mutate the invitation record.
+    - Provider failures NEVER raise an exception to the caller.
+    - Passwords, credentials, and provider secrets are never included in message or delivery.
+    """
+    import uuid
+    from django.conf import settings
+    from django.core.mail import send_mail
+    from django.utils import timezone as dj_timezone
+    from organizations.models import InvitationDelivery
+
+    org = invitation.organization
+    frontend_base_url = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/")
+    accept_url = f"{frontend_base_url}/accept-invitation?organization={org.id}&token={raw_token}"
+
+    role_phrase = {
+        "teacher": "a teacher",
+        "parent": "a parent",
+        "student": "a student",
+        "admin": "an administrator",
+    }.get(invitation.role, f"a {invitation.role}")
+
+    subject = f"Invitation to join {org.name}"
+    expires_str = invitation.expires_at.strftime("%Y-%m-%d %H:%M UTC") if invitation.expires_at else "7 days"
+
+    message = (
+        f"You have been invited to join {org.name} as {role_phrase}.\n\n"
+        f"To accept your invitation, please click the link below:\n"
+        f"{accept_url}\n\n"
+        f"This invitation will expire on {expires_str}.\n"
+    )
+
+    from_email = getattr(
+        settings, "DEFAULT_FROM_EMAIL", "notifications@quranacademy.local"
+    )
+
+    delivery = InvitationDelivery.objects.create(
+        invitation=invitation,
+        channel="email",
+        provider="email_smtp",
+        status="pending",
+        attempt_count=1,
+        attempted_at=dj_timezone.now(),
+    )
+
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=from_email,
+            recipient_list=[invitation.email],
+            fail_silently=False,
+        )
+        delivery.status = "sent"
+        delivery.provider_message_id = f"email_{uuid.uuid4().hex[:12]}"
+        delivery.delivered_at = dj_timezone.now()
+        delivery.error_code = ""
+        delivery.error_message = ""
+    except Exception as exc:
+        logger.warning(
+            "Failed to send invitation email to %s for invitation %s: %s",
+            invitation.email,
+            invitation.id,
+            exc,
+        )
+        delivery.status = "failed"
+        delivery.error_code = "SMTP_ERROR"
+        delivery.error_message = str(exc)
+
+    delivery.save(
+        update_fields=[
+            "status",
+            "attempt_count",
+            "attempted_at",
+            "delivered_at",
+            "provider_message_id",
+            "error_code",
+            "error_message",
+        ]
+    )
+    return delivery
+
+
 def notify_teacher_invitation(
     invitation: "organizations.models.OrganizationInvitation",
     *,
     channels: Optional[List[DeliveryChannel]] = None,
 ) -> None:
-    """Send TEACHER_INVITATION email.
+    """Send TEACHER_INVITATION email (backward-compatibility wrapper).
 
     Strictly excludes auth tokens, credentials, or passwords, but does include
     the invitation token needed to accept the invitation.
     """
-    from django.core.mail import send_mail
-    from django.conf import settings
-
-    org = invitation.organization
-    
-    token = getattr(invitation, "raw_token", "REDACTED")
-    subject = f"Invitation to join {org.name}"
-    message = f"You have been invited to join {org.name} as a {invitation.role}.\n\nYour invitation token is: {token}"
-
-    send_mail(
-        subject=subject,
-        message=message,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[invitation.email],
-        fail_silently=True,
-    )
+    raw_token = getattr(invitation, "raw_token", "")
+    send_invitation_email(invitation, raw_token)

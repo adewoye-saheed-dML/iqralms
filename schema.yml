@@ -2138,6 +2138,7 @@ paths:
         alike — and the permission layer turns that into a refusal before any handler
         runs. Which is why ``organization`` may assume it is not None: by the time a
         handler executes, the caller has an active membership in this organization.
+      summary: Upload and validate an import file
       parameters:
       - in: path
         name: organization_pk
@@ -2163,7 +2164,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImportJobValidate'
+                $ref: '#/components/schemas/ImportJobResponse'
           description: ''
   /api/notifications/organizations/{organization_pk}/{id}/:
     get:
@@ -2515,6 +2516,72 @@ paths:
           description: Not authenticated.
         '403':
           description: Not an owner or administrator here.
+  /api/organizations/{organization_pk}/invitations/{id}/resend/:
+    post:
+      operationId: organizations_invitations_resend_create
+      description: |-
+        POST /api/organizations/{organization_pk}/invitations/{pk}/resend/
+        Resends an invitation with a fresh token and resets expiry.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+        '400':
+          description: Invitation cannot be resent (accepted or revoked).
+        '404':
+          description: Invitation not found in this organization.
+  /api/organizations/{organization_pk}/invitations/{id}/revoke/:
+    post:
+      operationId: organizations_invitations_revoke_create
+      description: |-
+        POST /api/organizations/{organization_pk}/invitations/{pk}/revoke/
+        Explicitly revokes a pending invitation.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitation'
+          description: ''
+        '400':
+          description: Only pending invitations can be revoked.
+        '404':
+          description: Invitation not found in this organization.
   /api/organizations/{organization_pk}/invitations/accept/:
     post:
       operationId: organizations_invitations_accept_create
@@ -2549,6 +2616,35 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+  /api/organizations/{organization_pk}/invitations/preview/:
+    get:
+      operationId: organizations_invitations_preview_retrieve
+      description: |-
+        GET /api/organizations/{organization_pk}/invitations/preview/?token=<token>
+        Safe public preview of an invitation before authentication/acceptance.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitationPreview'
+          description: ''
+        '400':
+          description: Missing token query parameter.
+        '404':
+          description: Invitation not found.
   /api/organizations/{organization_pk}/memberships/:
     get:
       operationId: organizations_memberships_list
@@ -3753,6 +3849,11 @@ components:
       - membership.role_changed
       - membership.suspended
       - membership.reactivated
+      - invitation.created
+      - invitation.resent
+      - invitation.revoked
+      - invitation.accepted
+      - invitation.email_failed
       - permission.changed
       - curriculum.track_created
       - curriculum.track_updated
@@ -3811,6 +3912,11 @@ components:
         * `membership.role_changed` - Membership Role Changed
         * `membership.suspended` - Membership Suspended
         * `membership.reactivated` - Membership Reactivated
+        * `invitation.created` - Invitation Created
+        * `invitation.resent` - Invitation Resent
+        * `invitation.revoked` - Invitation Revoked
+        * `invitation.accepted` - Invitation Accepted
+        * `invitation.email_failed` - Invitation Email Failed
         * `permission.changed` - Permission Changed
         * `curriculum.track_created` - Track Created
         * `curriculum.track_updated` - Track Updated
@@ -4107,11 +4213,15 @@ components:
       - admin
       - staff
       - teacher
+      - parent
+      - student
       type: string
       description: |-
         * `admin` - admin
         * `staff` - staff
         * `teacher` - teacher
+        * `parent` - parent
+        * `student` - student
     AuditLog:
       type: object
       properties:
@@ -4731,6 +4841,15 @@ components:
         error_count:
           type: integer
           readOnly: true
+        invitations_created:
+          type: integer
+          readOnly: true
+        emails_sent:
+          type: integer
+          readOnly: true
+        emails_failed:
+          type: integer
+          readOnly: true
         error_report:
           readOnly: true
         created_at:
@@ -4753,6 +4872,8 @@ components:
       - created_at
       - created_by
       - created_count
+      - emails_failed
+      - emails_sent
       - error_count
       - error_report
       - file_name
@@ -4760,6 +4881,7 @@ components:
       - file_type
       - id
       - invalid_row_count
+      - invitations_created
       - kind
       - organization
       - row_count
@@ -4796,6 +4918,18 @@ components:
       required:
       - file
       - kind
+    InvitableOrganizationRoleEnum:
+      enum:
+      - admin
+      - teacher
+      - parent
+      - student
+      type: string
+      description: |-
+        * `admin` - admin
+        * `teacher` - teacher
+        * `parent` - parent
+        * `student` - student
     KindEnum:
       enum:
       - teachers
@@ -5110,6 +5244,8 @@ components:
             * `admin` - Administrator
             * `staff` - Staff
             * `teacher` - Teacher
+            * `parent` - Parent
+            * `student` - Student
         role_display:
           type: string
           readOnly: true
@@ -5605,6 +5741,8 @@ components:
             * `admin` - Administrator
             * `staff` - Staff
             * `teacher` - Teacher
+            * `parent` - Parent
+            * `student` - Student
         status:
           allOf:
           - $ref: '#/components/schemas/OrganizationInvitationStatusEnum'
@@ -5617,9 +5755,13 @@ components:
           type: string
           format: date-time
           readOnly: true
+        email_delivery_status:
+          type: string
+          readOnly: true
       required:
       - created_at
       - email
+      - email_delivery_status
       - expires_at
       - id
       - role
@@ -5640,10 +5782,37 @@ components:
           type: string
           format: email
         role:
-          $ref: '#/components/schemas/AssignableOrganizationRoleEnum'
+          $ref: '#/components/schemas/InvitableOrganizationRoleEnum'
       required:
       - email
       - role
+    OrganizationInvitationPreview:
+      type: object
+      description: Safe public representation of an invitation for the acceptance
+        screen.
+      properties:
+        organization_id:
+          type: integer
+          readOnly: true
+        organization_name:
+          type: string
+          readOnly: true
+        role:
+          type: string
+          readOnly: true
+        status:
+          type: string
+          readOnly: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - expires_at
+      - organization_id
+      - organization_name
+      - role
+      - status
     OrganizationInvitationStatusEnum:
       enum:
       - pending
@@ -5689,6 +5858,8 @@ components:
             * `admin` - Administrator
             * `staff` - Staff
             * `teacher` - Teacher
+            * `parent` - Parent
+            * `student` - Student
         role_display:
           type: string
           readOnly: true
@@ -5729,12 +5900,16 @@ components:
       - admin
       - staff
       - teacher
+      - parent
+      - student
       type: string
       description: |-
         * `owner` - Owner
         * `admin` - Administrator
         * `staff` - Staff
         * `teacher` - Teacher
+        * `parent` - Parent
+        * `student` - Student
     OrganizationTeacherConfiguration:
       type: object
       description: |-

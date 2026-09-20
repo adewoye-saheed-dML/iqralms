@@ -409,9 +409,12 @@ class InvitationCreationAPITests(TenantWorld):
     def test_a_new_member_can_then_read_the_organization(self):
         # We need to accept the invitation first
         from .factories import OrganizationRole
+        from accounts.models import Role
         invitation, token = OrganizationInvitation.generate_token_and_digest()
         import datetime
         from django.utils import timezone
+        self.newcomer.role = Role.LEAD
+        self.newcomer.save()
         inv_obj = OrganizationInvitation.objects.create(
             organization=self.org_a, email=self.newcomer.email, role="teacher",
             token_digest=token, expires_at=timezone.now() + datetime.timedelta(days=7)
@@ -776,7 +779,7 @@ class InvitationLifecycleAPITests(TenantWorld):
         import datetime
         from django.utils import timezone
 
-        user = UserFactory(email="accepted@example.com")
+        user = UserFactory(email="accepted@example.com", role=Role.LEAD)
         token, digest = OrganizationInvitation.generate_token_and_digest()
         inv = OrganizationInvitation.objects.create(
             organization=self.org_a,
@@ -802,7 +805,7 @@ class InvitationLifecycleAPITests(TenantWorld):
         import datetime
         from django.utils import timezone
 
-        user = UserFactory(email="once@example.com")
+        user = UserFactory(email="once@example.com", role=Role.LEAD)
         token, digest = OrganizationInvitation.generate_token_and_digest()
         OrganizationInvitation.objects.create(
             organization=self.org_a,
@@ -868,7 +871,7 @@ class InvitationLifecycleAPITests(TenantWorld):
         import datetime
         from django.utils import timezone
 
-        user = UserFactory(email="nowmember@example.com")
+        user = UserFactory(email="nowmember@example.com", role=Role.LEAD)
         token, digest = OrganizationInvitation.generate_token_and_digest()
         OrganizationInvitation.objects.create(
             organization=self.org_a,
@@ -899,7 +902,7 @@ class InvitationLifecycleAPITests(TenantWorld):
         import datetime
         from django.utils import timezone
 
-        user = UserFactory(email="crossorg@example.com")
+        user = UserFactory(email="crossorg@example.com", role=Role.LEAD)
         token, digest = OrganizationInvitation.generate_token_and_digest()
         OrganizationInvitation.objects.create(
             organization=self.org_a,
@@ -1021,12 +1024,13 @@ class InvitationLifecycleAPITests(TenantWorld):
         from django.utils import timezone
         from unittest.mock import patch
 
-        user = UserFactory(email="rollback@example.com")
+        from accounts.models import Role
+        user = UserFactory(email="rollback@example.com", role=Role.LEAD)
         token, digest = OrganizationInvitation.generate_token_and_digest()
         invitation = OrganizationInvitation.objects.create(
             organization=self.org_a,
             email=user.email,
-            role=OrganizationRole.STAFF,
+            role=OrganizationRole.TEACHER,
             token_digest=digest,
             expires_at=timezone.now() + datetime.timedelta(days=7),
             status=InvitationStatus.PENDING,
