@@ -248,9 +248,8 @@ def _parse_database_url(url):
             "postgres:///dbname for a local unix socket."
         ) from exc
 
-DATABASES = {
-    "default": _parse_database_url(DATABASE_URL)
-}
+
+DATABASES = {"default": _parse_database_url(DATABASE_URL)}
 
 if DATABASES["default"].get("ENGINE") not in SUPPORTED_DB_ENGINES:
     raise ImproperlyConfigured(
@@ -274,7 +273,9 @@ if DATABASE_SSLMODE:
 AUTH_USER_MODEL = "accounts.User"
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -331,9 +332,7 @@ if PRODUCTION and STORAGE_BACKEND != "s3":
 #: How long a minted placement-audio URL stays usable. Long enough for the lead
 #: to press play on a slow connection, short enough that a URL pasted into a
 #: chat log is worthless by the time anyone reads it.
-PLACEMENT_AUDIO_URL_TTL_SECONDS = env_int(
-    "DJANGO_PLACEMENT_AUDIO_URL_TTL", default=300
-)
+PLACEMENT_AUDIO_URL_TTL_SECONDS = env_int("DJANGO_PLACEMENT_AUDIO_URL_TTL", default=300)
 
 if STORAGE_BACKEND == "s3":
     AWS_STORAGE_BUCKET_NAME = env_str("AWS_STORAGE_BUCKET_NAME", default="")
@@ -540,3 +539,19 @@ if PRODUCTION:
     SECURE_REFERRER_POLICY = "same-origin"
     #: Clickjacking: this API has no pages meant to be framed, admin included.
     X_FRAME_OPTIONS = "DENY"
+
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+# EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+
+# EMAIL_HOST = env_str("EMAIL_HOST", default="172.217.218.108")
+# EMAIL_PORT = env_int("EMAIL_PORT", default=465)
+# EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", default=False)
+# EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", default=True)
+
+# EMAIL_HOST_USER = env_str("EMAIL_HOST_USER", default="")
+# EMAIL_HOST_PASSWORD = env_str("EMAIL_HOST_PASSWORD", default="")
+
+# DEFAULT_FROM_EMAIL = env_str(
+#     "DEFAULT_FROM_EMAIL",
+#     default="notifications@quranacademy.local",
+# )
