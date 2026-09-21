@@ -637,21 +637,33 @@ class SessionAssessment(models.Model):
 
     def _validate_lead_review(self, errors):
         if self.lead_reviewed_by_id:
-            if self.lead_reviewed_by.role != Role.LEAD:
-                # The same restriction placement review and pricing approval carry:
-                # enforced here as well as in the permission class, so a direct ORM
-                # write cannot hand a sub-teacher the lead's annotation.
-                errors["lead_reviewed_by"] = ValidationError(
-                    "Only the lead teacher can review an assessment (got "
-                    "'%(role)s').",
-                    code="invalid_reviewer_role",
-                    params={"role": self.lead_reviewed_by.role},
-                )
-            elif self.organization is not None and not self._is_active_here(self.lead_reviewed_by):
-                errors["lead_reviewed_by"] = ValidationError(
-                    "That reviewer is not an active member of the academy that owns this assessment.",
-                    code="reviewer_not_in_organization",
-                )
+            reviewer = self.lead_reviewed_by
+            if self.organization is not None:
+                if not self._is_active_here(reviewer):
+                    errors["lead_reviewed_by"] = ValidationError(
+                        "That reviewer is not an active member of the academy that owns this assessment.",
+                        code="reviewer_not_in_organization",
+                    )
+                else:
+                    membership = active_membership(user=reviewer, organization=self.organization)
+                    from organizations.models import OrganizationRole
+
+                    is_manager = membership and (
+                        membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN}
+                        or (membership.role == OrganizationRole.TEACHER and reviewer.role == Role.LEAD)
+                    )
+                    if not is_manager:
+                        errors["lead_reviewed_by"] = ValidationError(
+                            "Only an organization owner, administrator, or lead teacher can review an assessment.",
+                            code="invalid_reviewer_role",
+                        )
+            else:
+                if reviewer.role != Role.LEAD:
+                    errors["lead_reviewed_by"] = ValidationError(
+                        "Only the lead teacher can review an assessment (got '%(role)s').",
+                        code="invalid_reviewer_role",
+                        params={"role": reviewer.role},
+                    )
         if (self.lead_reviewed_at is None) != (self.lead_reviewed_by_id is None):
             errors.setdefault(
                 NON_FIELD_ERRORS,
@@ -1159,18 +1171,33 @@ class ProgressSnapshot(models.Model):
                 )
 
         if self.generated_by_id:
-            if self.generated_by.role != Role.LEAD:
-                errors["generated_by"] = ValidationError(
-                    "Only the lead teacher generates progress snapshots (got "
-                    "'%(role)s').",
-                    code="invalid_generator_role",
-                    params={"role": self.generated_by.role},
-                )
-            elif self.track_id and self.organization is not None and not self._is_active_here(self.generated_by):
-                errors["generated_by"] = ValidationError(
-                    "That generator is not an active member of the academy that owns this track.",
-                    code="generator_not_in_organization",
-                )
+            generator = self.generated_by
+            if self.track_id and self.organization is not None:
+                if not self._is_active_here(generator):
+                    errors["generated_by"] = ValidationError(
+                        "That generator is not an active member of the academy that owns this track.",
+                        code="generator_not_in_organization",
+                    )
+                else:
+                    membership = active_membership(user=generator, organization=self.organization)
+                    from organizations.models import OrganizationRole
+
+                    is_manager = membership and (
+                        membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN}
+                        or (membership.role == OrganizationRole.TEACHER and generator.role == Role.LEAD)
+                    )
+                    if not is_manager:
+                        errors["generated_by"] = ValidationError(
+                            "Only an organization owner, administrator, or lead teacher generates progress snapshots.",
+                            code="invalid_generator_role",
+                        )
+            else:
+                if generator.role != Role.LEAD:
+                    errors["generated_by"] = ValidationError(
+                        "Only the lead teacher generates progress snapshots (got '%(role)s').",
+                        code="invalid_generator_role",
+                        params={"role": generator.role},
+                    )
 
         # The reporting rule, as a stored invariant: an average exists exactly
         # when something was assessed. Neither a null on an assessed period nor a

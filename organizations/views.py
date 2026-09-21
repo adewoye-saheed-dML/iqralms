@@ -32,6 +32,7 @@ from functools import cached_property
 
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import generics, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -407,6 +408,72 @@ class StudentEnrollmentListCreateView(OrganizationScopedMixin, generics.ListCrea
             enrollment, context=self.get_serializer_context()
         ).data
         return Response(body, status=status.HTTP_201_CREATED)
+
+
+class MyStudentEnrollmentListView(OrganizationScopedMixin, generics.ListAPIView):
+    """GET /api/organizations/<organization_pk>/students/mine/ — role-specific student list.
+
+    - Teachers/Lead teachers read students assigned to them via Booking in this academy.
+    - Parents read their linked children enrolled in this academy.
+    - Owners/Admins read all enrolled students in this academy.
+    - Students are denied access.
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    organization_url_kwarg = "organization_pk"
+
+    def get_serializer_class(self):
+        from .serializers import StudentListSerializer
+
+        return StudentListSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["organization"] = self.organization
+        return context
+
+    def get_queryset(self):
+        from .models import StudentEnrollment, OrganizationRole
+        from .permissions import is_owner_or_admin, is_teacher
+        from accounts.models import ParentLink, Role
+        from scheduling.models import Booking
+
+        user = self.request.user
+        membership = self.caller_membership
+        if not membership:
+            return StudentEnrollment.objects.none()
+
+        base_qs = (
+            StudentEnrollment.objects.filter(organization_id=self.organization_id)
+            .select_related("user", "organization", "track", "level")
+            .order_by("-created_at")
+        )
+
+        if is_owner_or_admin(self, user):
+            return base_qs
+
+        if is_teacher(self, user):
+            student_ids = Booking.objects.filter(
+                level__track__organization_id=self.organization_id,
+                teacher=user,
+            ).values_list("student_id", flat=True).distinct()
+            return base_qs.filter(user_id__in=student_ids)
+
+        if membership.role == OrganizationRole.PARENT or getattr(user, "role", None) == Role.PARENT:
+            child_ids = ParentLink.objects.filter(parent=user).values_list("student_id", flat=True)
+            return base_qs.filter(user_id__in=child_ids)
+
+        raise PermissionDenied("You do not have permission to view this student list.")
+
+    @extend_schema(
+        responses={
+            200: OpenApiResponse(description="Assigned or linked students list."),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Permission denied for this role."),
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
 
 class StudentEnrollmentDetailView(OrganizationScopedMixin, generics.RetrieveUpdateAPIView):

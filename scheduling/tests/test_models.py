@@ -49,7 +49,14 @@ from scheduling.models import (
     TeacherWaitlist,
     Weekday,
 )
-from scheduling.utils import UTC, next_date_for_weekday
+from scheduling.utils import UTC, next_date_for_weekday as _base_next_date_for_weekday
+
+
+def next_date_for_weekday(weekday: int, on_or_after=None):
+    if on_or_after is None:
+        on_or_after = dj_timezone.now().astimezone(UTC).date() + timedelta(days=1)
+    return _base_next_date_for_weekday(weekday, on_or_after=on_or_after)
+
 
 from .factories import (
     DEFAULT_WINDOW_END,

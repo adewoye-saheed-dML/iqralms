@@ -3,10 +3,14 @@
 from django.urls import path
 
 from .views import (
+    AcademyBookingListView,
     AvailabilityListView,
     BookingCancelView,
     BookingCreateView,
+    BookingMeetingView,
     CohortCreateView,
+    CohortDetailView,
+    CohortListCreateView,
     MyBookingListView,
     MyWaitlistListView,
     OpenCohortListView,
@@ -42,9 +46,19 @@ urlpatterns = [
         name="booking-teaching",
     ),
     path(
+        f"{ACADEMY}bookings/academy/",
+        AcademyBookingListView.as_view(),
+        name="booking-academy",
+    ),
+    path(
         f"{ACADEMY}bookings/<int:pk>/cancel/",
         BookingCancelView.as_view(),
         name="booking-cancel",
+    ),
+    path(
+        f"{ACADEMY}bookings/<int:pk>/meeting/",
+        BookingMeetingView.as_view(),
+        name="booking-meeting",
     ),
     # Phase 4 — the system picks the teacher, and group classes exist.
     path(
@@ -54,8 +68,13 @@ urlpatterns = [
     ),
     path(
         f"{ACADEMY}cohorts/",
-        CohortCreateView.as_view(),
+        CohortListCreateView.as_view(),
         name="cohort-create",
+    ),
+    path(
+        f"{ACADEMY}cohorts/<int:pk>/",
+        CohortDetailView.as_view(),
+        name="cohort-detail",
     ),
     path(
         f"{ACADEMY}cohorts/open/",

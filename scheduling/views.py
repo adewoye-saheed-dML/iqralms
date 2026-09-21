@@ -17,25 +17,31 @@ family read it through.
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
-from rest_framework import generics, status
-from rest_framework.exceptions import APIException, ValidationError
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework import generics, serializers, status
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from organizations.permissions import IsOrganizationMember
 from organizations.views import OrganizationScopedMixin
 
 from .exceptions import (
-    BookingNotCancellable,
     NoCapacity,
     WaitlistEntryAlreadyFulfilled,
 )
 from .models import Availability, Booking, Cohort, TeacherWaitlist
-from .permissions import IsLeadTeacher, IsStudent, IsStudentOrParent, IsTeacher
+from .permissions import (
+    IsLeadTeacher,
+    IsOwnerAdminOrLeadTeacher,
+    IsStudent,
+    IsStudentOrParent,
+    IsTeacher,
+)
 from .routing import promote_waitlist_entry, route_session
 from .serializers import (
     AvailabilitySerializer,
     BookingCreateSerializer,
+    BookingMeetingSerializer,
     BookingSerializer,
     CohortCreateSerializer,
     CohortSerializer,
@@ -213,6 +219,67 @@ class TeachingBookingListView(AcademyScopedView, generics.ListAPIView):
         )
 
 
+class AcademyBookingListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/scheduling/organizations/{id}/bookings/academy/ — academy-wide schedule for management."""
+
+    serializer_class = BookingSerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
+
+    def get_queryset(self):
+        queryset = Booking.objects.filter(
+            level__track__organization=self.organization
+        ).select_related(*BOOKING_RELATED)
+
+        teacher_id = self.request.query_params.get("teacher_id") or self.request.query_params.get("teacher")
+        if teacher_id:
+            queryset = queryset.filter(teacher_id=teacher_id)
+
+        student_id = self.request.query_params.get("student_id") or self.request.query_params.get("student")
+        if student_id:
+            queryset = queryset.filter(student_id=student_id)
+
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+
+        date_param = self.request.query_params.get("date")
+        if date_param:
+            queryset = queryset.filter(start_time_utc__date=date_param)
+
+        start_date = self.request.query_params.get("start_date")
+        if start_date:
+            queryset = queryset.filter(start_time_utc__date__gte=start_date)
+
+        end_date = self.request.query_params.get("end_date")
+        if end_date:
+            queryset = queryset.filter(start_time_utc__date__lte=end_date)
+
+        track_id = self.request.query_params.get("track_id") or self.request.query_params.get("track")
+        if track_id:
+            queryset = queryset.filter(level__track_id=track_id)
+
+        return queryset
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name="teacher_id", type=int, location=OpenApiParameter.QUERY, required=False, description="Filter by teacher ID."),
+            OpenApiParameter(name="student_id", type=int, location=OpenApiParameter.QUERY, required=False, description="Filter by student ID."),
+            OpenApiParameter(name="track_id", type=int, location=OpenApiParameter.QUERY, required=False, description="Filter by track ID."),
+            OpenApiParameter(name="status", type=str, location=OpenApiParameter.QUERY, required=False, description="Filter by booking status."),
+            OpenApiParameter(name="date", type=str, location=OpenApiParameter.QUERY, required=False, description="Filter by exact date (YYYY-MM-DD)."),
+            OpenApiParameter(name="start_date", type=str, location=OpenApiParameter.QUERY, required=False, description="Filter from start date (YYYY-MM-DD)."),
+            OpenApiParameter(name="end_date", type=str, location=OpenApiParameter.QUERY, required=False, description="Filter to end date (YYYY-MM-DD)."),
+        ],
+        responses={
+            200: OpenApiResponse(response=BookingSerializer(many=True)),
+            401: OpenApiResponse(description="Unauthenticated."),
+            403: OpenApiResponse(description="Permission denied."),
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+
 class BookingCancelView(AcademyScopedView, generics.GenericAPIView):
     """POST /api/scheduling/organizations/{id}/bookings/{id}/cancel/ — either party cancels.
 
@@ -233,7 +300,7 @@ class BookingCancelView(AcademyScopedView, generics.GenericAPIView):
         user = self.request.user
         return (
             Booking.objects.filter(
-                level__track__organization=self.organization,
+                level__track__organization=self.organization
             )
             .filter(
                 Q(student=user)
@@ -256,6 +323,7 @@ class BookingCancelView(AcademyScopedView, generics.GenericAPIView):
         },
     )
     def post(self, request, *args, **kwargs):
+        from .exceptions import BookingNotCancellable
         booking = self.get_object()
         try:
             booking.cancel()
@@ -265,6 +333,63 @@ class BookingCancelView(AcademyScopedView, generics.GenericAPIView):
         notify_booking_cancelled(booking)
         body = BookingSerializer(booking, context=self.get_serializer_context()).data
         return Response(body, status=status.HTTP_200_OK)
+
+
+class BookingMeetingView(AcademyScopedView, generics.GenericAPIView):
+    """GET /api/scheduling/organizations/{id}/bookings/{id}/meeting/ — provider-neutral class meeting access."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = BookingMeetingSerializer
+
+    def get_queryset(self):
+        return Booking.objects.filter(
+            level__track__organization=self.organization
+        ).select_related(*BOOKING_RELATED)
+
+    @extend_schema(
+        responses={
+            200: OpenApiResponse(response=BookingMeetingSerializer),
+            400: OpenApiResponse(description="Booking is cancelled."),
+            403: OpenApiResponse(description="You do not have access to this class."),
+            404: OpenApiResponse(description="Booking not found in this academy."),
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        booking = self.get_object()
+        user = request.user
+
+        from .models import BookingStatus
+
+        if booking.status == BookingStatus.CANCELLED:
+            raise serializers.ValidationError({"detail": "This class has been cancelled."})
+
+        membership = self.caller_membership
+        from organizations.models import OrganizationRole
+
+        is_owner_admin = bool(
+            membership
+            and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN}
+        )
+        is_teacher = booking.teacher_id == user.id
+        is_student = booking.student_id == user.id
+        from accounts.models import Role
+
+        is_parent = getattr(user, "role", None) == Role.PARENT and user.child_links.filter(
+            student_id=booking.student_id
+        ).exists()
+
+        if not (is_owner_admin or is_teacher or is_student or is_parent):
+            raise PermissionDenied("You do not have access to this class.")
+
+        display_name = user.get_full_name() or user.username
+        data = {
+            "provider": booking.video_provider or "jitsi",
+            "provider_meeting_id": booking.video_provider_meeting_id,
+            "join_url": booking.video_join_url,
+            "display_name": display_name,
+        }
+        return Response(data, status=status.HTTP_200_OK)
+
 
 
 # --- Phase 4: routing and cohorts -------------------------------------------
@@ -381,20 +506,28 @@ class RouteView(AcademyScopedView, generics.GenericAPIView):
         )
 
 
-class CohortCreateView(AcademyScopedView, generics.CreateAPIView):
-    """POST /api/scheduling/organizations/{id}/cohorts/ — the lead opens a group class.
-
-    Lead-only: a cohort commits a teacher's time, so it is not something a
-    sub-teacher grants themselves. Whether the level may run as a group at all,
-    and whether the teacher teaches its track, are ``Cohort.clean()``'s calls and
-    arrive here as 400s.
+class CohortListCreateView(AcademyScopedView, generics.ListCreateAPIView):
+    """GET /api/scheduling/organizations/{id}/cohorts/ — list academy cohorts.
+    POST /api/scheduling/organizations/{id}/cohorts/ — open a group class.
     """
 
-    serializer_class = CohortCreateSerializer
-    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return CohortCreateSerializer
+        return CohortSerializer
+
+    def get_queryset(self):
+        return (
+            Cohort.objects.filter(level__track__organization=self.organization)
+            .select_related("level", "level__track", "teacher")
+            .prefetch_related("memberships")
+        )
 
     @extend_schema(
         responses={
+            200: OpenApiResponse(response=CohortSerializer(many=True)),
             201: OpenApiResponse(response=CohortSerializer),
             400: OpenApiResponse(
                 description=(
@@ -405,6 +538,9 @@ class CohortCreateView(AcademyScopedView, generics.CreateAPIView):
             403: NOT_A_MEMBER,
         }
     )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def post(self, request, *args, **kwargs):
         return super().post(request, *args, **kwargs)
 
@@ -414,6 +550,23 @@ class CohortCreateView(AcademyScopedView, generics.CreateAPIView):
         cohort = serializer.save()
         body = CohortSerializer(cohort, context=self.get_serializer_context()).data
         return Response(body, status=status.HTTP_201_CREATED)
+
+
+class CohortDetailView(AcademyScopedView, generics.RetrieveAPIView):
+    """GET /api/scheduling/organizations/{id}/cohorts/{pk}/ — retrieve a cohort."""
+
+    serializer_class = CohortSerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
+
+    def get_queryset(self):
+        return (
+            Cohort.objects.filter(level__track__organization=self.organization)
+            .select_related("level", "level__track", "teacher")
+            .prefetch_related("memberships")
+        )
+
+
+CohortCreateView = CohortListCreateView
 
 
 class OpenCohortListView(AcademyScopedView, generics.ListAPIView):
@@ -451,7 +604,7 @@ class OpenCohortListView(AcademyScopedView, generics.ListAPIView):
                 level_id=level_id,
             )
             .open()
-            .select_related("teacher", "level", "level__track")
+            .select_related("level", "level__track", "teacher")
         )
 
 
@@ -512,14 +665,11 @@ class TeacherWaitlistListView(AcademyScopedView, generics.ListAPIView):
     ``TeacherWaitlist.Meta.ordering`` rather than being re-stated here — the
     endpoint and any future automatic offer must agree about who is next.
 
-    Lead-only. A sub-teacher reading who is waiting for *them* is a reasonable
-    thing to want and a different decision (it exposes other families' requests
-    to a teacher who cannot act on them), so it is deliberately not folded in
-    here — see tech-debt.md.
+    Management-only (owner/admin/lead teacher).
     """
 
     serializer_class = WaitlistEntrySerializer
-    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
 
     @extend_schema(
         parameters=[
@@ -545,21 +695,13 @@ class TeacherWaitlistListView(AcademyScopedView, generics.ListAPIView):
 
 
 class WaitlistPromoteView(AcademyScopedView, generics.GenericAPIView):
-    """POST /api/scheduling/organizations/{id}/waitlist/{id}/promote/ — the lead grants the request.
+    """POST /api/scheduling/organizations/{id}/waitlist/{id}/promote/ — grant the request.
 
-    The whole fulfillment mechanism this phase ships. Automatic offering when a
-    slot frees up is explicitly out of scope (spec, tech-debt.md): it needs
-    background jobs and notification delivery, which is a phase of its own.
-
-    Lead-only, for the same reason opening a cohort is: it commits a teacher's
-    time. The booking goes through ``routing.promote_waitlist_entry``, so it takes
-    the teacher's lock and re-validates every rule — an entry made last week
-    against a teacher who has since filled up is refused with a 400 rather than
-    forced through, which is acceptance criterion 8.
+    Owner, admin, or lead teacher.
     """
 
     serializer_class = WaitlistPromoteSerializer
-    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
 
     def get_queryset(self):
         return TeacherWaitlist.objects.in_organization(

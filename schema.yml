@@ -620,6 +620,61 @@ paths:
           description: track_id missing or unknown.
         '403':
           description: Not a student account.
+  /api/assessment/organizations/{organization_pk}/progress/teaching/:
+    get:
+      operationId: assessment_organizations_progress_teaching_retrieve
+      description: |-
+        GET /api/assessment/organizations/<organization_pk>/progress/teaching/?student_id=&track_id= — an assigned student's progress.
+
+        Lead teacher and teacher can inspect the progress of students they have an active teaching relationship with (via Booking).
+        Owners and admins have academy-wide access.
+      parameters:
+      - in: query
+        name: from
+        schema:
+          type: string
+        description: Inclusive ISO-8601 start of the period, by session date.
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+        description: Which assigned student.
+        required: true
+      - in: query
+        name: to
+        schema:
+          type: string
+        description: Exclusive ISO-8601 end of the period, by session date.
+      - in: query
+        name: track_id
+        schema:
+          type: integer
+        description: Which track's progress.
+        required: true
+      tags:
+      - assessment
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentProgress'
+          description: ''
+        '400':
+          description: A missing or unknown parameter.
+        '403':
+          description: You do not have an assigned teaching relationship with this
+            student.
+        '404':
+          description: Student not found.
   /api/assessment/organizations/{organization_pk}/reports/teachers/:
     get:
       operationId: assessment_organizations_reports_teachers_retrieve
@@ -887,16 +942,50 @@ paths:
         '403':
           description: Not the lead teacher.
   /api/assessment/organizations/{organization_pk}/snapshots/:
+    get:
+      operationId: assessment_organizations_snapshots_list
+      description: |-
+        GET / POST /api/assessment/organizations/<organization_pk>/snapshots/ — snapshots management for owner/admin/lead.
+
+        GET lists academy snapshots.
+        POST freezes a period.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+      - in: query
+        name: track_id
+        schema:
+          type: integer
+      tags:
+      - assessment
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProgressSnapshot'
+          description: ''
+        '403':
+          description: Not an authorized reviewer.
     post:
       operationId: assessment_organizations_snapshots_create
       description: |-
-        POST /api/assessment/organizations/<organization_pk>/snapshots/ — the lead freezes a period.
+        GET / POST /api/assessment/organizations/<organization_pk>/snapshots/ — snapshots management for owner/admin/lead.
 
-        An explicit lead action, deliberately: automatic snapshot jobs are out of scope
-        for this phase. Repeating a request for the same student, track and period
-        returns the **existing** row with a **200** and changes nothing, which is the
-        spec's duplicate rule — a snapshot that moved when you asked for it twice would
-        not be a snapshot.
+        GET lists academy snapshots.
+        POST freezes a period.
       parameters:
       - in: path
         name: organization_pk
@@ -937,7 +1026,7 @@ paths:
         '400':
           description: Not a student, an inverted period, or an unknown track.
         '403':
-          description: Not the lead teacher.
+          description: Not the lead teacher, owner, or admin.
   /api/assessment/organizations/{organization_pk}/snapshots/all/:
     get:
       operationId: assessment_organizations_snapshots_all_list
@@ -2616,6 +2705,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationMembership'
           description: ''
+  /api/organizations/{organization_pk}/invitations/accept-and-register/:
+    post:
+      operationId: organizations_invitations_accept_and_register_create
+      description: POST /api/organizations/{organization_pk}/invitations/register/
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationRegister'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationRegister'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationRegister'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitationRegisterResponse'
+          description: Account created and invitation accepted.
+        '400':
+          description: Validation error (e.g. invalid token, expired invitation, account
+            already exists, weak password, invalid timezone).
+        '404':
+          description: Organization not found.
   /api/organizations/{organization_pk}/invitations/preview/:
     get:
       operationId: organizations_invitations_preview_retrieve
@@ -2940,6 +3069,34 @@ paths:
           description: Not an owner or administrator here.
         '404':
           description: No such student in this organization.
+  /api/organizations/{organization_pk}/students/mine/:
+    get:
+      operationId: organizations_students_mine_list
+      description: |-
+        GET /api/organizations/<organization_pk>/students/mine/ — role-specific student list.
+
+        - Teachers/Lead teachers read students assigned to them via Booking in this academy.
+        - Parents read their linked children enrolled in this academy.
+        - Owners/Admins read all enrolled students in this academy.
+        - Students are denied access.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: Assigned or linked students list.
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Permission denied for this role.
   /api/organizations/{id}/:
     get:
       operationId: organizations_retrieve
@@ -3530,6 +3687,104 @@ paths:
           description: No such booking for this caller in this organization.
         '409':
           description: Already cancelled, or completed and now history.
+  /api/scheduling/organizations/{organization_pk}/bookings/{id}/meeting/:
+    get:
+      operationId: scheduling_organizations_bookings_meeting_retrieve
+      description: GET /api/scheduling/organizations/{id}/bookings/{id}/meeting/ —
+        provider-neutral class meeting access.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingMeeting'
+          description: ''
+        '400':
+          description: Booking is cancelled.
+        '403':
+          description: You do not have access to this class.
+        '404':
+          description: Booking not found in this academy.
+  /api/scheduling/organizations/{organization_pk}/bookings/academy/:
+    get:
+      operationId: scheduling_organizations_bookings_academy_list
+      description: GET /api/scheduling/organizations/{id}/bookings/academy/ — academy-wide
+        schedule for management.
+      parameters:
+      - in: query
+        name: date
+        schema:
+          type: string
+        description: Filter by exact date (YYYY-MM-DD).
+      - in: query
+        name: end_date
+        schema:
+          type: string
+        description: Filter to end date (YYYY-MM-DD).
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: start_date
+        schema:
+          type: string
+        description: Filter from start date (YYYY-MM-DD).
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: Filter by booking status.
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+        description: Filter by student ID.
+      - in: query
+        name: teacher_id
+        schema:
+          type: integer
+        description: Filter by teacher ID.
+      - in: query
+        name: track_id
+        schema:
+          type: integer
+        description: Filter by track ID.
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Booking'
+          description: ''
+        '401':
+          description: Unauthenticated.
+        '403':
+          description: Permission denied.
   /api/scheduling/organizations/{organization_pk}/bookings/mine/:
     get:
       operationId: scheduling_organizations_bookings_mine_list
@@ -3584,15 +3839,49 @@ paths:
                   $ref: '#/components/schemas/Booking'
           description: ''
   /api/scheduling/organizations/{organization_pk}/cohorts/:
+    get:
+      operationId: scheduling_organizations_cohorts_list
+      description: |-
+        GET /api/scheduling/organizations/{id}/cohorts/ — list academy cohorts.
+        POST /api/scheduling/organizations/{id}/cohorts/ — open a group class.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cohort'
+          description: ''
+        '201':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cohort'
+          description: ''
+        '400':
+          description: Level is not group-eligible, the teacher is unapproved, or
+            the teacher does not teach the level's track.
+        '403':
+          description: Not an active member of this organization.
     post:
       operationId: scheduling_organizations_cohorts_create
       description: |-
-        POST /api/scheduling/organizations/{id}/cohorts/ — the lead opens a group class.
-
-        Lead-only: a cohort commits a teacher's time, so it is not something a
-        sub-teacher grants themselves. Whether the level may run as a group at all,
-        and whether the teacher teaches its track, are ``Cohort.clean()``'s calls and
-        arrive here as 400s.
+        GET /api/scheduling/organizations/{id}/cohorts/ — list academy cohorts.
+        POST /api/scheduling/organizations/{id}/cohorts/ — open a group class.
       parameters:
       - in: path
         name: organization_pk
@@ -3621,13 +3910,36 @@ paths:
           content:
             application/json:
               schema:
+                $ref: '#/components/schemas/CohortCreate'
+          description: ''
+  /api/scheduling/organizations/{organization_pk}/cohorts/{id}/:
+    get:
+      operationId: scheduling_organizations_cohorts_retrieve
+      description: GET /api/scheduling/organizations/{id}/cohorts/{pk}/ — retrieve
+        a cohort.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
                 $ref: '#/components/schemas/Cohort'
           description: ''
-        '400':
-          description: Level is not group-eligible, the teacher is unapproved, or
-            the teacher does not teach the level's track.
-        '403':
-          description: Not an active member of this organization.
   /api/scheduling/organizations/{organization_pk}/cohorts/open/:
     get:
       operationId: scheduling_organizations_cohorts_open_list
@@ -3739,17 +4051,9 @@ paths:
     post:
       operationId: scheduling_organizations_waitlist_promote_create
       description: |-
-        POST /api/scheduling/organizations/{id}/waitlist/{id}/promote/ — the lead grants the request.
+        POST /api/scheduling/organizations/{id}/waitlist/{id}/promote/ — grant the request.
 
-        The whole fulfillment mechanism this phase ships. Automatic offering when a
-        slot frees up is explicitly out of scope (spec, tech-debt.md): it needs
-        background jobs and notification delivery, which is a phase of its own.
-
-        Lead-only, for the same reason opening a cohort is: it commits a teacher's
-        time. The booking goes through ``routing.promote_waitlist_entry``, so it takes
-        the teacher's lock and re-validates every rule — an entry made last week
-        against a teacher who has since filled up is refused with a 400 rather than
-        forced through, which is acceptance criterion 8.
+        Owner, admin, or lead teacher.
       parameters:
       - in: path
         name: id
@@ -3802,10 +4106,7 @@ paths:
         ``TeacherWaitlist.Meta.ordering`` rather than being re-stated here — the
         endpoint and any future automatic offer must agree about who is next.
 
-        Lead-only. A sub-teacher reading who is waiting for *them* is a reasonable
-        thing to want and a different decision (it exposes other families' requests
-        to a teacher who cannot act on them), so it is deliberately not folded in
-        here — see tech-debt.md.
+        Management-only (owner/admin/lead teacher).
       parameters:
       - in: path
         name: organization_pk
@@ -4477,6 +4778,28 @@ components:
       - level
       - start_time_utc
       - teacher
+    BookingMeeting:
+      type: object
+      description: Provider-neutral meeting details for an authorized class attendee.
+      properties:
+        provider:
+          type: string
+          readOnly: true
+        provider_meeting_id:
+          type: string
+          readOnly: true
+        join_url:
+          type: string
+          format: uri
+          readOnly: true
+        display_name:
+          type: string
+          readOnly: true
+      required:
+      - display_name
+      - join_url
+      - provider
+      - provider_meeting_id
     BookingParty:
       type: object
       description: A person on one side of a booking. No signup_code, no sprawl.
@@ -5860,6 +6183,9 @@ components:
         token:
           type: string
           writeOnly: true
+        username:
+          type: string
+          default: ''
         first_name:
           type: string
           default: ''

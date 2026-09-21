@@ -25,6 +25,7 @@ from .views import (
     SessionAssessmentCreateView,
     TeacherAssessmentListView,
     TeacherQualityReportView,
+    TeachingProgressView,
 )
 
 app_name = "assessment"
@@ -86,6 +87,11 @@ urlpatterns = [
         f"{ACADEMY}progress/child/",
         ChildProgressView.as_view(),
         name="progress-child",
+    ),
+    path(
+        f"{ACADEMY}progress/teaching/",
+        TeachingProgressView.as_view(),
+        name="progress-teaching",
     ),
     # Snapshots.
     path(

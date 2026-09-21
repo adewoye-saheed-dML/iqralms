@@ -12,22 +12,26 @@ from rest_framework.permissions import BasePermission
 from accounts.models import Role
 
 
-class IsLeadTeacher(BasePermission):
-    """Deliberately a separate class from the curriculum and scheduling gates.
+from organizations.permissions import is_owner_admin_or_lead_teacher
 
-    Same rule today — ``role == "lead"`` — but the three answer different
-    questions ("who reviews placements", "who commits a teacher's time", "who
-    sets what a family pays") and should be free to diverge without one silently
-    dragging the others along. Widening the placement gate to approved
-    sub-teachers, which learnings.md already contemplates, must not hand them the
-    pricing lever as a side effect.
+
+class IsLeadTeacher(BasePermission):
+    """Pricing agreement management: Owner, Admin, or Lead Teacher.
+
+    Enforces active membership in the organization, allowing owners, admins,
+    and lead teachers (teacher membership + global Role.LEAD).
     """
 
-    message = "Only the lead teacher can set or view pricing agreements."
+    message = "Only an organization owner, administrator, or lead teacher can manage pricing agreements."
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(user and user.is_authenticated and user.role == Role.LEAD)
+        if not (user and user.is_authenticated):
+            return False
+        return is_owner_admin_or_lead_teacher(view, user)
+
+
+PricingManager = IsLeadTeacher
 
 
 class IsStudent(BasePermission):

@@ -18,19 +18,17 @@ it is always the same tenant-scoped filter: ``services.payouts_for(organization=
 from rest_framework.permissions import BasePermission
 
 from accounts.models import Role
-from organizations.models import OrganizationRole
+from organizations.permissions import is_owner_admin_or_lead_teacher, is_teacher
 
 
 class IsLeadTeacher(BasePermission):
     """Generation, finalization, academy-wide listings, anyone's statement.
 
-    In SaaS Phase 7, managing payouts belongs to the academy's owner or administrator.
-    Global Role.LEAD alone is not sufficient; the caller must hold an active membership
-    with role OWNER or ADMIN in the requested academy.
+    Owner, administrator, or lead teacher in this organization.
     Students and parents are denied unconditionally.
     """
 
-    message = "Only an organization owner or administrator can manage payouts."
+    message = "Only an organization owner, administrator, or lead teacher can manage payouts."
 
     def has_permission(self, request, view):
         user = request.user
@@ -38,10 +36,7 @@ class IsLeadTeacher(BasePermission):
             return False
         if getattr(user, "role", None) in {Role.STUDENT, Role.PARENT}:
             return False
-        membership = getattr(view, "caller_membership", None)
-        if membership is None:
-            return False
-        return membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN}
+        return is_owner_admin_or_lead_teacher(view, user)
 
 
 class IsTeacher(BasePermission):
@@ -60,7 +55,4 @@ class IsTeacher(BasePermission):
             return False
         if getattr(user, "role", None) in {Role.STUDENT, Role.PARENT}:
             return False
-        membership = getattr(view, "caller_membership", None)
-        if membership is None:
-            return False
-        return True
+        return is_teacher(view, user)

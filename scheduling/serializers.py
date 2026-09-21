@@ -561,3 +561,13 @@ class WaitlistPromoteSerializer(serializers.Serializer):
     duration_minutes = serializers.IntegerField(
         required=False, min_value=1
     )
+
+
+class BookingMeetingSerializer(serializers.Serializer):
+    """Provider-neutral meeting details for an authorized class attendee."""
+
+    provider = serializers.CharField(read_only=True)
+    provider_meeting_id = serializers.CharField(read_only=True)
+    join_url = serializers.URLField(read_only=True)
+    display_name = serializers.CharField(read_only=True)
+

@@ -502,6 +502,7 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
     """Registers a new user and accepts a pending invitation in one step."""
 
     token = serializers.CharField(write_only=True, required=True, allow_blank=False)
+    username = serializers.CharField(required=False, allow_blank=True, default="")
     first_name = serializers.CharField(required=False, allow_blank=True, default="")
     last_name = serializers.CharField(required=False, allow_blank=True, default="")
     password = serializers.CharField(
@@ -609,7 +610,13 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
                 )
 
 
-            username = generate_unique_username_from_email(invitation.email)
+            chosen_username = self.validated_data.get("username", "").strip()
+            if chosen_username:
+                if User.objects.filter(username__iexact=chosen_username).exists():
+                    raise serializers.ValidationError({"username": "This username is already taken."})
+                username = chosen_username
+            else:
+                username = generate_unique_username_from_email(invitation.email)
             is_minor = User.minor_from_date_of_birth(dob)
 
             user = User(

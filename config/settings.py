@@ -540,18 +540,18 @@ if PRODUCTION:
     #: Clickjacking: this API has no pages meant to be framed, admin included.
     X_FRAME_OPTIONS = "DENY"
 
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-# EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_BACKEND = env_str(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend",
+)
+EMAIL_HOST = env_str("EMAIL_HOST", default="localhost")
+EMAIL_PORT = env_int("EMAIL_PORT", default=587)
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", default=True)
+EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", default=False)
+EMAIL_HOST_USER = env_str("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env_str("EMAIL_HOST_PASSWORD", default="")
+DEFAULT_FROM_EMAIL = env_str(
+    "DEFAULT_FROM_EMAIL",
+    default="notifications@quranacademy.local",
+)
 
-# EMAIL_HOST = env_str("EMAIL_HOST", default="172.217.218.108")
-# EMAIL_PORT = env_int("EMAIL_PORT", default=465)
-# EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", default=False)
-# EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", default=True)
-
-# EMAIL_HOST_USER = env_str("EMAIL_HOST_USER", default="")
-# EMAIL_HOST_PASSWORD = env_str("EMAIL_HOST_PASSWORD", default="")
-
-# DEFAULT_FROM_EMAIL = env_str(
-#     "DEFAULT_FROM_EMAIL",
-#     default="notifications@quranacademy.local",
-# )

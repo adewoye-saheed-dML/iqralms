@@ -19,20 +19,26 @@ from rest_framework.permissions import BasePermission
 from accounts.models import Role
 
 
-class IsLeadTeacher(BasePermission):
-    """Rubric configuration, lead review, teacher reports, snapshot generation.
+from organizations.permissions import is_owner_admin_or_lead_teacher, is_teacher
 
-    All four are the lead's alone. A sub-teacher reading academy-wide quality data
-    is the specific thing the phase spec rules out (visibility section), and rubric
-    configuration decides what every teacher is measured on, so it is not something
-    a teacher grants themselves.
+
+class AssessmentReviewer(BasePermission):
+    """Rubric configuration, review queue, review actions, reports, snapshot generation.
+
+    Allowed: Owner, Admin, or Lead Teacher (teacher membership + global Role.LEAD).
     """
 
-    message = "Only the lead teacher can do this."
+    message = "Only an organization owner, administrator, or lead teacher can perform this action."
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(user and user.is_authenticated and user.role == Role.LEAD)
+        if not (user and user.is_authenticated):
+            return False
+        return is_owner_admin_or_lead_teacher(view, user)
+
+
+# Retain IsLeadTeacher for backward-compatibility with existing views/tests.
+IsLeadTeacher = AssessmentReviewer
 
 
 class IsTeacher(BasePermission):
@@ -49,7 +55,9 @@ class IsTeacher(BasePermission):
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(user and user.is_authenticated and user.is_teacher)
+        if not (user and user.is_authenticated):
+            return False
+        return is_teacher(view, user) or user.is_teacher
 
 
 class IsStudent(BasePermission):

@@ -255,24 +255,33 @@ class PricingAgreement(models.Model):
                 )
 
         if self.approved_by_id:
-            if self.approved_by.role != Role.LEAD:
-                # The same gate PlacementResult.clean() puts on reviewed_by, and for
-                # a stronger reason: pricing is the one lever that moves the lead's
-                # own margin, so a well-meaning sub-teacher must not be able to grant
-                # it (mvp-spec section 3). Enforced here as well as in the permission
-                # class so a direct ORM write cannot bypass it either.
-                errors["approved_by"] = ValidationError(
-                    "Only the lead teacher can approve a pricing agreement (got "
-                    "'%(role)s').",
-                    code="invalid_approver_role",
-                    params={"role": self.approved_by.role},
-                )
-            elif self.level_id and self.organization is not None and not self._is_active_here(self.approved_by):
-                errors["approved_by"] = ValidationError(
-                    "That approver is not an active member of the academy that "
-                    "owns this level.",
-                    code="approver_not_in_organization",
-                )
+            approver = self.approved_by
+            if self.level_id and self.organization is not None:
+                if not self._is_active_here(approver):
+                    errors["approved_by"] = ValidationError(
+                        "That approver is not an active member of the academy that owns this level.",
+                        code="approver_not_in_organization",
+                    )
+                else:
+                    membership = active_membership(user=approver, organization=self.organization)
+                    from organizations.models import OrganizationRole
+
+                    is_manager = membership and (
+                        membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN}
+                        or (membership.role == OrganizationRole.TEACHER and approver.role == Role.LEAD)
+                    )
+                    if not is_manager:
+                        errors["approved_by"] = ValidationError(
+                            "Only an organization owner, administrator, or lead teacher can approve a pricing agreement.",
+                            code="invalid_approver_role",
+                        )
+            else:
+                if approver.role != Role.LEAD:
+                    errors["approved_by"] = ValidationError(
+                        "Only the lead teacher can approve a pricing agreement (got '%(role)s').",
+                        code="invalid_approver_role",
+                        params={"role": approver.role},
+                    )
 
         if errors:
             raise ValidationError(errors)

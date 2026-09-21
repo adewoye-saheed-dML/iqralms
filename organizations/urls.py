@@ -16,6 +16,7 @@ from django.urls import path
 
 from .views import (
     MyOrganizationListView,
+    MyStudentEnrollmentListView,
     OrganizationCreateView,
     OrganizationDetailView,
     OrganizationMembershipDetailView,
@@ -67,6 +68,11 @@ urlpatterns = [
         name="invitation-register",
     ),
     path(
+        "<int:organization_pk>/invitations/accept-and-register/",
+        OrganizationInvitationRegisterView.as_view(),
+        name="invitation-accept-and-register",
+    ),
+    path(
         "<int:organization_pk>/invitations/<int:pk>/resend/",
         OrganizationInvitationResendView.as_view(),
         name="invitation-resend",
@@ -75,6 +81,11 @@ urlpatterns = [
         "<int:organization_pk>/invitations/<int:pk>/revoke/",
         OrganizationInvitationRevokeView.as_view(),
         name="invitation-revoke",
+    ),
+    path(
+        "<int:organization_pk>/students/mine/",
+        MyStudentEnrollmentListView.as_view(),
+        name="student-mine-list",
     ),
     path(
         "<int:organization_pk>/students/",

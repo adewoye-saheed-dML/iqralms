@@ -20,15 +20,25 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from accounts.models import ParentLink, User
+from accounts.models import ParentLink, Role, User
 from accounts.tenancy import children_in_organization
 from curriculum.models import Track
-from organizations.permissions import IsOrganizationMember
+from organizations.permissions import (
+    IsOrganizationMember,
+    IsOwnerAdminOrLeadTeacher,
+    IsTeacherMember,
+)
 from organizations.views import OrganizationScopedMixin
 from scheduling.models import Booking
 
 from .models import AssessmentRubric, ProgressSnapshot, SessionAssessment
-from .permissions import IsLeadTeacher, IsParent, IsStudent, IsTeacher
+from .permissions import (
+    AssessmentReviewer,
+    IsLeadTeacher,
+    IsParent,
+    IsStudent,
+    IsTeacher,
+)
 from .reporting import student_progress, teacher_report
 from .serializers import (
     AssessmentRubricCreateSerializer,
@@ -734,10 +744,75 @@ class ChildProgressView(ProgressView):
         return super().get(request, *args, **kwargs)
 
 
+
+class TeachingProgressView(ProgressView):
+    """GET /api/assessment/organizations/<organization_pk>/progress/teaching/?student_id=&track_id= — an assigned student's progress.
+
+    Lead teacher and teacher can inspect the progress of students they have an active teaching relationship with (via Booking).
+    Owners and admins have academy-wide access.
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsTeacherMember | IsOwnerAdminOrLeadTeacher]
+
+    def resolve_student(self, request):
+        student_id = required_int_param(request, "student_id")
+        try:
+            student = User.objects.get(pk=student_id, role=Role.STUDENT)
+        except User.DoesNotExist:
+            raise NotFound("Student not found.")
+
+        from accounts.tenancy import is_active_student_participant
+
+        if not is_active_student_participant(user=student, organization=self.organization):
+            raise NotFound("Student not found in this organization.")
+
+        from organizations.permissions import is_owner_or_admin
+
+        if not is_owner_or_admin(self, request.user):
+            taught = Booking.objects.filter(
+                level__track__organization=self.organization,
+                teacher=request.user,
+                student=student,
+            ).exists()
+            if not taught:
+                raise PermissionDenied("You do not have an assigned teaching relationship with this student.")
+        return student
+
+    @extend_schema(
+        parameters=PERIOD_PARAMS
+        + [
+            OpenApiParameter(
+                name="student_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Which assigned student.",
+            ),
+            OpenApiParameter(
+                name="track_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Which track's progress.",
+            ),
+        ],
+        responses={
+            200: OpenApiResponse(response=StudentProgressSerializer),
+            400: OpenApiResponse(description="A missing or unknown parameter."),
+            403: OpenApiResponse(
+                description="You do not have an assigned teaching relationship with this student."
+            ),
+            404: OpenApiResponse(description="Student not found."),
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+
 class ProgressSnapshotCreateView(AcademyScopedView, generics.CreateAPIView):
     """POST /api/assessment/organizations/<organization_pk>/snapshots/ — the lead freezes a period.
 
-    An explicit lead action, deliberately: automatic snapshot jobs are out of scope
+    An explicit lead/admin/owner action, deliberately: automatic snapshot jobs are out of scope
     for this phase. Repeating a request for the same student, track and period
     returns the **existing** row with a **200** and changes nothing, which is the
     spec's duplicate rule — a snapshot that moved when you asked for it twice would
@@ -745,36 +820,28 @@ class ProgressSnapshotCreateView(AcademyScopedView, generics.CreateAPIView):
     """
 
     serializer_class = ProgressSnapshotCreateSerializer
-    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, AssessmentReviewer]
 
     @extend_schema(
         responses={
-            201: OpenApiResponse(
-                response=ProgressSnapshotSerializer, description="Generated."
-            ),
             200: OpenApiResponse(
-                response=ProgressSnapshotSerializer,
-                description=(
-                    "This period was already snapshotted. The existing row is "
-                    "returned untouched — no duplicate, and no recomputation."
-                ),
+                response=ProgressSnapshotCreateSerializer,
+                description="Existing snapshot returned unchanged (idempotent).",
+            ),
+            201: OpenApiResponse(
+                response=ProgressSnapshotCreateSerializer,
+                description="New snapshot created.",
             ),
             400: OpenApiResponse(
                 description="Not a student, an inverted period, or an unknown track."
             ),
-            403: OpenApiResponse(description="Not the lead teacher."),
+            403: OpenApiResponse(description="Not an authorized reviewer."),
         }
     )
     def post(self, request, *args, **kwargs):
-        return super().post(request, *args, **kwargs)
-
-    def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         snapshot = serializer.save()
-        if getattr(snapshot, "visible_to_family", False):
-            from notifications.services import notify_progress_ready
-            notify_progress_ready(snapshot)
         body = ProgressSnapshotSerializer(
             snapshot, context=self.get_serializer_context()
         ).data
