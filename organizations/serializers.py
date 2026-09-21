@@ -490,35 +490,163 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
         invitation = self.validated_data["invitation"]
         user = self.context["request"].user
         from django.db import transaction
-        from django.utils import timezone
-        from audit_logs.models import AuditAction
-        from audit_logs.services import record_event
+        from .services import consume_invitation
 
         with transaction.atomic():
-            # 1. Create the active membership
-            membership = OrganizationMembership.objects.create(
-                organization=invitation.organization,
-                user=user,
-                role=invitation.role,
-                status=MembershipStatus.ACTIVE,
-            )
-
-            # 2. Mark invitation as accepted
-            invitation.status = InvitationStatus.ACCEPTED
-            invitation.accepted_at = timezone.now()
-            invitation.save(update_fields=["status", "accepted_at"])
-
-            # 3. Record audit log
-            record_event(
-                organization=invitation.organization,
-                actor=user,
-                action=AuditAction.INVITATION_ACCEPTED,
-                target=invitation,
-                metadata={
-                    "email": invitation.email,
-                    "role": invitation.role,
-                    "membership_id": membership.id,
-                },
-            )
+            membership = consume_invitation(invitation=invitation, user=user)
 
         return membership
+
+
+class OrganizationInvitationRegisterSerializer(serializers.Serializer):
+    """Registers a new user and accepts a pending invitation in one step."""
+
+    token = serializers.CharField(write_only=True, required=True, allow_blank=False)
+    first_name = serializers.CharField(required=False, allow_blank=True, default="")
+    last_name = serializers.CharField(required=False, allow_blank=True, default="")
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={"input_type": "password"},
+    )
+    timezone = serializers.CharField(required=True, allow_blank=False)
+    date_of_birth = serializers.DateField(required=False, allow_null=True, default=None)
+
+    def validate_password(self, value):
+        from django.contrib.auth.password_validation import validate_password
+        validate_password(value)
+        return value
+
+    def validate_timezone(self, value):
+        from accounts.validators import validate_iana_timezone
+        try:
+            validate_iana_timezone(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
+        return value
+
+    def validate_date_of_birth(self, value):
+        from django.utils import timezone as dj_timezone
+        if value and value > dj_timezone.localdate():
+            raise serializers.ValidationError("Date of birth cannot be in the future.")
+        return value
+
+    def validate(self, attrs):
+        token = attrs["token"]
+        organization = self.context["organization"]
+
+        import hashlib
+        digest = hashlib.sha256(token.encode()).hexdigest()
+
+        invitation = OrganizationInvitation.objects.filter(
+            organization=organization,
+            token_digest=digest,
+        ).first()
+
+        if not invitation:
+            raise serializers.ValidationError({"token": "Invalid invitation token."})
+
+        if invitation.status != InvitationStatus.PENDING:
+            raise serializers.ValidationError({"token": "This invitation is no longer pending."})
+
+        if not invitation.is_valid():
+            invitation.status = InvitationStatus.EXPIRED
+            invitation.save(update_fields=["status"])
+            raise serializers.ValidationError({"token": "This invitation has expired."})
+
+        from accounts.models import Role
+        INVITATION_ROLE_TO_ACCOUNT_ROLE = {
+            OrganizationRole.TEACHER: Role.SUB,
+            OrganizationRole.PARENT: Role.PARENT,
+            OrganizationRole.STUDENT: Role.STUDENT,
+        }
+        if invitation.role not in INVITATION_ROLE_TO_ACCOUNT_ROLE:
+            raise serializers.ValidationError(
+                {"detail": f"Registration is not supported for invitations with role '{invitation.role}'."}
+            )
+
+        from accounts.models import User
+        if User.objects.filter(email__iexact=invitation.email).exists():
+            raise serializers.ValidationError(
+                {"detail": "An account already exists for this invitation email. Sign in to continue."}
+            )
+
+        attrs["invitation"] = invitation
+        attrs["account_role"] = INVITATION_ROLE_TO_ACCOUNT_ROLE[invitation.role]
+        return attrs
+
+    def save(self):
+        from accounts.models import User
+        from accounts.utils import generate_unique_username_from_email
+        from rest_framework.authtoken.models import Token
+        from .services import consume_invitation
+
+        invitation_id = self.validated_data["invitation"].id
+        account_role = self.validated_data["account_role"]
+        password = self.validated_data["password"]
+        first_name = self.validated_data.get("first_name", "")
+        last_name = self.validated_data.get("last_name", "")
+        tz = self.validated_data["timezone"]
+        dob = self.validated_data.get("date_of_birth")
+
+        with transaction.atomic():
+            invitation = (
+                OrganizationInvitation.objects.select_for_update()
+                .filter(pk=invitation_id)
+                .first()
+            )
+            if not invitation or invitation.status != InvitationStatus.PENDING:
+                raise serializers.ValidationError({"token": "This invitation is no longer pending."})
+
+            if not invitation.is_valid():
+                invitation.status = InvitationStatus.EXPIRED
+                invitation.save(update_fields=["status"])
+                raise serializers.ValidationError({"token": "This invitation has expired."})
+
+            if User.objects.filter(email__iexact=invitation.email).exists():
+                raise serializers.ValidationError(
+                    {"detail": "An account already exists for this invitation email. Sign in to continue."}
+                )
+
+
+            username = generate_unique_username_from_email(invitation.email)
+            is_minor = User.minor_from_date_of_birth(dob)
+
+            user = User(
+                username=username,
+                email=invitation.email,
+                first_name=first_name,
+                last_name=last_name,
+                role=account_role,
+                timezone=tz,
+                date_of_birth=dob,
+                is_minor=is_minor,
+            )
+            user.set_password(password)
+            try:
+                user.full_clean(exclude=["signup_code"])
+            except DjangoValidationError as exc:
+                raise as_drf_error(exc) from exc
+            user.save()
+
+            membership = consume_invitation(invitation=invitation, user=user)
+            token, _ = Token.objects.get_or_create(user=user)
+
+        return {
+            "key": token.key,
+            "user": user,
+            "membership": membership,
+            "detail": "Account created and invitation accepted.",
+        }
+
+
+class OrganizationInvitationRegisterResponseSerializer(serializers.Serializer):
+    """Response returned upon successful invitation-based registration."""
+
+    from accounts.serializers import UserSerializer
+
+    key = serializers.CharField(help_text="DRF auth token key.")
+    user = UserSerializer(read_only=True)
+    membership = OrganizationMembershipSerializer(read_only=True)
+    detail = serializers.CharField(read_only=True)
+

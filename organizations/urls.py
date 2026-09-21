@@ -23,6 +23,7 @@ from .views import (
     OrganizationInvitationListCreateView,
     OrganizationInvitationAcceptView,
     OrganizationInvitationPreviewView,
+    OrganizationInvitationRegisterView,
     OrganizationInvitationResendView,
     OrganizationInvitationRevokeView,
     StudentEnrollmentListCreateView,
@@ -59,6 +60,11 @@ urlpatterns = [
         "<int:organization_pk>/invitations/accept/",
         OrganizationInvitationAcceptView.as_view(),
         name="invitation-accept",
+    ),
+    path(
+        "<int:organization_pk>/invitations/register/",
+        OrganizationInvitationRegisterView.as_view(),
+        name="invitation-register",
     ),
     path(
         "<int:organization_pk>/invitations/<int:pk>/resend/",

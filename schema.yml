@@ -2645,6 +2645,46 @@ paths:
           description: Missing token query parameter.
         '404':
           description: Invitation not found.
+  /api/organizations/{organization_pk}/invitations/register/:
+    post:
+      operationId: organizations_invitations_register_create
+      description: POST /api/organizations/{organization_pk}/invitations/register/
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationRegister'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationRegister'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationRegister'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvitationRegisterResponse'
+          description: Account created and invitation accepted.
+        '400':
+          description: Validation error (e.g. invalid token, expired invitation, account
+            already exists, weak password, invalid timezone).
+        '404':
+          description: Organization not found.
   /api/organizations/{organization_pk}/memberships/:
     get:
       operationId: organizations_memberships_list
@@ -5813,6 +5853,55 @@ components:
       - organization_name
       - role
       - status
+    OrganizationInvitationRegister:
+      type: object
+      description: Registers a new user and accepts a pending invitation in one step.
+      properties:
+        token:
+          type: string
+          writeOnly: true
+        first_name:
+          type: string
+          default: ''
+        last_name:
+          type: string
+          default: ''
+        password:
+          type: string
+          writeOnly: true
+        timezone:
+          type: string
+        date_of_birth:
+          type: string
+          format: date
+          nullable: true
+      required:
+      - password
+      - timezone
+      - token
+    OrganizationInvitationRegisterResponse:
+      type: object
+      description: Response returned upon successful invitation-based registration.
+      properties:
+        key:
+          type: string
+          description: DRF auth token key.
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        membership:
+          allOf:
+          - $ref: '#/components/schemas/OrganizationMembership'
+          readOnly: true
+        detail:
+          type: string
+          readOnly: true
+      required:
+      - detail
+      - key
+      - membership
+      - user
     OrganizationInvitationStatusEnum:
       enum:
       - pending

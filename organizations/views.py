@@ -52,6 +52,8 @@ from .serializers import (
     OrganizationInvitationAcceptSerializer,
     OrganizationInvitationCreateSerializer,
     OrganizationInvitationPreviewSerializer,
+    OrganizationInvitationRegisterResponseSerializer,
+    OrganizationInvitationRegisterSerializer,
     OrganizationInvitationSerializer,
     OrganizationMembershipSerializer,
     OrganizationMembershipUpdateSerializer,
@@ -740,3 +742,53 @@ class OrganizationInvitationAcceptView(generics.GenericAPIView):
         # Return the resulting membership
         data = OrganizationMembershipSerializer(membership).data
         return Response(data, status=status.HTTP_200_OK)
+
+
+class OrganizationInvitationRegisterView(generics.GenericAPIView):
+    """POST /api/organizations/{organization_pk}/invitations/register/"""
+
+    permission_classes = [AllowAny]
+    serializer_class = OrganizationInvitationRegisterSerializer
+
+    def get_organization(self):
+        from django.shortcuts import get_object_or_404
+        from .models import Organization
+
+        return get_object_or_404(Organization, pk=self.kwargs["organization_pk"])
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["organization"] = self.get_organization()
+        return context
+
+    @extend_schema(
+        request=OrganizationInvitationRegisterSerializer,
+        responses={
+            201: OpenApiResponse(
+                response=OrganizationInvitationRegisterResponseSerializer,
+                description="Account created and invitation accepted.",
+            ),
+            400: OpenApiResponse(
+                description="Validation error (e.g. invalid token, expired invitation, account already exists, weak password, invalid timezone).",
+            ),
+            404: OpenApiResponse(description="Organization not found."),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        from accounts.serializers import UserSerializer
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        context = self.get_serializer_context()
+        data = {
+            "key": result["key"],
+            "user": UserSerializer(result["user"], context=context).data,
+            "membership": OrganizationMembershipSerializer(
+                result["membership"], context=context
+            ).data,
+            "detail": result["detail"],
+        }
+        return Response(data, status=status.HTTP_201_CREATED)
+

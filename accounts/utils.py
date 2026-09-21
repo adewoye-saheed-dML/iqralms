@@ -51,3 +51,32 @@ def to_user_timezone(dt, tz_name):
     except (ZoneInfoNotFoundError, ValueError, TypeError):
         # A bad stored timezone should not turn a profile read into a 500.
         return dt
+
+
+def generate_unique_username_from_email(email: str, user_model=None) -> str:
+    """Generate a deterministic, unique username from an email's local part.
+
+    Example:
+    'amina.yusuf@example.com' -> 'amina.yusuf' (or 'amina.yusuf2', etc.)
+    """
+    import re
+
+    if user_model is None:
+        from accounts.models import User
+        user_model = User
+
+    local_part = email.split("@")[0].lower() if email else ""
+    # Strip characters disallowed by Django's username validator (keep alphanum, @/./+/-/_)
+    base = re.sub(r"[^\w.@+-]", "", local_part)
+    base = base.strip(".-_")
+    if not base:
+        base = "user"
+    base = base[:140]
+
+    candidate = base
+    counter = 2
+    while user_model.objects.filter(username__iexact=candidate).exists():
+        candidate = f"{base}{counter}"
+        counter += 1
+
+    return candidate

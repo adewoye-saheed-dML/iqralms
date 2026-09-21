@@ -39,6 +39,10 @@ def accept_invitation_url(organization):
     return reverse("organizations:invitation-accept", args=[organization.pk])
 
 
+def register_invitation_url(organization):
+    return reverse("organizations:invitation-register", args=[organization.pk])
+
+
 def resend_invitation_url(organization, pk):
     return reverse("organizations:invitation-resend", args=[organization.pk, pk])
 
@@ -428,3 +432,264 @@ class InvitationAcceptanceRoleSemanticsTests(TenantWorld):
         self.assertFalse(
             StudentEnrollment.objects.filter(user=student_account, organization=self.org_a).exists()
         )
+
+
+class OrganizationInvitationRegistrationTests(TenantWorld):
+    def setUp(self):
+        super().setUp()
+        self.token, self.digest = OrganizationInvitation.generate_token_and_digest()
+        self.invitation = OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email="amina.yusuf@example.com",
+            role=OrganizationRole.TEACHER,
+            token_digest=self.digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+
+    def test_pending_teacher_invitation_registers_successfully(self):
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "first_name": "Amina",
+            "last_name": "Yusuf",
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+            "date_of_birth": "1995-05-15",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        # Response structure
+        self.assertIn("key", response.data)
+        self.assertIn("user", response.data)
+        self.assertIn("membership", response.data)
+        self.assertEqual(response.data["detail"], "Account created and invitation accepted.")
+
+        # User checks
+        user = User.objects.get(email="amina.yusuf@example.com")
+        self.assertEqual(user.first_name, "Amina")
+        self.assertEqual(user.last_name, "Yusuf")
+        self.assertEqual(user.role, Role.SUB)
+        self.assertTrue(user.is_teacher)
+        self.assertFalse(user.is_minor)
+        self.assertEqual(user.timezone, "Africa/Lagos")
+        self.assertEqual(user.username, "amina.yusuf")
+
+        # TeacherProfile check: no fake profile was invented
+        from accounts.models import TeacherProfile
+        self.assertFalse(TeacherProfile.objects.filter(user=user).exists())
+
+        # Membership checks
+        membership = OrganizationMembership.objects.get(organization=self.org_a, user=user)
+        self.assertEqual(membership.role, OrganizationRole.TEACHER)
+        self.assertEqual(membership.status, MembershipStatus.ACTIVE)
+
+        # Invitation state
+        self.invitation.refresh_from_db()
+        self.assertEqual(self.invitation.status, InvitationStatus.ACCEPTED)
+        self.assertIsNotNone(self.invitation.accepted_at)
+
+        # Auth token works
+        token_key = response.data["key"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token_key}")
+        me_res = self.client.get(reverse("accounts:me"))
+        self.assertEqual(me_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(me_res.data["email"], "amina.yusuf@example.com")
+
+        # Audit log was recorded
+        audit = AuditLog.objects.filter(
+            organization=self.org_a,
+            action=AuditAction.INVITATION_ACCEPTED,
+        ).first()
+        self.assertIsNotNone(audit)
+        self.assertEqual(audit.actor, user)
+        self.assertEqual(audit.metadata["email"], "amina.yusuf@example.com")
+        self.assertEqual(audit.metadata["role"], "teacher")
+        self.assertEqual(audit.metadata["membership_id"], membership.id)
+
+    def test_invalid_token_is_rejected(self):
+        self.client.logout()
+        payload = {
+            "token": "completely-invalid-token",
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid invitation token", str(response.data))
+
+    def test_token_from_another_organization_url_cannot_be_used(self):
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+        }
+        # Post org_a's token to org_b
+        response = self.client.post(register_invitation_url(self.org_b), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid invitation token", str(response.data))
+
+    def test_expired_invitation_is_rejected_and_marked_expired(self):
+        self.invitation.expires_at = timezone.now() - datetime.timedelta(days=1)
+        self.invitation.save(update_fields=["expires_at"])
+
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("expired", str(response.data).lower())
+
+        self.invitation.refresh_from_db()
+        self.assertEqual(self.invitation.status, InvitationStatus.EXPIRED)
+
+    def test_revoked_invitation_is_rejected(self):
+        self.invitation.status = InvitationStatus.REVOKED
+        self.invitation.save(update_fields=["status"])
+
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("no longer pending", str(response.data).lower())
+
+    def test_accepted_invitation_cannot_be_reused(self):
+        self.invitation.status = InvitationStatus.ACCEPTED
+        self.invitation.save(update_fields=["status"])
+
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("no longer pending", str(response.data).lower())
+
+    def test_second_submission_cannot_consume_same_invitation(self):
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+        }
+        res1 = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+
+        res2 = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("no longer pending", str(res2.data).lower())
+
+    def test_supplied_fields_cannot_override_invitation_authority(self):
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "first_name": "Amina",
+            "last_name": "Yusuf",
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+            "email": "attacker@example.com",
+            "role": "lead",
+            "organization_role": "owner",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(email="amina.yusuf@example.com")
+        self.assertEqual(user.role, Role.SUB)  # NOT lead
+        self.assertFalse(User.objects.filter(email="attacker@example.com").exists())
+
+        membership = OrganizationMembership.objects.get(organization=self.org_a, user=user)
+        self.assertEqual(membership.role, OrganizationRole.TEACHER)  # NOT owner
+
+    def test_existing_account_returns_stable_error_without_creating_user(self):
+        existing_user = UserFactory(
+            email="amina.yusuf@example.com",
+            username="amina.existing",
+            first_name="Existing",
+            role=Role.SUB,
+        )
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "first_name": "NewName",
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn(
+            "An account already exists for this invitation email. Sign in to continue.",
+            str(response.data),
+        )
+
+        # Existing account is unchanged
+        existing_user.refresh_from_db()
+        self.assertEqual(existing_user.first_name, "Existing")
+        self.assertEqual(User.objects.filter(email__iexact="amina.yusuf@example.com").count(), 1)
+
+        # Invitation remains pending
+        self.invitation.refresh_from_db()
+        self.assertEqual(self.invitation.status, InvitationStatus.PENDING)
+
+    def test_weak_password_is_rejected(self):
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "123",
+            "timezone": "Africa/Lagos",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.data)
+
+    def test_invalid_timezone_is_rejected(self):
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "StrongPassword123!#",
+            "timezone": "Atlantis/City",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("timezone", response.data)
+
+    def test_future_date_of_birth_is_rejected(self):
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+            "date_of_birth": "2099-01-01",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("date_of_birth", response.data)
+        self.assertIn("future", str(response.data["date_of_birth"]).lower())
+
+    def test_unique_username_collision_handling(self):
+        UserFactory(username="amina.yusuf", email="other1@example.com")
+        UserFactory(username="amina.yusuf2", email="other2@example.com")
+
+        self.client.logout()
+        payload = {
+            "token": self.token,
+            "password": "StrongPassword123!#",
+            "timezone": "Africa/Lagos",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(email="amina.yusuf@example.com")
+        self.assertEqual(user.username, "amina.yusuf3")
+
