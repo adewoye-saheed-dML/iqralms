@@ -34,9 +34,11 @@ class IsLeadTeacher(BasePermission):
         user = request.user
         if not (user and user.is_authenticated):
             return False
+        if is_owner_or_admin(view, user):
+            return True
         if getattr(user, "role", None) in {Role.STUDENT, Role.PARENT}:
             return False
-        return is_owner_admin_or_lead_teacher(view, user)
+        return is_lead_teacher(view, user)
 
 
 class IsTeacher(BasePermission):
