@@ -135,3 +135,64 @@ class StudentEnrollmentAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["track_id"], track.pk)
         self.assertEqual(response.data["level_id"], level.pk)
+
+    def test_create_and_update_enrollment_with_teacher(self):
+        from curriculum.tests.factories import TrackFactory, LevelFactory
+        from curriculum.models import TeacherTrack
+        track = TrackFactory(organization=self.org)
+        level = LevelFactory(track=track)
+        student = UserFactory(role=Role.STUDENT)
+        teacher = UserFactory(role=Role.SUB, username="ustadh_ali", first_name="Ali", last_name="Hassan")
+        mem = OrganizationMembershipFactory(
+            organization=self.org, user=teacher, role=OrganizationRole.TEACHER
+        )
+        TeacherTrack.objects.create(membership=mem, track=track, active=True)
+
+        self.client.force_authenticate(user=self.owner)
+        url = reverse("organizations:student-list", args=[self.org.pk])
+        response = self.client.post(url, {
+            "user": student.pk,
+            "track_id": track.pk,
+            "level_id": level.pk,
+            "teacher_id": teacher.pk,
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["teacher_id"], teacher.pk)
+        self.assertEqual(response.data["teacher_name"], "Ali Hassan")
+
+        # Now test updating (unassigning teacher)
+        detail_url = reverse("organizations:student-detail", args=[self.org.pk, response.data["id"]])
+        patch_res = self.client.patch(detail_url, {"teacher_id": None}, format="json")
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertIsNone(patch_res.data["teacher_id"])
+        self.assertIsNone(patch_res.data["teacher_name"])
+
+    def test_teacher_mine_endpoint_includes_assigned_students(self):
+        from curriculum.tests.factories import TrackFactory, LevelFactory
+        from curriculum.models import TeacherTrack
+        track = TrackFactory(organization=self.org)
+        level = LevelFactory(track=track)
+        student1 = UserFactory(role=Role.STUDENT)
+        student2 = UserFactory(role=Role.STUDENT)
+        teacher = UserFactory(role=Role.SUB)
+        mem = OrganizationMembershipFactory(
+            organization=self.org, user=teacher, role=OrganizationRole.TEACHER
+        )
+        TeacherTrack.objects.create(membership=mem, track=track, active=True)
+
+        # student1 is assigned to teacher, student2 is not
+        StudentEnrollment.objects.create(
+            organization=self.org, user=student1, track=track, level=level, teacher=teacher
+        )
+        StudentEnrollment.objects.create(
+            organization=self.org, user=student2, track=track, level=level
+        )
+
+        self.client.force_authenticate(user=teacher)
+        mine_url = reverse("organizations:student-mine-list", args=[self.org.pk])
+        response = self.client.get(mine_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data["results"] if "results" in response.data else response.data
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["user_id"], student1.id)
+        self.assertEqual(results[0]["teacher_id"], teacher.id)

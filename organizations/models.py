@@ -384,6 +384,7 @@ class StudentEnrollment(models.Model):
         student          → user (must have role 'student')
         programme/track  → track (must belong to this organization)
         level/placement  → level (must belong to the enrollment's track)
+        teacher          → user (must be teacher member authorized for track)
         status           → active or inactive
 
     It is deliberately separate from ``OrganizationMembership``, which answers
@@ -398,6 +399,7 @@ class StudentEnrollment(models.Model):
     * ``level.track == track`` (when both are set)
     * A level cannot be set without a track
     * Enrollment does not cross academy boundaries
+    * Assigned teacher must be active teacher member and authorized for track (via TeacherTrack)
     """
 
     organization = models.ForeignKey(
@@ -428,6 +430,14 @@ class StudentEnrollment(models.Model):
         blank=True,
         related_name="student_enrollments",
         help_text="The student's current level in the track.",
+    )
+    teacher = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_student_enrollments",
+        help_text="The teacher assigned to instruct this student in this academy.",
     )
     status = models.CharField(
         max_length=16,
@@ -497,6 +507,49 @@ class StudentEnrollment(models.Model):
                     )
                 }
             )
+        if getattr(self, "teacher_id", None):
+            from curriculum.models import TeacherTrack
+
+            if not getattr(self.teacher, "is_teacher", False):
+                raise ValidationError(
+                    {
+                        "teacher": ValidationError(
+                            "Only users with a teacher role can be assigned as instructors.",
+                            code="invalid_teacher_role",
+                        )
+                    }
+                )
+
+            is_active_member = OrganizationMembership.objects.active().filter(
+                organization_id=self.organization_id,
+                user_id=self.teacher_id,
+            ).exists()
+            if not is_active_member:
+                raise ValidationError(
+                    {
+                        "teacher": ValidationError(
+                            "The assigned teacher does not have an active membership in this academy.",
+                            code="teacher_not_in_organization",
+                        )
+                    }
+                )
+
+            if getattr(self, "track_id", None):
+                is_eligible = TeacherTrack.objects.filter(
+                    membership__user_id=self.teacher_id,
+                    membership__organization_id=self.organization_id,
+                    track_id=self.track_id,
+                    active=True,
+                ).exists()
+                if not is_eligible:
+                    raise ValidationError(
+                        {
+                            "teacher": ValidationError(
+                                f"{self.teacher.username} is not authorized to teach {self.track.name} in this academy.",
+                                code="teacher_not_assigned_to_track",
+                            )
+                        }
+                    )
 
     def save(self, *args, **kwargs):
         self.full_clean()

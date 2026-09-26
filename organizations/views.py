@@ -349,7 +349,7 @@ class StudentEnrollmentListCreateView(OrganizationScopedMixin, generics.ListCrea
 
         queryset = StudentEnrollment.objects.filter(
             organization_id=self.organization_id
-        ).select_related("user", "organization")
+        ).select_related("user", "organization", "track", "level", "teacher")
 
         search = self.request.query_params.get("search")
         if search:
@@ -363,6 +363,10 @@ class StudentEnrollmentListCreateView(OrganizationScopedMixin, generics.ListCrea
         status_filter = self.request.query_params.get("status")
         if status_filter:
             queryset = queryset.filter(status=status_filter)
+
+        teacher_filter = self.request.query_params.get("teacher_id")
+        if teacher_filter:
+            queryset = queryset.filter(teacher_id=teacher_filter)
 
         return queryset
 
@@ -445,7 +449,7 @@ class MyStudentEnrollmentListView(OrganizationScopedMixin, generics.ListAPIView)
 
         base_qs = (
             StudentEnrollment.objects.filter(organization_id=self.organization_id)
-            .select_related("user", "organization", "track", "level")
+            .select_related("user", "organization", "track", "level", "teacher")
             .order_by("-created_at")
         )
 
@@ -453,11 +457,12 @@ class MyStudentEnrollmentListView(OrganizationScopedMixin, generics.ListAPIView)
             return base_qs
 
         if is_teacher(self, user):
+            from django.db.models import Q
             student_ids = Booking.objects.filter(
                 level__track__organization_id=self.organization_id,
                 teacher=user,
             ).values_list("student_id", flat=True).distinct()
-            return base_qs.filter(user_id__in=student_ids)
+            return base_qs.filter(Q(user_id__in=student_ids) | Q(teacher=user))
 
         if membership.role == OrganizationRole.PARENT or getattr(user, "role", None) == Role.PARENT:
             child_ids = ParentLink.objects.filter(parent=user).values_list("student_id", flat=True)
@@ -492,7 +497,7 @@ class StudentEnrollmentDetailView(OrganizationScopedMixin, generics.RetrieveUpda
 
         return StudentEnrollment.objects.filter(
             organization_id=self.organization_id
-        ).select_related("user", "organization")
+        ).select_related("user", "organization", "track", "level", "teacher")
 
     def get_serializer_class(self):
         from .serializers import StudentDetailSerializer, StudentEnrollmentUpdateSerializer

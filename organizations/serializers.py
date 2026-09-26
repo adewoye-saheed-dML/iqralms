@@ -221,6 +221,14 @@ class StudentListSerializer(serializers.ModelSerializer):
     enrollment_status = serializers.CharField(source="status", read_only=True)
     track_id = serializers.IntegerField(source="track.id", read_only=True, allow_null=True)
     level_id = serializers.IntegerField(source="level.id", read_only=True, allow_null=True)
+    teacher_id = serializers.IntegerField(source="teacher.id", read_only=True, allow_null=True)
+    teacher_name = serializers.SerializerMethodField(read_only=True)
+
+    def get_teacher_name(self, obj) -> str | None:
+        if not obj.teacher:
+            return None
+        full_name = f"{obj.teacher.first_name} {obj.teacher.last_name}".strip()
+        return full_name or obj.teacher.username
 
     class Meta:
         from .models import StudentEnrollment
@@ -239,6 +247,8 @@ class StudentListSerializer(serializers.ModelSerializer):
             "enrollment_status",
             "track_id",
             "level_id",
+            "teacher_id",
+            "teacher_name",
 
             "created_at",
             "updated_at",
@@ -254,7 +264,6 @@ class StudentDetailSerializer(StudentListSerializer):
 class StudentEnrollmentCreateSerializer(serializers.Serializer):
     """Enrolling an existing student user into an academy."""
 
-
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
     from curriculum.models import Track, Level
     track_id = serializers.PrimaryKeyRelatedField(
@@ -263,7 +272,9 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
     level_id = serializers.PrimaryKeyRelatedField(
         queryset=Level.objects.all(), source="level", required=False, allow_null=True
     )
-
+    teacher_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(), source="teacher", required=False, allow_null=True
+    )
 
     def validate_user(self, user):
         from accounts.models import Role
@@ -281,13 +292,13 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         from .models import StudentEnrollment, EnrollmentStatus
-        
 
         enrollment = StudentEnrollment(
             organization=self.context["organization"],
             user=validated_data["user"],
             track=validated_data.get("track"),
             level=validated_data.get("level"),
+            teacher=validated_data.get("teacher"),
             status=EnrollmentStatus.ACTIVE,
         )
 
@@ -301,7 +312,6 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
 class StudentEnrollmentUpdateSerializer(serializers.Serializer):
     """Updating a student's enrollment status."""
 
-
     from .models import EnrollmentStatus
     from curriculum.models import Track, Level
     status = serializers.ChoiceField(choices=EnrollmentStatus.choices, required=False)
@@ -311,7 +321,9 @@ class StudentEnrollmentUpdateSerializer(serializers.Serializer):
     level_id = serializers.PrimaryKeyRelatedField(
         queryset=Level.objects.all(), source="level", required=False, allow_null=True
     )
-
+    teacher_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(), source="teacher", required=False, allow_null=True
+    )
 
     def update(self, enrollment, validated_data):
 
@@ -321,6 +333,8 @@ class StudentEnrollmentUpdateSerializer(serializers.Serializer):
             enrollment.track = validated_data["track"]
         if "level" in validated_data:
             enrollment.level = validated_data["level"]
+        if "teacher" in validated_data:
+            enrollment.teacher = validated_data["teacher"]
 
         try:
             enrollment.save()

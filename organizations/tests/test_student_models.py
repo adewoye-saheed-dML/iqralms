@@ -121,3 +121,88 @@ class StudentEnrollmentTests(TestCase):
             exc_info.exception.message_dict["level"][0],
             "The level belongs to a different track."
         )
+
+    def test_enrollment_teacher_must_have_teacher_role(self):
+        org = OrganizationFactory()
+        student = UserFactory(role=Role.STUDENT)
+        non_teacher = UserFactory(role=Role.PARENT)
+
+        enrollment = StudentEnrollment(
+            organization=org,
+            user=student,
+            teacher=non_teacher,
+        )
+        with self.assertRaises(ValidationError) as exc_info:
+            enrollment.full_clean()
+        self.assertIn("teacher", exc_info.exception.message_dict)
+        self.assertEqual(
+            exc_info.exception.message_dict["teacher"][0],
+            "Only users with a teacher role can be assigned as instructors."
+        )
+
+    def test_enrollment_teacher_must_be_active_org_member(self):
+        org = OrganizationFactory()
+        student = UserFactory(role=Role.STUDENT)
+        teacher = UserFactory(role=Role.SUB)
+
+        enrollment = StudentEnrollment(
+            organization=org,
+            user=student,
+            teacher=teacher,
+        )
+        with self.assertRaises(ValidationError) as exc_info:
+            enrollment.full_clean()
+        self.assertIn("teacher", exc_info.exception.message_dict)
+        self.assertEqual(
+            exc_info.exception.message_dict["teacher"][0],
+            "The assigned teacher does not have an active membership in this academy."
+        )
+
+    def test_enrollment_teacher_must_be_eligible_for_track(self):
+        from organizations.models import OrganizationMembership, OrganizationRole
+        from curriculum.tests.factories import TrackFactory
+
+        org = OrganizationFactory()
+        student = UserFactory(role=Role.STUDENT)
+        teacher = UserFactory(role=Role.SUB)
+        OrganizationMembership.objects.create(
+            organization=org, user=teacher, role=OrganizationRole.TEACHER
+        )
+        track = TrackFactory(organization=org)
+
+        enrollment = StudentEnrollment(
+            organization=org,
+            user=student,
+            track=track,
+            teacher=teacher,
+        )
+        with self.assertRaises(ValidationError) as exc_info:
+            enrollment.full_clean()
+        self.assertIn("teacher", exc_info.exception.message_dict)
+        self.assertIn("is not authorized to teach", exc_info.exception.message_dict["teacher"][0])
+
+    def test_valid_teacher_allocation(self):
+        from organizations.models import OrganizationMembership, OrganizationRole
+        from curriculum.models import TeacherTrack
+        from curriculum.tests.factories import TrackFactory, LevelFactory
+
+        org = OrganizationFactory()
+        student = UserFactory(role=Role.STUDENT)
+        teacher = UserFactory(role=Role.SUB)
+        mem = OrganizationMembership.objects.create(
+            organization=org, user=teacher, role=OrganizationRole.TEACHER
+        )
+        track = TrackFactory(organization=org)
+        level = LevelFactory(track=track)
+        TeacherTrack.objects.create(membership=mem, track=track, active=True)
+
+        enrollment = StudentEnrollment.objects.create(
+            organization=org,
+            user=student,
+            track=track,
+            level=level,
+            teacher=teacher,
+        )
+        self.assertEqual(enrollment.teacher, teacher)
+        enrollment.refresh_from_db()
+        self.assertEqual(enrollment.teacher_id, teacher.id)
