@@ -31,6 +31,7 @@ from .exceptions import (
 )
 from .models import Availability, Booking, Cohort, TeacherWaitlist
 from .permissions import (
+    CanBookSession,
     IsLeadTeacher,
     IsOwnerAdminOrLeadTeacher,
     IsStudent,
@@ -331,6 +332,77 @@ class BookingCancelView(AcademyScopedView, generics.GenericAPIView):
             raise Conflict(str(exc)) from exc
         from notifications.services import notify_booking_cancelled
         notify_booking_cancelled(booking)
+        body = BookingSerializer(booking, context=self.get_serializer_context()).data
+        return Response(body, status=status.HTTP_200_OK)
+
+
+class BookingCompleteView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/scheduling/organizations/{id}/bookings/{id}/complete/ — teacher or staff marks session completed.
+
+    This records the actual session duration, transitions status to 'completed', and makes
+    the booking eligible for teacher payout generation and session assessment.
+    """
+
+    serializer_class = BookingSerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get_queryset(self):
+        user = self.request.user
+        membership = self.caller_membership
+        from organizations.models import OrganizationRole
+
+        is_staff = bool(
+            membership
+            and membership.role in {
+                OrganizationRole.OWNER,
+                OrganizationRole.ADMIN,
+            }
+        )
+        qs = Booking.objects.filter(level__track__organization=self.organization)
+        if not is_staff:
+            qs = qs.filter(teacher=user)
+        return qs.select_related(*BOOKING_RELATED).distinct()
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: OpenApiResponse(response=BookingSerializer),
+            403: NOT_A_MEMBER,
+            404: OpenApiResponse(description="Booking not found or not your session."),
+            409: OpenApiResponse(description="Already cancelled."),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        from .models import BookingStatus
+
+        booking = self.get_object()
+        if booking.status == BookingStatus.CANCELLED:
+            raise Conflict("A cancelled booking cannot be marked completed.")
+
+        duration_minutes = request.data.get("duration_minutes")
+        if duration_minutes is not None:
+            try:
+                val = int(duration_minutes)
+                if val > 0:
+                    booking.duration_minutes = val
+            except (ValueError, TypeError):
+                pass
+
+        booking.status = BookingStatus.COMPLETED
+        booking.save()
+
+        try:
+            from audit_logs.services import record_event
+            record_event(
+                organization=self.organization,
+                actor=request.user,
+                action="booking.completed",
+                target=booking,
+                metadata={"duration_minutes": booking.duration_minutes},
+            )
+        except Exception:
+            pass
+
         body = BookingSerializer(booking, context=self.get_serializer_context()).data
         return Response(body, status=status.HTTP_200_OK)
 

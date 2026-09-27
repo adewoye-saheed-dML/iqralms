@@ -73,6 +73,11 @@ def cancel_url(organization, booking_or_pk):
     return _url("booking-cancel", organization, pk=pk)
 
 
+def complete_url(organization, booking_or_pk):
+    pk = getattr(booking_or_pk, "pk", booking_or_pk)
+    return _url("booking-complete", organization, pk=pk)
+
+
 class AvailabilityListAPITests(APITestCase):
     def setUp(self):
         self.organization = OrganizationFactory()
@@ -773,3 +778,46 @@ class BookingCancelAPITests(APITestCase):
         self.assertNotEqual(
             response.data["video_provider_meeting_id"], self.booking.video_provider_meeting_id
         )
+
+
+class BookingCompleteAPITests(APITestCase):
+    def setUp(self):
+        self.window = AvailabilityFactory()
+        self.organization = self.window.organization
+        self.level = LevelFactory(track__organization=self.organization)
+        self.booking = BookingFactory(
+            availability=self.window, level=self.level
+        )
+        self.student = self.booking.student
+        self.teacher = self.booking.teacher
+        admit(self.student, self.organization)
+        admit(self.teacher, self.organization)
+
+    def test_teacher_can_complete_session_and_record_duration(self):
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(
+            complete_url(self.organization, self.booking),
+            {"duration_minutes": 45},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.status, BookingStatus.COMPLETED)
+        self.assertEqual(self.booking.duration_minutes, 45)
+
+    def test_cancelled_booking_cannot_be_completed(self):
+        cancelled = CancelledBookingFactory(
+            availability=self.window,
+            level=self.level,
+            teacher=self.teacher,
+            student=self.student,
+        )
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(complete_url(self.organization, cancelled))
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_other_teacher_cannot_complete_session(self):
+        other_teacher = BookableTeacherFactory()
+        admit(other_teacher, self.organization)
+        self.client.force_authenticate(user=other_teacher)
+        response = self.client.post(complete_url(self.organization, self.booking))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

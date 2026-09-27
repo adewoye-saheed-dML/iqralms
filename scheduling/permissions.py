@@ -55,3 +55,17 @@ class IsLeadTeacher(BasePermission):
 class IsOwnerAdminOrLeadTeacher(IsLeadTeacher):
     pass
 
+
+class CanBookSession(BasePermission):
+    message = "Only a student, parent, teacher, or organization staff can book a session."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+        if user.role in {Role.STUDENT, Role.PARENT} or user.is_teacher:
+            return True
+        from organizations.permissions import is_owner_admin_or_lead_teacher
+
+        return is_owner_admin_or_lead_teacher(view, user)
+

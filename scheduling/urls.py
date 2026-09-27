@@ -6,6 +6,7 @@ from .views import (
     AcademyBookingListView,
     AvailabilityListView,
     BookingCancelView,
+    BookingCompleteView,
     BookingCreateView,
     BookingMeetingView,
     CohortCreateView,
@@ -54,6 +55,11 @@ urlpatterns = [
         f"{ACADEMY}bookings/<int:pk>/cancel/",
         BookingCancelView.as_view(),
         name="booking-cancel",
+    ),
+    path(
+        f"{ACADEMY}bookings/<int:pk>/complete/",
+        BookingCompleteView.as_view(),
+        name="booking-complete",
     ),
     path(
         f"{ACADEMY}bookings/<int:pk>/meeting/",
