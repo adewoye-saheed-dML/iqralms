@@ -34,6 +34,7 @@ caller gets a readable 400, not where the invariant lives.
 import os
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from accounts.models import User
@@ -631,17 +632,20 @@ class LearningMaterialSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "organization", "uploaded_by", "created_at", "updated_at"]
 
-    def get_uploaded_by_name(self, obj):
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_uploaded_by_name(self, obj) -> str | None:
         if not obj.uploaded_by:
             return None
         return obj.uploaded_by.get_full_name() or obj.uploaded_by.username
 
-    def get_file(self, obj):
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_file(self, obj) -> str | None:
         if not obj.file:
             return None
         return os.path.basename(obj.file.name)
 
-    def get_file_url(self, obj):
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_file_url(self, obj) -> str | None:
         if not obj.file:
             return None
         from django.urls import reverse

@@ -17,7 +17,12 @@ from /api/curriculum/placements/{id}/audio-url/. Do not add the route back — t
 storage backend's ``url()`` raises specifically so that trying to fails loudly.
 """
 
-from dj_rest_auth.views import LoginView, LogoutView
+from dj_rest_auth.views import (
+    LoginView,
+    LogoutView,
+    PasswordResetConfirmView,
+    PasswordResetView,
+)
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
@@ -30,6 +35,16 @@ urlpatterns = [
     path("api/auth/register/", RegisterView.as_view(), name="rest_register"),
     path("api/auth/login/", LoginView.as_view(), name="rest_login"),
     path("api/auth/logout/", LogoutView.as_view(), name="rest_logout"),
+    path(
+        "api/auth/password/reset/",
+        PasswordResetView.as_view(),
+        name="rest_password_reset",
+    ),
+    path(
+        "api/auth/password/reset/confirm/",
+        PasswordResetConfirmView.as_view(),
+        name="rest_password_reset_confirm",
+    ),
     # Resources
     path("api/accounts/", include("accounts.urls")),
     path("api/curriculum/", include("curriculum.urls")),

@@ -1115,30 +1115,101 @@ class AcademyLearningMaterialDetailView(AcademyScopedView, generics.RetrieveUpda
         instance.delete()
 
 
-from rest_framework.authentication import TokenAuthentication
+from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 
 
 class QueryParamTokenAuthentication(TokenAuthentication):
-    """Allows token authentication via query parameter ?token=... or standard Authorization header."""
+    """Allows token authentication via query parameter (?token=..., ?auth_token=...) or standard Authorization header."""
 
     def authenticate(self, request):
-        # 1. Try standard header first
-        auth = super().authenticate(request)
-        if auth is not None:
-            return auth
+        # 1. Try standard header first (supports Token <key>, Bearer <key>, or raw token)
+        auth_header = None
+        if hasattr(request, "headers") and "Authorization" in request.headers:
+            auth_header = request.headers.get("Authorization")
+        elif hasattr(request, "META") and "HTTP_AUTHORIZATION" in request.META:
+            auth_header = request.META.get("HTTP_AUTHORIZATION")
 
-        # 2. Check query param
-        token = request.query_params.get("token")
+        if auth_header:
+            auth_header = auth_header.strip()
+            parts = auth_header.split()
+            if len(parts) == 2 and parts[0].lower() in ["token", "bearer"]:
+                return self.authenticate_credentials(parts[1].strip())
+            elif len(parts) == 1 and parts[0].lower() not in ["null", "undefined"]:
+                return self.authenticate_credentials(parts[0].strip())
+
+        try:
+            auth = super().authenticate(request)
+            if auth is not None:
+                return auth
+        except Exception:
+            pass
+
+        # 2. Check query params across common naming conventions
+        token = None
+        param_keys = [
+            "token",
+            "auth_token",
+            "access_token",
+            "authorization",
+            "authToken",
+            "accessToken",
+            "key",
+            "api_key",
+        ]
+
+        query_dict = getattr(request, "query_params", None)
+        if query_dict is None or not query_dict:
+            query_dict = getattr(request, "GET", None)
+
+        if query_dict:
+            for k in param_keys:
+                val = query_dict.get(k)
+                if val:
+                    token = val
+                    break
+
         if not token:
+            return None
+
+        token = token.strip()
+        if token.lower().startswith("token "):
+            token = token[6:].strip()
+        elif token.lower().startswith("bearer "):
+            token = token[7:].strip()
+
+        if not token or token.lower() in ["undefined", "null"]:
             return None
 
         return self.authenticate_credentials(token)
 
 
+from drf_spectacular.extensions import OpenApiAuthenticationExtension
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiResponse, extend_schema
+
+
+class QueryParamTokenAuthExtension(OpenApiAuthenticationExtension):
+    target_class = "curriculum.views.QueryParamTokenAuthentication"
+    name = "queryParamTokenAuth"
+
+    def get_security_definition(self, auto_schema):
+        return {
+            "type": "apiKey",
+            "in": "query",
+            "name": "token",
+        }
+
+
+@extend_schema(
+    responses={
+        200: OpenApiResponse(response=OpenApiTypes.BINARY, description="Material file stream / download"),
+        404: OpenApiResponse(description="Material or file not found"),
+    }
+)
 class AcademyLearningMaterialFileView(AcademyScopedView, APIView):
     """GET /api/curriculum/organizations/{id}/materials/{id}/file/ — stream or download the material file."""
 
-    authentication_classes = [QueryParamTokenAuthentication]
+    authentication_classes = [QueryParamTokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated, IsOrganizationMember]
 
     def get(self, request, *args, **kwargs):

@@ -98,6 +98,11 @@ class LearningMaterialAPITests(APITestCase):
         response = self.client.post(self.url, {"title": "Student Upload"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_teacher_cannot_upload_materials(self):
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(self.url, {"title": "Teacher Upload"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_outsider_is_forbidden(self):
         self.client.force_authenticate(user=self.outsider)
         response = self.client.get(self.url)
@@ -118,6 +123,22 @@ class LearningMaterialAPITests(APITestCase):
         response = self.client.delete(detail_url)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(LearningMaterial.objects.filter(pk=m.pk).exists())
+
+    def test_teacher_cannot_delete_material(self):
+        m = LearningMaterial.objects.create(
+            organization=self.organization,
+            title="Old Worksheet",
+            material_type=MaterialType.WORKSHEET,
+            uploaded_by=self.owner,
+        )
+        detail_url = reverse(
+            "curriculum:academy-material-detail",
+            kwargs={"organization_pk": self.organization.pk, "pk": m.pk},
+        )
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.delete(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(LearningMaterial.objects.filter(pk=m.pk).exists())
 
     def test_download_material_file_with_query_param_token(self):
         from rest_framework.authtoken.models import Token
@@ -145,3 +166,16 @@ class LearningMaterialAPITests(APITestCase):
         res_token = self.client.get(f"{file_url}?token={token.key}")
         self.assertEqual(res_token.status_code, status.HTTP_200_OK)
         self.assertEqual(b"".join(res_token.streaming_content), b"%PDF-1.4 sample content")
+
+        # Request with Bearer header -> 200 FileResponse
+        res_bearer = self.client.get(file_url, HTTP_AUTHORIZATION=f"Bearer {token.key}")
+        self.assertEqual(res_bearer.status_code, status.HTTP_200_OK)
+
+    def test_admin_can_upload_materials(self):
+        admin_user = UserFactory(role=Role.LEAD)
+        admit(admin_user, self.organization, role=OrganizationRole.ADMIN)
+        self.client.force_authenticate(user=admin_user)
+        response = self.client.post(self.url, {"title": "Admin Upload", "material_type": MaterialType.TEXT, "content_text": "Sample"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
