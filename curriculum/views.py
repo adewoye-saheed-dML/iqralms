@@ -54,6 +54,7 @@ from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.exceptions import APIException
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -1021,6 +1022,7 @@ class AcademyLearningMaterialListCreateView(AcademyScopedView, generics.ListCrea
     """
 
     permission_classes = [IsAuthenticated, IsOrganizationMember, CanManageLearningMaterials]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -1111,4 +1113,25 @@ class AcademyLearningMaterialDetailView(AcademyScopedView, generics.RetrieveUpda
         if instance.file:
             instance.file.delete(save=False)
         instance.delete()
+
+
+class AcademyLearningMaterialFileView(AcademyScopedView, APIView):
+    """GET /api/curriculum/organizations/{id}/materials/{id}/file/ — stream or download the material file."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get(self, request, *args, **kwargs):
+        material = get_object_or_404(
+            LearningMaterial,
+            organization=self.organization,
+            pk=kwargs["pk"],
+        )
+        if not material.file:
+            raise Http404("No file attached to this material.")
+
+        try:
+            file_handle = material.file.open("rb")
+            return FileResponse(file_handle, filename=os.path.basename(material.file.name))
+        except FileNotFoundError:
+            raise Http404("Material file not found on disk.")
 

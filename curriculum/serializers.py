@@ -603,6 +603,7 @@ class LearningMaterialSerializer(serializers.ModelSerializer):
     level_name = serializers.CharField(source="level.name", read_only=True, allow_null=True)
     level_order = serializers.IntegerField(source="level.order", read_only=True, allow_null=True)
     uploaded_by_name = serializers.SerializerMethodField()
+    file = serializers.SerializerMethodField()
     file_url = serializers.SerializerMethodField()
 
     class Meta:
@@ -635,16 +636,29 @@ class LearningMaterialSerializer(serializers.ModelSerializer):
             return None
         return obj.uploaded_by.get_full_name() or obj.uploaded_by.username
 
+    def get_file(self, obj):
+        if not obj.file:
+            return None
+        return os.path.basename(obj.file.name)
+
     def get_file_url(self, obj):
         if not obj.file:
             return None
-        request = self.context.get("request")
-        if request is not None:
-            return request.build_absolute_uri(obj.file.url)
-        return obj.file.url
+        from django.urls import reverse
+        try:
+            url = reverse(
+                "curriculum:academy-material-file",
+                kwargs={"organization_pk": obj.organization_id, "pk": obj.pk},
+            )
+            request = self.context.get("request")
+            if request is not None:
+                return request.build_absolute_uri(url)
+            return url
+        except Exception:
+            return None
 
 
-class LearningMaterialCreateSerializer(AcademyScopedSerializer, serializers.ModelSerializer):
+class LearningMaterialCreateSerializer(AcademyScopedSerializer):
     scoped_querysets = {
         "track": tracks_in,
         "level": levels_in,
@@ -660,20 +674,13 @@ class LearningMaterialCreateSerializer(AcademyScopedSerializer, serializers.Mode
         required=False,
         allow_null=True,
     )
-
-    class Meta:
-        model = LearningMaterial
-        fields = [
-            "track",
-            "level",
-            "title",
-            "description",
-            "material_type",
-            "file",
-            "external_url",
-            "content_text",
-            "is_active",
-        ]
+    title = serializers.CharField(max_length=200)
+    description = serializers.CharField(required=False, allow_blank=True, default="")
+    material_type = serializers.ChoiceField(choices=MaterialType.choices, default=MaterialType.PDF)
+    file = serializers.FileField(required=False, allow_null=True)
+    external_url = serializers.URLField(max_length=500, required=False, allow_blank=True, default="")
+    content_text = serializers.CharField(required=False, allow_blank=True, default="")
+    is_active = serializers.BooleanField(default=True)
 
     def validate(self, attrs):
         track = attrs.get("track")
@@ -695,6 +702,15 @@ class LearningMaterialCreateSerializer(AcademyScopedSerializer, serializers.Mode
                 uploaded_by=user,
                 **validated_data,
             )
+        except DjangoValidationError as exc:
+            raise as_drf_error(exc) from exc
+
+    def update(self, instance, validated_data):
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        try:
+            instance.save()
+            return instance
         except DjangoValidationError as exc:
             raise as_drf_error(exc) from exc
 

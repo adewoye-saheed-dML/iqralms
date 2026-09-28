@@ -34,6 +34,7 @@ from django.urls import path
 from .views import (
     AcademyChildrenPlacementListView,
     AcademyLearningMaterialDetailView,
+    AcademyLearningMaterialFileView,
     AcademyLearningMaterialListCreateView,
     AcademyLevelDetailView,
     AcademyLevelListCreateView,
@@ -86,6 +87,11 @@ urlpatterns = [
         f"{ACADEMY}materials/<int:pk>/",
         AcademyLearningMaterialDetailView.as_view(),
         name="academy-material-detail",
+    ),
+    path(
+        f"{ACADEMY}materials/<int:pk>/file/",
+        AcademyLearningMaterialFileView.as_view(),
+        name="academy-material-file",
     ),
     # --- Teacher curriculum eligibility --------------------------------------
     path(

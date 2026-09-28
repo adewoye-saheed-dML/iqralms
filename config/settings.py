@@ -101,7 +101,7 @@ elif not SECRET_KEY:
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
     # Development only. Production supplies its own or does not start.
-    default=[] if PRODUCTION else ["localhost", "127.0.0.1", "[::1]"],
+    default=[] if PRODUCTION else ["localhost", "127.0.0.1", "[::1]", "testserver"],
 )
 
 if PRODUCTION and not ALLOWED_HOSTS:
