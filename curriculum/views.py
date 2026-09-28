@@ -1115,9 +1115,30 @@ class AcademyLearningMaterialDetailView(AcademyScopedView, generics.RetrieveUpda
         instance.delete()
 
 
+from rest_framework.authentication import TokenAuthentication
+
+
+class QueryParamTokenAuthentication(TokenAuthentication):
+    """Allows token authentication via query parameter ?token=... or standard Authorization header."""
+
+    def authenticate(self, request):
+        # 1. Try standard header first
+        auth = super().authenticate(request)
+        if auth is not None:
+            return auth
+
+        # 2. Check query param
+        token = request.query_params.get("token")
+        if not token:
+            return None
+
+        return self.authenticate_credentials(token)
+
+
 class AcademyLearningMaterialFileView(AcademyScopedView, APIView):
     """GET /api/curriculum/organizations/{id}/materials/{id}/file/ — stream or download the material file."""
 
+    authentication_classes = [QueryParamTokenAuthentication]
     permission_classes = [IsAuthenticated, IsOrganizationMember]
 
     def get(self, request, *args, **kwargs):

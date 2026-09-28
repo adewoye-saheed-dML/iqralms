@@ -118,3 +118,30 @@ class LearningMaterialAPITests(APITestCase):
         response = self.client.delete(detail_url)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(LearningMaterial.objects.filter(pk=m.pk).exists())
+
+    def test_download_material_file_with_query_param_token(self):
+        from rest_framework.authtoken.models import Token
+
+        pdf_file = SimpleUploadedFile("guide.pdf", b"%PDF-1.4 sample content", content_type="application/pdf")
+        m = LearningMaterial.objects.create(
+            organization=self.organization,
+            title="Syllabus Guide",
+            material_type=MaterialType.PDF,
+            file=pdf_file,
+            uploaded_by=self.owner,
+        )
+        file_url = reverse(
+            "curriculum:academy-material-file",
+            kwargs={"organization_pk": self.organization.pk, "pk": m.pk},
+        )
+
+        # Unauthenticated request without token -> 401
+        self.client.force_authenticate(user=None)
+        res_unauth = self.client.get(file_url)
+        self.assertEqual(res_unauth.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # Request with valid query param token -> 200 FileResponse
+        token, _ = Token.objects.get_or_create(user=self.student)
+        res_token = self.client.get(f"{file_url}?token={token.key}")
+        self.assertEqual(res_token.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(res_token.streaming_content), b"%PDF-1.4 sample content")
