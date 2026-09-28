@@ -583,7 +583,7 @@ def route_session(
 
 
 def promote_waitlist_entry(
-    entry, *, start_time_utc=None, duration_minutes=None, organization
+    entry, *, start_time_utc=None, duration_minutes=None, teacher=None, organization
 ):
     """Turn an open ``TeacherWaitlist`` entry into the session it was waiting for.
 
@@ -630,6 +630,10 @@ def promote_waitlist_entry(
             {"entry": [f"Waitlist entry does not belong to {getattr(organization, 'name', organization)}."]}
         )
 
+    if teacher and teacher != entry.requested_teacher:
+        entry.requested_teacher = teacher
+        entry.save(update_fields=["requested_teacher"])
+
     booking, why_not = _candidate(
         student=entry.student,
         teacher=entry.requested_teacher,
@@ -640,6 +644,7 @@ def promote_waitlist_entry(
         # is what the refused request would have recorded had it succeeded.
         reason=RoutedReason.STUDENT_CHOICE,
     )
+
     if why_not is None:
         # One transaction, so an entry is never stamped without its booking or a
         # booking left behind by a failed stamp. Booking.save() takes the

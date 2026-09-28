@@ -41,7 +41,7 @@ from accounts.utils import to_user_timezone
 from organizations.models import OrganizationMembership
 
 from .exceptions import TrackHasNoFirstLevel
-from .models import Level, PlacementResult, TeacherTrack, Track
+from .models import LearningMaterial, Level, MaterialType, PlacementResult, TeacherTrack, Track
 from .validators import (
     ALLOWED_AUDIO_EXTENSIONS,
     MAX_PLACEMENT_AUDIO_BYTES,
@@ -596,3 +596,105 @@ class PlacementReviewSerializer(AcademyScopedSerializer):
             )
         except DjangoValidationError as exc:
             raise as_drf_error(exc) from exc
+
+
+class LearningMaterialSerializer(serializers.ModelSerializer):
+    track_name = serializers.CharField(source="track.name", read_only=True, allow_null=True)
+    level_name = serializers.CharField(source="level.name", read_only=True, allow_null=True)
+    level_order = serializers.IntegerField(source="level.order", read_only=True, allow_null=True)
+    uploaded_by_name = serializers.SerializerMethodField()
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LearningMaterial
+        fields = [
+            "id",
+            "organization",
+            "track",
+            "track_name",
+            "level",
+            "level_name",
+            "level_order",
+            "title",
+            "description",
+            "material_type",
+            "file",
+            "file_url",
+            "external_url",
+            "content_text",
+            "is_active",
+            "uploaded_by",
+            "uploaded_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "organization", "uploaded_by", "created_at", "updated_at"]
+
+    def get_uploaded_by_name(self, obj):
+        if not obj.uploaded_by:
+            return None
+        return obj.uploaded_by.get_full_name() or obj.uploaded_by.username
+
+    def get_file_url(self, obj):
+        if not obj.file:
+            return None
+        request = self.context.get("request")
+        if request is not None:
+            return request.build_absolute_uri(obj.file.url)
+        return obj.file.url
+
+
+class LearningMaterialCreateSerializer(AcademyScopedSerializer, serializers.ModelSerializer):
+    scoped_querysets = {
+        "track": tracks_in,
+        "level": levels_in,
+    }
+
+    track = serializers.PrimaryKeyRelatedField(
+        queryset=Track.objects.none(),
+        required=False,
+        allow_null=True,
+    )
+    level = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.none(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = LearningMaterial
+        fields = [
+            "track",
+            "level",
+            "title",
+            "description",
+            "material_type",
+            "file",
+            "external_url",
+            "content_text",
+            "is_active",
+        ]
+
+    def validate(self, attrs):
+        track = attrs.get("track")
+        level = attrs.get("level")
+        if level is not None and track is not None and level.track_id != track.id:
+            raise serializers.ValidationError(
+                {"level": ["The selected level does not belong to the selected track."]}
+            )
+        if level is not None and track is None:
+            attrs["track"] = level.track
+        return attrs
+
+    def create(self, validated_data):
+        org = self.organization or self.context.get("organization")
+        user = self.context.get("request").user if "request" in self.context else None
+        try:
+            return LearningMaterial.objects.create(
+                organization=org,
+                uploaded_by=user,
+                **validated_data,
+            )
+        except DjangoValidationError as exc:
+            raise as_drf_error(exc) from exc
+

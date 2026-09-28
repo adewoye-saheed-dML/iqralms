@@ -4,6 +4,8 @@ from django.urls import path
 
 from .views import (
     AcademyBookingListView,
+    AcademyWaitlistListView,
+    AvailabilityDetailView,
     AvailabilityListView,
     BookingCancelView,
     BookingCompleteView,
@@ -30,6 +32,11 @@ urlpatterns = [
         f"{ACADEMY}availability/",
         AvailabilityListView.as_view(),
         name="availability-list",
+    ),
+    path(
+        f"{ACADEMY}availability/<int:pk>/",
+        AvailabilityDetailView.as_view(),
+        name="availability-detail",
     ),
     path(
         f"{ACADEMY}bookings/",
@@ -88,6 +95,11 @@ urlpatterns = [
         name="cohort-open",
     ),
     # Phase 5 — a named teacher who is full becomes a tracked promise.
+    path(
+        f"{ACADEMY}waitlist/",
+        AcademyWaitlistListView.as_view(),
+        name="waitlist-academy",
+    ),
     path(
         f"{ACADEMY}waitlist/mine/",
         MyWaitlistListView.as_view(),

@@ -70,9 +70,10 @@ from .audio import (
     read_audio_token,
 )
 from .exceptions import PlacementAlreadyReviewed
-from .models import Level, PlacementResult, Status, TeacherTrack, Track
+from .models import LearningMaterial, Level, PlacementResult, Status, TeacherTrack, Track
 from .permissions import (
     CanManageAcademyCurriculum,
+    CanManageLearningMaterials,
     IsAcademyCurriculumManager,
     IsLeadTeacher,
     IsLeadTeacherOrStudent,
@@ -81,6 +82,8 @@ from .permissions import (
     IsTeacher,
 )
 from .serializers import (
+    LearningMaterialCreateSerializer,
+    LearningMaterialSerializer,
     LevelCreateSerializer,
     LevelSerializer,
     LevelUpdateSerializer,
@@ -1010,3 +1013,102 @@ class PlacementAudioDownloadView(APIView):
             as_attachment=False,
             filename=os.path.basename(audio.name),
         )
+
+
+class AcademyLearningMaterialListCreateView(AcademyScopedView, generics.ListCreateAPIView):
+    """GET /api/curriculum/organizations/{id}/materials/ — list academy learning materials.
+    POST /api/curriculum/organizations/{id}/materials/ — upload a learning material / book.
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, CanManageLearningMaterials]
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return LearningMaterialCreateSerializer
+        return LearningMaterialSerializer
+
+    def get_queryset(self):
+        from django.db.models import Q
+        qs = LearningMaterial.objects.filter(
+            organization=self.organization
+        ).select_related("track", "level", "uploaded_by")
+
+        track_id = self.request.query_params.get("track_id") or self.request.query_params.get("track")
+        if track_id:
+            try:
+                include_general = self.request.query_params.get("include_general", "true").lower() == "true"
+                if include_general:
+                    qs = qs.filter(Q(track_id=int(track_id)) | Q(track__isnull=True))
+                else:
+                    qs = qs.filter(track_id=int(track_id))
+            except (ValueError, TypeError):
+                pass
+
+        level_id = self.request.query_params.get("level_id") or self.request.query_params.get("level")
+        if level_id:
+            try:
+                include_track_general = self.request.query_params.get("include_general", "true").lower() == "true"
+                if include_track_general:
+                    qs = qs.filter(Q(level_id=int(level_id)) | Q(level__isnull=True))
+                else:
+                    qs = qs.filter(level_id=int(level_id))
+            except (ValueError, TypeError):
+                pass
+
+        material_type = self.request.query_params.get("material_type") or self.request.query_params.get("type")
+        if material_type:
+            qs = qs.filter(material_type=material_type)
+
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            qs = qs.filter(is_active=(is_active.lower() in ["true", "1"]))
+
+        return qs
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name="track_id", type=int, location=OpenApiParameter.QUERY, required=False, description="Filter by track ID."),
+            OpenApiParameter(name="level_id", type=int, location=OpenApiParameter.QUERY, required=False, description="Filter by level ID."),
+            OpenApiParameter(name="material_type", type=str, location=OpenApiParameter.QUERY, required=False, description="Filter by material type (pdf, book, worksheet, etc.)."),
+            OpenApiParameter(name="include_general", type=bool, location=OpenApiParameter.QUERY, required=False, description="Include general materials alongside track/level specific ones."),
+        ],
+        responses={
+            200: OpenApiResponse(response=LearningMaterialSerializer(many=True)),
+            201: OpenApiResponse(response=LearningMaterialSerializer),
+            403: NOT_A_MEMBER,
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        material = serializer.save()
+        body = LearningMaterialSerializer(material, context=self.get_serializer_context()).data
+        return Response(body, status=status.HTTP_201_CREATED)
+
+
+class AcademyLearningMaterialDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyAPIView):
+    """GET /api/curriculum/organizations/{id}/materials/{id}/ — retrieve a material.
+    PATCH /api/curriculum/organizations/{id}/materials/{id}/ — update a material.
+    DELETE /api/curriculum/organizations/{id}/materials/{id}/ — delete a material.
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, CanManageLearningMaterials]
+
+    def get_serializer_class(self):
+        if self.request.method in ["PUT", "PATCH"]:
+            return LearningMaterialCreateSerializer
+        return LearningMaterialSerializer
+
+    def get_queryset(self):
+        return LearningMaterial.objects.filter(
+            organization=self.organization
+        ).select_related("track", "level", "uploaded_by")
+
+    def perform_destroy(self, instance):
+        if instance.file:
+            instance.file.delete(save=False)
+        instance.delete()
+

@@ -732,3 +732,113 @@ class PlacementResult(models.Model):
 
     def __str__(self):
         return f"{self.student.username} / {self.track.name} ({self.status})"
+
+
+class MaterialType(models.TextChoices):
+    PDF = "pdf", "PDF Book / Document"
+    BOOK = "book", "Digital Book / Reader"
+    WORKSHEET = "worksheet", "Worksheet / Exercise"
+    IMAGE = "image", "Image / Infographic"
+    AUDIO = "audio", "Audio Recording"
+    LINK = "link", "External Resource / Web Link"
+    TEXT = "text", "Text / Surah Excerpt / Notes"
+
+
+def material_file_path(instance, filename):
+    org_id = instance.organization_id or (instance.track.organization_id if instance.track_id else "common")
+    return f"materials/{org_id}/{filename}"
+
+
+class LearningMaterial(models.Model):
+    """Books, syllabus documents, and learning resources uploaded by the academy.
+
+    Attached to an academy (Organization) and optionally scoped to a Track and/or Level.
+    Accessible to teachers and students during class sessions and curriculum study.
+    """
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="learning_materials",
+        help_text="The academy that owns this learning material.",
+    )
+    track = models.ForeignKey(
+        Track,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="learning_materials",
+        help_text="Optional track this material belongs to.",
+    )
+    level = models.ForeignKey(
+        Level,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="learning_materials",
+        help_text="Optional level this material belongs to.",
+    )
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    material_type = models.CharField(
+        max_length=20,
+        choices=MaterialType.choices,
+        default=MaterialType.PDF,
+    )
+    file = models.FileField(
+        upload_to=material_file_path,
+        null=True,
+        blank=True,
+        help_text="Uploaded PDF, document, or image file.",
+    )
+    external_url = models.URLField(
+        max_length=500,
+        blank=True,
+        help_text="External URL or embed link if not an uploaded file.",
+    )
+    content_text = models.TextField(
+        blank=True,
+        help_text="Structured Arabic / English text, ayah passages, or study notes.",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this material is active and accessible in the classroom.",
+    )
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_learning_materials",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def clean(self):
+        errors = {}
+        if self.track_id and self.track.organization_id != self.organization_id:
+            errors["track"] = ValidationError(
+                "The selected track does not belong to this academy.",
+                code="track_tenant_mismatch",
+            )
+        if self.level_id:
+            if not self.track_id:
+                self.track_id = self.level.track_id
+            elif self.level.track_id != self.track_id:
+                errors["level"] = ValidationError(
+                    "The selected level does not belong to the selected track.",
+                    code="level_track_mismatch",
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.title} ({self.organization.name})"
+

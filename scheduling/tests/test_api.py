@@ -31,7 +31,7 @@ from accounts.tests.factories import (
 )
 from curriculum.tests.factories import LevelFactory, admit
 from organizations.tests.factories import OrganizationFactory
-from scheduling.models import Booking, BookingStatus, Weekday
+from scheduling.models import Availability, Booking, BookingStatus, Weekday
 
 from .factories import (
     DEFAULT_WINDOW_END,
@@ -199,6 +199,28 @@ class AvailabilityListAPITests(APITestCase):
         response = self.client.get(self.url, {"teacher_id": 999999})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(list(response.data), [])
+
+    def test_teacher_can_declare_their_own_availability(self):
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(
+            self.url,
+            {"weekday": Weekday.TUESDAY, "start_time": "10:00", "end_time": "14:00"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(
+            Availability.objects.filter(
+                organization=self.organization,
+                teacher=self.teacher,
+                weekday=Weekday.TUESDAY,
+            ).exists()
+        )
+
+    def test_teacher_can_delete_their_availability(self):
+        self.client.force_authenticate(user=self.teacher)
+        detail_url = f"/api/scheduling/organizations/{self.organization.pk}/availability/{self.window.pk}/"
+        response = self.client.delete(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Availability.objects.filter(pk=self.window.pk).exists())
 
 
 class BookingCreateAPITests(APITestCase):

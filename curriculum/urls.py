@@ -33,6 +33,8 @@ from django.urls import path
 
 from .views import (
     AcademyChildrenPlacementListView,
+    AcademyLearningMaterialDetailView,
+    AcademyLearningMaterialListCreateView,
     AcademyLevelDetailView,
     AcademyLevelListCreateView,
     AcademyMyPlacementListView,
@@ -73,6 +75,17 @@ urlpatterns = [
         f"{ACADEMY}levels/<int:pk>/",
         AcademyLevelDetailView.as_view(),
         name="academy-level-detail",
+    ),
+    # --- Learning materials and books ----------------------------------------
+    path(
+        f"{ACADEMY}materials/",
+        AcademyLearningMaterialListCreateView.as_view(),
+        name="academy-material-list",
+    ),
+    path(
+        f"{ACADEMY}materials/<int:pk>/",
+        AcademyLearningMaterialDetailView.as_view(),
+        name="academy-material-detail",
     ),
     # --- Teacher curriculum eligibility --------------------------------------
     path(

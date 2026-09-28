@@ -24,7 +24,12 @@ class IsTeacher(BasePermission):
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(user and user.is_authenticated and user.is_teacher)
+        if not (user and user.is_authenticated):
+            return False
+        if getattr(user, "is_teacher", False):
+            return True
+        from organizations.permissions import is_teacher
+        return is_teacher(view, user)
 
 
 class IsStudentOrParent(BasePermission):
@@ -63,9 +68,24 @@ class CanBookSession(BasePermission):
         user = request.user
         if not (user and user.is_authenticated):
             return False
-        if user.role in {Role.STUDENT, Role.PARENT} or user.is_teacher:
+        if user.role in {Role.STUDENT, Role.PARENT} or getattr(user, "is_teacher", False):
             return True
         from organizations.permissions import is_owner_admin_or_lead_teacher
 
         return is_owner_admin_or_lead_teacher(view, user)
+
+
+class CanManageAvailability(BasePermission):
+    message = "Only the teacher or organization management can declare availability."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+        if getattr(user, "is_teacher", False):
+            return True
+        from organizations.permissions import is_owner_admin_or_lead_teacher, is_teacher
+
+        return is_teacher(view, user) or is_owner_admin_or_lead_teacher(view, user)
+
 

@@ -286,7 +286,22 @@ class OrganizationTeacherConfigurationListCreateView(
         }
     )
     def get(self, request, *args, **kwargs):
+        from organizations.models import OrganizationMembership, OrganizationRole
+        teacher_members = OrganizationMembership.objects.filter(
+            organization=self.organization,
+            role=OrganizationRole.TEACHER,
+            status="active"
+        )
+        for m in teacher_members:
+            if not OrganizationTeacherConfiguration.objects.filter(membership=m).exists():
+                OrganizationTeacherConfiguration.objects.create(
+                    membership=m,
+                    approved=True,
+                    max_weekly_hours=20,
+                    hourly_payout_rate=15.00
+                )
         return super().get(request, *args, **kwargs)
+
 
     @extend_schema(
         request=OrganizationTeacherConfigurationCreateSerializer,

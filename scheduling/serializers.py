@@ -191,6 +191,20 @@ class AvailabilitySerializer(serializers.ModelSerializer):
         }
 
 
+class AvailabilityCreateSerializer(serializers.Serializer):
+    """Payload to declare a weekly teaching availability window."""
+
+    weekday = serializers.IntegerField(min_value=0, max_value=6)
+    start_time = serializers.TimeField()
+    end_time = serializers.TimeField()
+    teacher_id = serializers.IntegerField(required=False)
+
+    def validate(self, attrs):
+        if attrs["start_time"] >= attrs["end_time"]:
+            raise serializers.ValidationError({"end_time": ["End time must be after start time."]})
+        return attrs
+
+
 class BookingSerializer(serializers.ModelSerializer):
     """Read representation, shared by create, both listings, cancel and routing."""
 
@@ -561,6 +575,8 @@ class WaitlistPromoteSerializer(serializers.Serializer):
     duration_minutes = serializers.IntegerField(
         required=False, min_value=1
     )
+    teacher_id = serializers.IntegerField(required=False)
+
 
 
 class BookingMeetingSerializer(serializers.Serializer):

@@ -160,20 +160,20 @@ def bookable_teacher_error(user, *, organization):
     Returns the ``ValidationError`` rather than raising it, so callers can
     attach it to whichever field is theirs.
     """
-    if not user.is_teacher:
+    if not getattr(user, "is_teacher", False):
         return ValidationError(
             "Only a lead or sub teacher can teach a session (got '%(role)s').",
             code="invalid_teacher_role",
-            params={"role": user.role},
-        )
-    profile = getattr(user, "teacher_profile", None)
-    if profile is None:
-        return ValidationError(
-            "%(username)s has no teacher profile, so they are not bookable.",
-            code="no_teacher_profile",
-            params={"username": user.username},
+            params={"role": getattr(user, "role", "")},
         )
     if organization is None:
+        profile = getattr(user, "teacher_profile", None)
+        if profile is None:
+            return ValidationError(
+                "%(username)s has no teacher profile, so they are not bookable.",
+                code="no_teacher_profile",
+                params={"username": user.username},
+            )
         if not profile.approved:
             return ValidationError(
                 "%(username)s's teacher profile is not approved yet.",
@@ -350,6 +350,7 @@ class Availability(models.Model):
         if not config:
             from django.core.exceptions import ValidationError
             raise ValidationError("Teacher must have a valid academy configuration.")
+
 
         tz_name = tz_name or teacher.timezone
         create_kwargs = {

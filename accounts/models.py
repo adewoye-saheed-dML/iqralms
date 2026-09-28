@@ -40,7 +40,7 @@ class Role(models.TextChoices):
 
 
 #: Roles that may hold a TeacherProfile.
-TEACHER_ROLES = frozenset({Role.LEAD.value, Role.SUB.value})
+TEACHER_ROLES = frozenset({Role.LEAD.value, Role.SUB.value, "teacher"})
 
 
 class User(AbstractUser):

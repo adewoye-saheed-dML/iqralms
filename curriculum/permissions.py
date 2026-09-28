@@ -154,3 +154,24 @@ class IsAcademyCurriculumManager(BasePermission):
     def has_permission(self, request, view):
         membership = view.caller_membership
         return bool(membership and membership.role in CURRICULUM_MANAGER_ROLES)
+
+
+class CanManageLearningMaterials(BasePermission):
+    """Active members read materials; owner, admin, and teachers upload/manage them."""
+
+    message = (
+        "Only an organization owner, administrator, or teacher can manage learning materials."
+    )
+
+    def has_permission(self, request, view):
+        membership = view.caller_membership
+        if membership is None:
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        return membership.role in {
+            OrganizationRole.OWNER,
+            OrganizationRole.ADMIN,
+            OrganizationRole.TEACHER,
+        }
+

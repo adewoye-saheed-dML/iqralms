@@ -32,6 +32,7 @@ from .exceptions import (
 from .models import Availability, Booking, Cohort, TeacherWaitlist
 from .permissions import (
     CanBookSession,
+    CanManageAvailability,
     IsLeadTeacher,
     IsOwnerAdminOrLeadTeacher,
     IsStudent,
@@ -40,6 +41,7 @@ from .permissions import (
 )
 from .routing import promote_waitlist_entry, route_session
 from .serializers import (
+    AvailabilityCreateSerializer,
     AvailabilitySerializer,
     BookingCreateSerializer,
     BookingMeetingSerializer,
@@ -53,6 +55,7 @@ from .serializers import (
     WaitlistPromoteSerializer,
     as_drf_error,
 )
+
 
 
 NOT_A_MEMBER = OpenApiResponse(
@@ -112,8 +115,10 @@ def required_int_param(request, name):
         raise ValidationError({name: ["Must be an integer."]})
 
 
-class AvailabilityListView(AcademyScopedView, generics.ListAPIView):
-    """GET /api/scheduling/organizations/{id}/availability/?teacher_id= — one teacher's hours."""
+class AvailabilityListView(AcademyScopedView, generics.ListCreateAPIView):
+    """GET /api/scheduling/organizations/{id}/availability/?teacher_id= — one teacher's hours.
+    POST /api/scheduling/organizations/{id}/availability/ — declare availability windows.
+    """
 
     serializer_class = AvailabilitySerializer
     permission_classes = [IsAuthenticated, IsOrganizationMember]
@@ -124,8 +129,8 @@ class AvailabilityListView(AcademyScopedView, generics.ListAPIView):
                 name="teacher_id",
                 type=int,
                 location=OpenApiParameter.QUERY,
-                required=True,
-                description="Whose availability to list.",
+                required=False,
+                description="Whose availability to list. Defaults to the requesting teacher.",
             )
         ]
     )
@@ -133,13 +138,122 @@ class AvailabilityListView(AcademyScopedView, generics.ListAPIView):
         return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
-        teacher_id = required_int_param(self.request, "teacher_id")
-        # An unknown teacher or a teacher with no hours in this academy is an
-        # empty list, not a 404: "when is this person free" and "does this person
-        # exist" are different questions.
+        raw_id = self.request.query_params.get("teacher_id")
+        if raw_id:
+            teacher_id = required_int_param(self.request, "teacher_id")
+        elif getattr(self.request.user, "is_teacher", False):
+            teacher_id = self.request.user.id
+        else:
+            teacher_id = required_int_param(self.request, "teacher_id")
+
         return Availability.objects.filter(
             organization=self.organization, teacher_id=teacher_id
         ).select_related("teacher")
+
+    @extend_schema(
+        request=AvailabilityCreateSerializer,
+        responses={201: AvailabilitySerializer(many=True)},
+    )
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        from accounts.models import User
+        from organizations.permissions import is_owner_admin_or_lead_teacher
+
+        teacher_id = request.data.get("teacher_id")
+        is_mgmt = is_owner_admin_or_lead_teacher(self, user)
+
+        if teacher_id and is_mgmt:
+            teacher = User.objects.filter(pk=teacher_id).first()
+            if not teacher:
+                raise ValidationError({"teacher_id": ["Teacher not found."]})
+        else:
+            from organizations.permissions import is_teacher
+            is_org_teacher = is_teacher(self, user)
+            if not (getattr(user, "is_teacher", False) or is_org_teacher or is_mgmt):
+                raise PermissionDenied("Only a teacher account or academy management can declare hours.")
+            teacher = user
+
+        # Auto-ensure teacher has an approved configuration in this academy and fallback teacher profile
+        from accounts.models import OrganizationTeacherConfiguration, Role, TeacherProfile
+        from organizations.models import MembershipStatus, OrganizationMembership
+        membership = OrganizationMembership.objects.filter(
+            organization=self.organization,
+            user=teacher,
+            status=MembershipStatus.ACTIVE,
+        ).first()
+
+        # If user is teacher in organization but global role was student/unconfigured, ensure teacher role
+        if membership and not getattr(teacher, "is_teacher", False):
+            teacher.role = Role.SUB
+            teacher.save(update_fields=["role"])
+
+        if membership:
+            config, _ = OrganizationTeacherConfiguration.objects.get_or_create(
+                membership=membership,
+                defaults={"approved": True, "max_weekly_hours": 20, "hourly_payout_rate": 15.00},
+            )
+            if not config.approved:
+                config.approved = True
+                config.save(update_fields=["approved"])
+
+        if getattr(teacher, "is_teacher", False) and not getattr(teacher, "teacher_profile", None):
+            try:
+                TeacherProfile.objects.get_or_create(
+                    user=teacher,
+                    defaults={
+                        "is_lead": (teacher.role == Role.LEAD),
+                        "approved": True,
+                        "max_weekly_hours": 20,
+                        "hourly_payout_rate": 15.00 if teacher.role == Role.SUB else None,
+                    },
+                )
+            except Exception:
+                pass
+
+        raw_windows = request.data.get("windows")
+        if raw_windows is None:
+            raw_windows = [request.data]
+
+        created = []
+        for w in raw_windows:
+            serializer = AvailabilityCreateSerializer(data=w)
+            serializer.is_valid(raise_exception=True)
+            weekday = serializer.validated_data["weekday"]
+            start_time = serializer.validated_data["start_time"]
+            end_time = serializer.validated_data["end_time"]
+
+            try:
+                rows = Availability.create_from_local(
+                    organization=self.organization,
+                    teacher=teacher,
+                    weekday=weekday,
+                    start_local=start_time,
+                    end_local=end_time,
+                    tz_name=teacher.timezone or "UTC",
+                )
+                created.extend(rows)
+            except DjangoValidationError as exc:
+                raise as_drf_error(exc) from exc
+
+        return Response(
+            AvailabilitySerializer(created, many=True, context=self.get_serializer_context()).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AvailabilityDetailView(AcademyScopedView, generics.DestroyAPIView):
+    """DELETE /api/scheduling/organizations/{id}/availability/{id}/ — delete a declared window."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = AvailabilitySerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        from organizations.permissions import is_owner_admin_or_lead_teacher
+        if is_owner_admin_or_lead_teacher(self, user):
+            return Availability.objects.filter(organization=self.organization)
+        return Availability.objects.filter(organization=self.organization, teacher=user)
+
 
 
 class BookingCreateView(AcademyScopedView, generics.CreateAPIView):
@@ -730,6 +844,34 @@ class MyWaitlistListView(AcademyScopedView, generics.ListAPIView):
         )
 
 
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            name="teacher_id",
+            type=int,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Filter by requested teacher ID.",
+        ),
+    ],
+)
+class AcademyWaitlistListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/scheduling/organizations/{id}/waitlist/ — all open student requests across academy."""
+
+    serializer_class = WaitlistEntrySerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
+
+    def get_queryset(self):
+        qs = TeacherWaitlist.objects.in_organization(self.organization).open()
+        teacher_id = self.request.query_params.get("teacher_id")
+        if teacher_id:
+            try:
+                qs = qs.filter(requested_teacher_id=int(teacher_id))
+            except (ValueError, TypeError):
+                pass
+        return qs.select_related(*WAITLIST_RELATED)
+
+
 class TeacherWaitlistListView(AcademyScopedView, generics.ListAPIView):
     """GET /api/scheduling/organizations/{id}/waitlist/for-teacher/?teacher_id= — the queue to work.
 
@@ -805,13 +947,23 @@ class WaitlistPromoteView(AcademyScopedView, generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        teacher_id = serializer.validated_data.get("teacher_id")
+        assigned_teacher = None
+        if teacher_id:
+            from accounts.models import User
+            assigned_teacher = User.objects.filter(pk=teacher_id).first()
+            if not assigned_teacher or not assigned_teacher.is_teacher:
+                raise ValidationError({"teacher_id": ["Invalid teacher selected."]})
+
         try:
             routed = promote_waitlist_entry(
                 entry,
                 start_time_utc=serializer.validated_data.get("start_time_utc"),
                 duration_minutes=serializer.validated_data.get("duration_minutes"),
+                teacher=assigned_teacher,
                 organization=self.organization,
             )
+
         except WaitlistEntryAlreadyFulfilled as exc:
             raise Conflict(str(exc)) from exc
         except DjangoValidationError as exc:

@@ -155,6 +155,8 @@ def ensure_teacher_configured(teacher, organization):
             ).exists()
         ):
             profile = getattr(teacher, "teacher_profile", None)
+            if profile is None:
+                return
             approved = getattr(profile, "approved", True)
             max_hours = getattr(profile, "max_weekly_hours", 20) or 20
             payout_rate = getattr(profile, "hourly_payout_rate", None)

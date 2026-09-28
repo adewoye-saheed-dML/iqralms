@@ -39,6 +39,7 @@ from scheduling.models import (
     BookingStatus,
     RoutedReason,
     TeacherWaitlist,
+    Weekday,
 )
 
 from .factories import (
@@ -349,6 +350,13 @@ class WaitlistPromoteAPITests(PreferredTeacherRouteAPIWorld):
         self.assertEqual(response.data["routed_reason"], RoutedReason.STUDENT_CHOICE)
         self.assertTrue(response.data["video_provider_meeting_id"])
 
+    def test_the_lead_promotes_an_entry_assigning_a_different_teacher(self):
+        entry = self.waiting_entry()
+        sub = self.available_teacher(hours=2)
+        response = self.promote(entry, teacher_id=sub.pk)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["teacher"]["id"], sub.pk)
+
     def test_promotion_stamps_the_entry_and_keeps_the_row(self):
         """Acceptance criterion 7 — the row survives as a record."""
         entry = self.waiting_entry()
@@ -597,6 +605,33 @@ class TeacherWaitlistListAPITests(APITestCase):
 
         response = self.get(teacher_id=self.teacher.pk)
         self.assertEqual([row["id"] for row in response.data], [mine.pk])
+
+    def test_academy_waitlist_lists_all_open_entries_without_teacher_id(self):
+        from .factories import WaitlistEntryFactory
+        mine = self.entry(hours=1)
+        other_teacher = admit(BookableTeacherFactory(), self.organization).user
+        ensure_teacher_configured(other_teacher, self.organization)
+        other_window = Availability.objects.create(
+            organization=self.organization,
+            teacher=other_teacher,
+            weekday=Weekday.MONDAY,
+            start_time_utc=time(0, 0),
+            end_time_utc=time.max,
+        )
+        other_entry = WaitlistEntryFactory(
+            availability=other_window,
+            requested_teacher=other_teacher,
+            level=self.level,
+            student=admit(StudentFactory(), self.organization).user,
+        )
+        self.client.force_authenticate(user=self.lead)
+        url = f"/api/scheduling/organizations/{self.organization.pk}/waitlist/"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row["id"] for row in response.data]
+        self.assertIn(mine.pk, ids)
+        self.assertIn(other_entry.pk, ids)
+
 
     def test_a_foreign_organization_queue_is_not_listed(self):
         other_org = OrganizationFactory()
