@@ -7,6 +7,7 @@ ParentLinkAPITests.test_parent_sees_linked_child_after_creating_link.
 
 from datetime import timedelta
 
+from django.core import mail
 from django.urls import reverse
 from django.utils import timezone as dj_timezone
 from rest_framework import status
@@ -400,3 +401,17 @@ class MyChildrenAPITests(APITestCase):
     def test_requires_authentication(self):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class PasswordResetAPITests(APITestCase):
+    reset_url = reverse("rest_password_reset")
+
+    def test_password_reset_sends_email_with_frontend_link(self):
+        user = StudentFactory(email="student.reset@example.com")
+        response = self.client.post(self.reset_url, {"email": user.email}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        sent_body = mail.outbox[0].body
+        self.assertIn("/reset-password?uid=", sent_body)
+        self.assertIn("&token=", sent_body)
+        self.assertIn(f"({user.username})", sent_body)

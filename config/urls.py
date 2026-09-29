@@ -45,6 +45,11 @@ urlpatterns = [
         PasswordResetConfirmView.as_view(),
         name="rest_password_reset_confirm",
     ),
+    path(
+        "api/auth/password/reset/confirm/<str:uidb64>/<str:token>/",
+        PasswordResetConfirmView.as_view(),
+        name="password_reset_confirm",
+    ),
     # Resources
     path("api/accounts/", include("accounts.urls")),
     path("api/curriculum/", include("curriculum.urls")),

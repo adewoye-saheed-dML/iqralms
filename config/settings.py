@@ -169,7 +169,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "accounts" / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -460,6 +460,7 @@ REST_AUTH = {
     "USE_JWT": False,
     "TOKEN_MODEL": "rest_framework.authtoken.models.Token",
     "SESSION_LOGIN": False,
+    "PASSWORD_RESET_SERIALIZER": "accounts.serializers.CustomPasswordResetSerializer",
 }
 
 SPECTACULAR_SETTINGS = {

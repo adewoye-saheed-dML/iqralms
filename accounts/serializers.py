@@ -19,6 +19,7 @@ another academy's rows.
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone as dj_timezone
+from dj_rest_auth.serializers import PasswordResetSerializer as DefaultPasswordResetSerializer
 from rest_framework import serializers
 
 from organizations.models import OrganizationMembership
@@ -386,3 +387,19 @@ class OrganizationTeacherConfigurationUpdateSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise as_drf_error(exc) from exc
         return configuration
+
+
+class CustomPasswordResetSerializer(DefaultPasswordResetSerializer):
+    """Custom password reset serializer providing frontend URL context."""
+
+    def get_email_options(self):
+        from django.conf import settings
+
+        frontend_base_url = getattr(
+            settings, "FRONTEND_BASE_URL", "http://localhost:3000"
+        ).rstrip("/")
+        return {
+            "extra_email_context": {
+                "frontend_base_url": frontend_base_url,
+            }
+        }
