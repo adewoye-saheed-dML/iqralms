@@ -9,8 +9,12 @@ so the numeric route is last on purpose.
 from django.urls import path
 
 from .views import (
+    AcademySubmissionsListView,
     AssessmentRubricDetailView,
     AssessmentRubricListCreateView,
+    AssignmentDetailView,
+    AssignmentListCreateView,
+    AssignmentSubmissionCreateView,
     ChildProgressView,
     ChildSnapshotListView,
     LeadAssessmentDetailView,
@@ -23,6 +27,8 @@ from .views import (
     MySnapshotListView,
     ProgressSnapshotCreateView,
     SessionAssessmentCreateView,
+    StudentWardAssessmentsView,
+    SubmissionGradeView,
     TeacherAssessmentListView,
     TeacherQualityReportView,
     TeachingProgressView,
@@ -33,6 +39,38 @@ app_name = "assessment"
 ACADEMY = "organizations/<int:organization_pk>/"
 
 urlpatterns = [
+    # Continuous Assignments & Homework Assessment
+    path(
+        f"{ACADEMY}assignments/",
+        AssignmentListCreateView.as_view(),
+        name="assignment-list",
+    ),
+    path(
+        f"{ACADEMY}assignments/<int:pk>/",
+        AssignmentDetailView.as_view(),
+        name="assignment-detail",
+    ),
+    path(
+        f"{ACADEMY}assignments/<int:assignment_id>/submit/",
+        AssignmentSubmissionCreateView.as_view(),
+        name="assignment-submit",
+    ),
+    path(
+        f"{ACADEMY}submissions/",
+        AcademySubmissionsListView.as_view(),
+        name="submission-list",
+    ),
+    path(
+        f"{ACADEMY}submissions/<int:pk>/grade/",
+        SubmissionGradeView.as_view(),
+        name="submission-grade",
+    ),
+    path(
+        f"{ACADEMY}ward-progress/",
+        StudentWardAssessmentsView.as_view(),
+        name="ward-progress",
+    ),
+
     # Rubric configuration — lead only.
     path(
         f"{ACADEMY}rubrics/",

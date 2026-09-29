@@ -13,6 +13,7 @@ Nothing here changes routing, a booking's status, or a placement's
 nothing else — CLAUDE.md's Phase 7 boundary, and the tests assert it.
 """
 
+from django.db.models import Q
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
@@ -23,6 +24,7 @@ from rest_framework.response import Response
 from accounts.models import ParentLink, Role, User
 from accounts.tenancy import children_in_organization
 from curriculum.models import Track
+from organizations.models import OrganizationRole
 from organizations.permissions import (
     IsOrganizationMember,
     IsOwnerAdminOrLeadTeacher,
@@ -31,7 +33,15 @@ from organizations.permissions import (
 from organizations.views import OrganizationScopedMixin
 from scheduling.models import Booking
 
-from .models import AssessmentRubric, ProgressSnapshot, SessionAssessment
+from .models import (
+    AssessmentRubric,
+    AssignmentSubmission,
+    ProgressSnapshot,
+    SessionAssessment,
+    StudentAssignment,
+    SubmissionStatus,
+    SubmissionType,
+)
 from .permissions import (
     AssessmentReviewer,
     IsLeadTeacher,
@@ -44,6 +54,9 @@ from .serializers import (
     AssessmentRubricCreateSerializer,
     AssessmentRubricSerializer,
     AssessmentRubricUpdateSerializer,
+    AssignmentGradeSerializer,
+    AssignmentSubmissionCreateSerializer,
+    AssignmentSubmissionSerializer,
     FamilyAssessmentSerializer,
     FamilyProgressSnapshotSerializer,
     LeadAssessmentSerializer,
@@ -51,6 +64,8 @@ from .serializers import (
     ProgressSnapshotCreateSerializer,
     ProgressSnapshotSerializer,
     SessionAssessmentCreateSerializer,
+    StudentAssignmentCreateSerializer,
+    StudentAssignmentSerializer,
     StudentProgressSerializer,
     TeacherAssessmentSerializer,
     TeacherReportSerializer,
@@ -962,6 +977,365 @@ class ChildSnapshotListView(FamilySnapshotListView):
             403: OpenApiResponse(description="Not a parent of that student."),
         },
     )
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="student_id", type=int, location=OpenApiParameter.QUERY, required=True
+            ),
+            OpenApiParameter(
+                name="track_id", type=int, location=OpenApiParameter.QUERY, required=False
+            ),
+        ],
+        responses={
+            200: OpenApiResponse(response=FamilyProgressSnapshotSerializer(many=True)),
+            403: OpenApiResponse(description="Not a parent of that student."),
+        },
+    )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
+
+
+# --- Continuous Assignments and Student Submissions -------------------------
+
+
+class AssignmentListCreateView(AcademyScopedView, generics.ListCreateAPIView):
+    """GET / POST /api/assessment/organizations/<organization_pk>/assignments/"""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return StudentAssignmentCreateSerializer
+        return StudentAssignmentSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        org = self.organization
+        membership = self.caller_membership
+        role = membership.role if membership else getattr(user, "role", None)
+
+        qs = (
+            StudentAssignment.objects.in_organization(org)
+            .select_related("track", "level", "assigned_student", "created_by", "rubric")
+            .prefetch_related("submissions")
+        )
+
+        track_id = optional_int_param(self.request, "track_id")
+        if track_id:
+            qs = qs.filter(track_id=track_id)
+
+        student_id = optional_int_param(self.request, "student_id")
+        if student_id:
+            qs = qs.filter(Q(assigned_student_id=student_id) | Q(assigned_student__isnull=True))
+
+        # Role-based scoping
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_student = user.role == Role.STUDENT
+        is_parent = user.role == Role.PARENT
+
+        if is_manager:
+            return qs
+        elif is_teacher:
+            return qs.filter(Q(created_by=user) | Q(assigned_student__isnull=True))
+        elif is_student:
+            return qs.filter(Q(assigned_student=user) | Q(assigned_student__isnull=True))
+        elif is_parent:
+            children = children_in_organization(parent=user, organization=org)
+            return qs.filter(Q(assigned_student__in=children) | Q(assigned_student__isnull=True))
+        return qs
+
+    def perform_create(self, serializer):
+        membership = self.caller_membership
+        user = self.request.user
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        if not (is_manager or is_teacher):
+            raise PermissionDenied("Only teachers and academy managers can create assignments.")
+        serializer.save()
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        output_serializer = StudentAssignmentSerializer(
+            serializer.instance, context=self.get_serializer_context()
+        )
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AssignmentDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyAPIView):
+    """GET / PATCH / DELETE /api/assessment/organizations/<organization_pk>/assignments/<pk>/"""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = StudentAssignmentSerializer
+
+    def get_queryset(self):
+        return (
+            StudentAssignment.objects.in_organization(self.organization)
+            .select_related("track", "level", "assigned_student", "created_by", "rubric")
+            .prefetch_related("submissions")
+        )
+
+    def perform_update(self, serializer):
+        assignment = self.get_object()
+        user = self.request.user
+        membership = self.caller_membership
+        is_manager = membership and membership.role in ["owner", "admin"]
+        if assignment.created_by != user and not is_manager:
+            raise PermissionDenied("Only the creator or academy administrators can edit this assignment.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        membership = self.caller_membership
+        is_manager = membership and membership.role in ["owner", "admin"]
+        if instance.created_by != user and not is_manager:
+            raise PermissionDenied("Only the creator or academy administrators can delete this assignment.")
+        instance.delete()
+
+
+class AssignmentSubmissionCreateView(AcademyScopedView, generics.CreateAPIView):
+    """POST /api/assessment/organizations/<organization_pk>/assignments/<assignment_id>/submit/"""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsStudent]
+    serializer_class = AssignmentSubmissionCreateSerializer
+
+    def get_assignment(self):
+        assignment_id = self.kwargs.get("assignment_id")
+        assignment = (
+            StudentAssignment.objects.in_organization(self.organization)
+            .filter(pk=assignment_id)
+            .first()
+        )
+        if not assignment:
+            raise NotFound("Assignment not found in this academy.")
+        return assignment
+
+    def create(self, request, *args, **kwargs):
+        assignment = self.get_assignment()
+        user = request.user
+
+        if assignment.assigned_student_id and assignment.assigned_student_id != user.id:
+            raise PermissionDenied("This assignment is assigned to another student.")
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        audio = serializer.validated_data.get("audio_recording")
+        text = serializer.validated_data.get("written_response", "")
+        attachment = serializer.validated_data.get("attachment_file")
+
+        existing = AssignmentSubmission.objects.filter(
+            assignment=assignment, student=user
+        ).first()
+
+        if existing:
+            if existing.status == SubmissionStatus.GRADED:
+                raise ValidationError({"detail": "This assignment has already been graded."})
+            if audio:
+                existing.audio_recording = audio
+            if text:
+                existing.written_response = text
+            if attachment:
+                existing.attachment_file = attachment
+            existing.status = SubmissionStatus.SUBMITTED
+            existing.save()
+            submission = existing
+        else:
+            submission = AssignmentSubmission.objects.create(
+                assignment=assignment,
+                student=user,
+                audio_recording=audio,
+                written_response=text,
+                attachment_file=attachment,
+                status=SubmissionStatus.SUBMITTED,
+            )
+
+        output_serializer = AssignmentSubmissionSerializer(
+            submission, context=self.get_serializer_context()
+        )
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class SubmissionGradeView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/assessment/organizations/<organization_pk>/submissions/<pk>/grade/"""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = AssignmentGradeSerializer
+
+    def post(self, request, pk, *args, **kwargs):
+        membership = self.caller_membership
+        user = request.user
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        if not (is_manager or is_teacher):
+            raise PermissionDenied("Only teachers and managers can grade student submissions.")
+
+        submission = (
+            AssignmentSubmission.objects.in_organization(self.organization)
+            .select_related("assignment", "student")
+            .filter(pk=pk)
+            .first()
+        )
+        if not submission:
+            raise NotFound("Submission not found.")
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        score = serializer.validated_data.get("score")
+        feedback = serializer.validated_data.get("teacher_feedback", "")
+        rubric_scores = serializer.validated_data.get("rubric_scores", [])
+        request_resubmission = serializer.validated_data.get("request_resubmission", False)
+
+        try:
+            submission.grade(
+                graded_by=request.user,
+                score=score,
+                feedback=feedback,
+                rubric_scores=rubric_scores,
+                request_resubmission=request_resubmission,
+            )
+        except DjangoValidationError as exc:
+            raise as_drf_error(exc) from exc
+
+        return Response(
+            AssignmentSubmissionSerializer(submission, context=self.get_serializer_context()).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class AcademySubmissionsListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/submissions/ — filterable submissions list."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = AssignmentSubmissionSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        org = self.organization
+        membership = self.caller_membership
+
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_student = user.role == Role.STUDENT
+        is_parent = user.role == Role.PARENT
+
+        qs = (
+            AssignmentSubmission.objects.in_organization(org)
+            .select_related("assignment", "student", "graded_by")
+            .order_by("-submitted_at")
+        )
+
+        assignment_id = optional_int_param(self.request, "assignment_id")
+        if assignment_id:
+            qs = qs.filter(assignment_id=assignment_id)
+
+        sub_status = self.request.query_params.get("status")
+        if sub_status:
+            qs = qs.filter(status=sub_status)
+
+        student_id = optional_int_param(self.request, "student_id")
+
+        if is_manager:
+            if student_id:
+                qs = qs.filter(student_id=student_id)
+            return qs
+
+        if is_teacher:
+            if student_id:
+                qs = qs.filter(student_id=student_id)
+            return qs.filter(Q(assignment__created_by=user) | Q(graded_by=user))
+
+        if is_student:
+            return qs.filter(student=user)
+
+        if is_parent:
+            children = children_in_organization(parent=user, organization=org)
+            if student_id:
+                if not children.filter(pk=student_id).exists():
+                    raise PermissionDenied("Not a parent of that student.")
+                qs = qs.filter(student_id=student_id)
+            else:
+                qs = qs.filter(student__in=children)
+            return qs
+
+        return qs.none()
+
+
+class StudentWardAssessmentsView(AcademyScopedView, generics.GenericAPIView):
+    """GET /api/assessment/organizations/<organization_pk>/ward-progress/?student_id="""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        org = self.organization
+        membership = self.caller_membership
+
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_student = user.role == Role.STUDENT
+        is_parent = user.role == Role.PARENT
+
+        if is_student:
+            target_student = user
+        elif is_parent:
+            student_id = required_int_param(request, "student_id")
+            target_student = linked_child(user, student_id, organization=org)
+        elif is_manager or is_teacher:
+            student_id = optional_int_param(request, "student_id")
+            if student_id:
+                target_student = User.objects.filter(pk=student_id).first()
+                if not target_student:
+                    raise NotFound("Student not found.")
+            else:
+                target_student = None
+        else:
+            raise PermissionDenied("Unauthorized role.")
+
+        if not target_student:
+            return Response({"detail": "Student ID required."}, status=400)
+
+        assignments_qs = StudentAssignment.objects.in_organization(org).filter(
+            Q(assigned_student=target_student) | Q(assigned_student__isnull=True)
+        )
+        total_assigned = assignments_qs.count()
+
+        submissions = (
+            AssignmentSubmission.objects.in_organization(org)
+            .filter(student=target_student)
+            .select_related("assignment", "graded_by")
+            .order_by("-submitted_at")
+        )
+        total_submitted = submissions.count()
+        graded_submissions = submissions.filter(status=SubmissionStatus.GRADED)
+        total_graded = graded_submissions.count()
+
+        scores_list = [
+            float((s.score / s.assignment.max_score) * 100)
+            for s in graded_submissions
+            if s.score is not None and s.assignment.max_score > 0
+        ]
+        avg_score_pct = round(sum(scores_list) / len(scores_list), 1) if scores_list else None
+
+        recent_submissions = AssignmentSubmissionSerializer(
+            submissions[:10], many=True, context=self.get_serializer_context()
+        ).data
+
+        return Response({
+            "student": {
+                "id": target_student.id,
+                "username": target_student.username,
+                "first_name": target_student.first_name,
+                "last_name": target_student.last_name,
+            },
+            "total_assigned": total_assigned,
+            "total_submitted": total_submitted,
+            "total_graded": total_graded,
+            "average_score_pct": avg_score_pct,
+            "recent_submissions": recent_submissions,
+        })
+
 

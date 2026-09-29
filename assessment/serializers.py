@@ -30,7 +30,7 @@ from rest_framework import serializers
 
 from accounts.models import Role, User
 from accounts.utils import to_user_timezone
-from curriculum.models import Track
+from curriculum.models import Level, Track
 from curriculum.serializers import LevelSerializer
 
 from .models import (
@@ -39,8 +39,12 @@ from .models import (
     AssessmentCriterion,
     AssessmentRubric,
     AssessmentScore,
+    AssignmentSubmission,
     ProgressSnapshot,
     SessionAssessment,
+    StudentAssignment,
+    SubmissionStatus,
+    SubmissionType,
 )
 
 
@@ -681,4 +685,232 @@ class ProgressSnapshotCreateSerializer(AcademyScopedSerializerMixin, serializers
         # The view needs to know which it was, to answer 201 or 200.
         self.created = created
         return snapshot
+
+
+# --- Assignment and Submission Serializers ----------------------------------
+
+class AssignmentSubmissionSerializer(serializers.ModelSerializer):
+    student = serializers.SerializerMethodField()
+    graded_by = serializers.SerializerMethodField()
+    assignment_title = serializers.CharField(source="assignment.title", read_only=True)
+    max_score = serializers.IntegerField(source="assignment.max_score", read_only=True)
+    submission_type = serializers.CharField(source="assignment.submission_type", read_only=True)
+    surah_number = serializers.IntegerField(source="assignment.surah_number", read_only=True)
+    ayah_start = serializers.IntegerField(source="assignment.ayah_start", read_only=True)
+    ayah_end = serializers.IntegerField(source="assignment.ayah_end", read_only=True)
+
+    class Meta:
+        model = AssignmentSubmission
+        fields = [
+            "id",
+            "assignment",
+            "assignment_title",
+            "max_score",
+            "submission_type",
+            "surah_number",
+            "ayah_start",
+            "ayah_end",
+            "student",
+            "audio_recording",
+            "written_response",
+            "attachment_file",
+            "status",
+            "submitted_at",
+            "graded_by",
+            "graded_at",
+            "score",
+            "teacher_feedback",
+            "rubric_scores",
+        ]
+        read_only_fields = fields
+
+    def get_student(self, obj):
+        if not obj.student:
+            return None
+        return {
+            "id": obj.student.id,
+            "username": obj.student.username,
+            "first_name": obj.student.first_name,
+            "last_name": obj.student.last_name,
+        }
+
+    def get_graded_by(self, obj):
+        if not obj.graded_by:
+            return None
+        return {
+            "id": obj.graded_by.id,
+            "username": obj.graded_by.username,
+            "first_name": obj.graded_by.first_name,
+            "last_name": obj.graded_by.last_name,
+        }
+
+
+class AssignmentSubmissionCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AssignmentSubmission
+        fields = ["audio_recording", "written_response", "attachment_file"]
+
+    def validate(self, attrs):
+        audio = attrs.get("audio_recording")
+        text = attrs.get("written_response")
+        attachment = attrs.get("attachment_file")
+        if not audio and not text and not attachment:
+            raise serializers.ValidationError(
+                "Please provide an audio recording, written text response, or file attachment."
+            )
+        return attrs
+
+
+class AssignmentGradeSerializer(serializers.Serializer):
+    score = serializers.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+    )
+    teacher_feedback = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
+    rubric_scores = serializers.JSONField(
+        required=False,
+        default=list,
+    )
+    request_resubmission = serializers.BooleanField(
+        required=False,
+        default=False,
+    )
+
+
+class StudentAssignmentSerializer(serializers.ModelSerializer):
+    created_by = serializers.SerializerMethodField()
+    track_name = serializers.CharField(source="track.name", read_only=True, default=None)
+    level_name = serializers.CharField(source="level.name", read_only=True, default=None)
+    assigned_student_name = serializers.SerializerMethodField()
+    submissions_count = serializers.SerializerMethodField()
+    pending_submissions_count = serializers.SerializerMethodField()
+    my_submission = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentAssignment
+        fields = [
+            "id",
+            "title",
+            "description",
+            "track",
+            "track_name",
+            "level",
+            "level_name",
+            "assigned_student",
+            "assigned_student_name",
+            "submission_type",
+            "surah_number",
+            "ayah_start",
+            "ayah_end",
+            "due_date",
+            "max_score",
+            "rubric",
+            "resource_file",
+            "created_by",
+            "created_at",
+            "updated_at",
+            "submissions_count",
+            "pending_submissions_count",
+            "my_submission",
+        ]
+        read_only_fields = fields
+
+    def get_created_by(self, obj):
+        if not obj.created_by:
+            return None
+        return {
+            "id": obj.created_by.id,
+            "username": obj.created_by.username,
+            "first_name": obj.created_by.first_name,
+            "last_name": obj.created_by.last_name,
+        }
+
+    def get_assigned_student_name(self, obj):
+        if not obj.assigned_student:
+            return None
+        return (
+            f"{obj.assigned_student.first_name} {obj.assigned_student.last_name}".strip()
+            or obj.assigned_student.username
+        )
+
+    def get_submissions_count(self, obj):
+        return obj.submissions.count()
+
+    def get_pending_submissions_count(self, obj):
+        return obj.submissions.filter(status=SubmissionStatus.SUBMITTED).count()
+
+    def get_my_submission(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        if request.user.role == Role.STUDENT:
+            sub = obj.submissions.filter(student=request.user).first()
+            if sub:
+                return AssignmentSubmissionSerializer(sub, context=self.context).data
+        return None
+
+
+class StudentAssignmentCreateSerializer(AcademyScopedSerializerMixin, serializers.ModelSerializer):
+    scoped_querysets = {
+        "track": lambda org: Track.objects.filter(organization=org),
+        "level": lambda org: Level.objects.filter(track__organization=org),
+        "assigned_student": lambda org: students_in(org),
+        "rubric": lambda org: AssessmentRubric.objects.filter(track__organization=org),
+    }
+
+    track = serializers.PrimaryKeyRelatedField(
+        queryset=Track.objects.none(),
+        required=False,
+        allow_null=True,
+    )
+    level = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.none(),
+        required=False,
+        allow_null=True,
+    )
+    assigned_student = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.none(),
+        required=False,
+        allow_null=True,
+    )
+    rubric = serializers.PrimaryKeyRelatedField(
+        queryset=AssessmentRubric.objects.none(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = StudentAssignment
+        fields = [
+            "title",
+            "description",
+            "track",
+            "level",
+            "assigned_student",
+            "submission_type",
+            "surah_number",
+            "ayah_start",
+            "ayah_end",
+            "due_date",
+            "max_score",
+            "rubric",
+            "resource_file",
+        ]
+
+    def create(self, validated_data):
+        org = self.organization
+        if not org:
+            raise serializers.ValidationError("Organization context is required.")
+        user = self.context["request"].user
+        return StudentAssignment.objects.create(
+            organization=org,
+            created_by=user,
+            **validated_data,
+        )
+
 

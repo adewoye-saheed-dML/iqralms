@@ -46,8 +46,9 @@ from django.utils import timezone as dj_timezone
 
 from accounts.models import Role, User
 from accounts.tenancy import active_student_membership
-from curriculum.models import Track
-from organizations.models import active_membership
+from curriculum.models import Level, Track
+from curriculum.validators import validate_placement_audio
+from organizations.models import Organization, OrganizationRole, active_membership
 from scheduling.models import Booking, BookingStatus, bookable_teacher_error
 
 #: The spec's scale. 1 = needs significant improvement, 5 = excellent.
@@ -1244,3 +1245,284 @@ class ProgressSnapshot(models.Model):
             f"{self.student.username} / {self.track.name} "
             f"{self.period_start:%Y-%m-%d}..{self.period_end:%Y-%m-%d}"
         )
+
+
+# --- Continuous Assignments & Homework Assessment (Phase 7 Extension) --------
+
+class SubmissionType(models.TextChoices):
+    AUDIO_RECITATION = "audio_recitation", "Quran Audio Recitation"
+    WRITTEN_TEXT = "written_text", "Written Response"
+    FILE_UPLOAD = "file_upload", "File / Worksheet Upload"
+    MIXED = "mixed", "Mixed (Audio, Text, or File)"
+
+
+class SubmissionStatus(models.TextChoices):
+    SUBMITTED = "submitted", "Submitted"
+    GRADED = "graded", "Graded"
+    RESUBMISSION_REQUESTED = "resubmission_requested", "Resubmission Requested"
+
+
+def assignment_audio_path(instance, filename):
+    return f"assignments/submissions/{instance.student_id}/audio/{filename}"
+
+
+def assignment_attachment_path(instance, filename):
+    return f"assignments/submissions/{instance.student_id}/files/{filename}"
+
+
+def assignment_resource_path(instance, filename):
+    return f"assignments/resources/{instance.organization_id}/{filename}"
+
+
+class StudentAssignmentQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        if organization is None:
+            return self.none()
+        org_id = getattr(organization, "pk", organization)
+        return self.filter(organization_id=org_id)
+
+
+class StudentAssignment(models.Model):
+    """An assignment or assessment given by a teacher / academy to students.
+
+    Can be targeted to an individual student, a specific track or level,
+    or academy-wide. Supports Quran recitation recordings, written work,
+    or worksheet uploads.
+    """
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="assignments",
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_assignments",
+    )
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    track = models.ForeignKey(
+        Track,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assignments",
+    )
+    level = models.ForeignKey(
+        Level,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assignments",
+    )
+    assigned_student = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="individual_assignments",
+        help_text="Optional: specific student this assignment is directed to. Null = whole class/track.",
+    )
+    submission_type = models.CharField(
+        max_length=30,
+        choices=SubmissionType.choices,
+        default=SubmissionType.AUDIO_RECITATION,
+    )
+    surah_number = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(114)],
+        help_text="Optional Quran Surah number (1-114)",
+    )
+    ayah_start = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+        help_text="Optional starting Ayah number",
+    )
+    ayah_end = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+        help_text="Optional ending Ayah number",
+    )
+    due_date = models.DateTimeField(null=True, blank=True)
+    max_score = models.PositiveIntegerField(default=100)
+    rubric = models.ForeignKey(
+        AssessmentRubric,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assignments",
+    )
+    resource_file = models.FileField(
+        upload_to=assignment_resource_path,
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(default=dj_timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StudentAssignmentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+    def _is_active_here(self, user):
+        if not self.organization or not user:
+            return False
+        if getattr(user, "role", None) == Role.STUDENT:
+            from accounts.tenancy import is_active_student_participant
+
+            return is_active_student_participant(
+                user=user, organization=self.organization
+            )
+        return active_membership(user=user, organization=self.organization) is not None
+
+    def clean(self):
+        errors = {}
+        if self.track_id and self.track.organization_id != self.organization_id:
+            errors["track"] = ValidationError("Track must belong to this academy.")
+        if self.level_id and self.level.track.organization_id != self.organization_id:
+            errors["level"] = ValidationError("Level must belong to this academy.")
+        if self.assigned_student_id:
+            if self.assigned_student.role != Role.STUDENT:
+                errors["assigned_student"] = ValidationError("Assigned user must be a student.")
+            elif not self._is_active_here(self.assigned_student):
+                errors["assigned_student"] = ValidationError("Student is not an active member of this academy.")
+        if self.ayah_start and self.ayah_end and self.ayah_end < self.ayah_start:
+            errors["ayah_end"] = ValidationError("Ending ayah cannot precede starting ayah.")
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.title} ({self.organization.name})"
+
+
+class AssignmentSubmissionQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        if organization is None:
+            return self.none()
+        org_id = getattr(organization, "pk", organization)
+        return self.filter(assignment__organization_id=org_id)
+
+
+class AssignmentSubmission(models.Model):
+    """A student's submission for an assignment with teacher grading and feedback."""
+
+    assignment = models.ForeignKey(
+        StudentAssignment,
+        on_delete=models.CASCADE,
+        related_name="submissions",
+    )
+    student = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="assignment_submissions",
+    )
+    audio_recording = models.FileField(
+        upload_to=assignment_audio_path,
+        null=True,
+        blank=True,
+        validators=[validate_placement_audio],
+    )
+    written_response = models.TextField(blank=True)
+    attachment_file = models.FileField(
+        upload_to=assignment_attachment_path,
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=SubmissionStatus.choices,
+        default=SubmissionStatus.SUBMITTED,
+    )
+    submitted_at = models.DateTimeField(default=dj_timezone.now)
+    graded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="graded_assignment_submissions",
+    )
+    graded_at = models.DateTimeField(null=True, blank=True)
+    score = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    teacher_feedback = models.TextField(blank=True)
+    rubric_scores = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Snapshot of criteria scores: [{criterion_id, criterion_name, score, comment}]",
+    )
+
+    objects = AssignmentSubmissionQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["-submitted_at", "-pk"]
+
+    @property
+    def organization(self):
+        return self.assignment.organization if self.assignment_id else None
+
+    def _is_active_here(self, user):
+        if not self.organization or not user:
+            return False
+        if getattr(user, "role", None) == Role.STUDENT:
+            from accounts.tenancy import is_active_student_participant
+
+            return is_active_student_participant(
+                user=user, organization=self.organization
+            )
+        return active_membership(user=user, organization=self.organization) is not None
+
+    def clean(self):
+        errors = {}
+        if self.student_id:
+            if self.student.role != Role.STUDENT:
+                errors["student"] = ValidationError("Only a student can submit an assignment.")
+            elif not self._is_active_here(self.student):
+                errors["student"] = ValidationError("Student is not an active member of this academy.")
+        if self.assignment_id and self.assignment.assigned_student_id:
+            if self.student_id != self.assignment.assigned_student_id:
+                errors["student"] = ValidationError("This assignment is private to another student.")
+        if self.score is not None and self.assignment_id:
+            if self.score > self.assignment.max_score:
+                errors["score"] = ValidationError(
+                    f"Score cannot exceed maximum of {self.assignment.max_score}."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def grade(self, *, graded_by, score, feedback="", rubric_scores=None, request_resubmission=False):
+        """Teacher grading action."""
+        self.graded_by = graded_by
+        self.graded_at = dj_timezone.now()
+        self.teacher_feedback = feedback or ""
+        if rubric_scores is not None:
+            self.rubric_scores = rubric_scores
+        if request_resubmission:
+            self.status = SubmissionStatus.RESUBMISSION_REQUESTED
+            self.score = None
+        else:
+            self.status = SubmissionStatus.GRADED
+            self.score = Decimal(str(score)) if score is not None else None
+        self.save()
+        return self
+
+    def __str__(self):
+        return f"Submission by {self.student.username} for {self.assignment.title}"
+
