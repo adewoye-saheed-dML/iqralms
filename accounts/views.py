@@ -107,11 +107,18 @@ class RegisterView(generics.CreateAPIView):
         user = serializer.save()
 
         pending = not user.is_fully_active
+        parent_email = getattr(user, "_parent_email", None)
         if pending:
-            detail = (
-                "Account created. A parent must link to this student using "
-                f"signup code {user.signup_code} before it can be used."
-            )
+            if parent_email:
+                detail = (
+                    f"Account created. An invitation email has been sent to your parent at "
+                    f"{parent_email} to verify and link with your account."
+                )
+            else:
+                detail = (
+                    "Account created. A parent must link to this student using "
+                    f"signup code {user.signup_code} before it can be used."
+                )
         else:
             detail = "Account created."
 

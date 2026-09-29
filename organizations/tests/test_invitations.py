@@ -693,3 +693,62 @@ class OrganizationInvitationRegistrationTests(TenantWorld):
         user = User.objects.get(email="amina.yusuf@example.com")
         self.assertEqual(user.username, "amina.yusuf3")
 
+    def test_minor_student_invitation_registration_creates_parent_invitation_and_links(self):
+        from accounts.models import ParentLink, PendingParentLink
+        raw_token, digest = OrganizationInvitation.generate_token_and_digest()
+        invitation = OrganizationInvitation.objects.create(
+            organization=self.org_a,
+            email="young.student@example.com",
+            role=OrganizationRole.STUDENT,
+            token_digest=digest,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            status=InvitationStatus.PENDING,
+        )
+
+        payload = {
+            "token": raw_token,
+            "first_name": "Young",
+            "last_name": "Student",
+            "password": "StrongPassword123!#",
+            "timezone": "UTC",
+            "age": 11,
+            "parent_email": "mother@example.com",
+        }
+        response = self.client.post(register_invitation_url(self.org_a), payload)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        student = User.objects.get(email="young.student@example.com")
+        self.assertTrue(student.is_minor)
+
+        # PendingParentLink was created
+        self.assertTrue(PendingParentLink.objects.filter(student=student, parent_email="mother@example.com").exists())
+
+        # Parent invitation in this organization was automatically created
+        parent_invitation = OrganizationInvitation.objects.filter(
+            organization=self.org_a,
+            email="mother@example.com",
+            role=OrganizationRole.PARENT,
+            status=InvitationStatus.PENDING,
+        ).first()
+        self.assertIsNotNone(parent_invitation)
+
+        # Now when mother registers with her invitation
+        raw_mom_token, mom_digest = OrganizationInvitation.generate_token_and_digest()
+        parent_invitation.token_digest = mom_digest
+        parent_invitation.save()
+
+        mom_payload = {
+            "token": raw_mom_token,
+            "first_name": "Mother",
+            "last_name": "Student",
+            "password": "StrongPassword123!#",
+            "timezone": "UTC",
+        }
+        mom_res = self.client.post(register_invitation_url(self.org_a), mom_payload)
+        self.assertEqual(mom_res.status_code, status.HTTP_201_CREATED)
+
+        mother = User.objects.get(email="mother@example.com")
+        # ParentLink is established
+        self.assertTrue(ParentLink.objects.filter(parent=mother, student=student).exists())
+        self.assertFalse(PendingParentLink.objects.filter(parent_email="mother@example.com").exists())
+

@@ -526,6 +526,12 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
     )
     timezone = serializers.CharField(required=True, allow_blank=False)
     date_of_birth = serializers.DateField(required=False, allow_null=True, default=None)
+    age = serializers.IntegerField(
+        write_only=True, required=False, min_value=1, max_value=120, default=None
+    )
+    parent_email = serializers.EmailField(
+        write_only=True, required=False, allow_blank=True, default=""
+    )
 
     def validate_password(self, value):
         from django.contrib.auth.password_validation import validate_password
@@ -586,12 +592,32 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
                 {"detail": "An account already exists for this invitation email. Sign in to continue."}
             )
 
+        account_role = INVITATION_ROLE_TO_ACCOUNT_ROLE[invitation.role]
         attrs["invitation"] = invitation
-        attrs["account_role"] = INVITATION_ROLE_TO_ACCOUNT_ROLE[invitation.role]
+        attrs["account_role"] = account_role
+
+        age = attrs.get("age")
+        dob = attrs.get("date_of_birth")
+        if age is not None and not dob:
+            from django.utils import timezone as dj_timezone
+            import datetime
+            today = dj_timezone.localdate()
+            birth_year = today.year - age
+            dob = datetime.date(birth_year, 1, 1)
+            attrs["date_of_birth"] = dob
+
+        if account_role == Role.STUDENT:
+            parent_email = (attrs.get("parent_email") or "").strip()
+            if parent_email:
+                if parent_email.lower() == invitation.email.strip().lower():
+                    raise serializers.ValidationError(
+                        {"parent_email": "Parent email cannot be the same as the student's email."}
+                    )
+
         return attrs
 
     def save(self):
-        from accounts.models import User
+        from accounts.models import Role, User
         from accounts.utils import generate_unique_username_from_email
         from rest_framework.authtoken.models import Token
         from .services import consume_invitation
@@ -603,6 +629,7 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
         last_name = self.validated_data.get("last_name", "")
         tz = self.validated_data["timezone"]
         dob = self.validated_data.get("date_of_birth")
+        parent_email = self.validated_data.get("parent_email")
 
         with transaction.atomic():
             invitation = (
@@ -622,7 +649,6 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {"detail": "An account already exists for this invitation email. Sign in to continue."}
                 )
-
 
             chosen_username = self.validated_data.get("username", "").strip()
             if chosen_username:
@@ -652,6 +678,17 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
 
             membership = consume_invitation(invitation=invitation, user=user)
             token, _ = Token.objects.get_or_create(user=user)
+
+            if user.role == Role.STUDENT and user.is_minor and parent_email:
+                from accounts.services import process_minor_student_parent_email
+                process_minor_student_parent_email(
+                    student=user,
+                    parent_email=parent_email,
+                    organization=invitation.organization,
+                )
+            elif user.role == Role.PARENT:
+                from accounts.services import fulfill_pending_parent_links
+                fulfill_pending_parent_links(user)
 
         return {
             "key": token.key,

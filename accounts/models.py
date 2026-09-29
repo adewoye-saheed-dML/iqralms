@@ -168,6 +168,55 @@ class ParentLink(models.Model):
         return f"{self.parent} -> {self.student}"
 
 
+class PendingParentLink(models.Model):
+    """Pending parent-child guardianship invitation/link.
+
+    Recorded when a minor student specifies a parent's email address during
+    registration. When the parent registers or an existing parent account
+    is identified, this link is fulfilled into a ParentLink.
+    """
+
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="pending_parent_links",
+    )
+    parent_email = models.EmailField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["student", "parent_email"],
+                name="unique_student_parent_email_pending_link",
+            )
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.student_id and self.student.role != Role.STUDENT:
+            errors["student"] = ValidationError(
+                "Only a user with role 'student' can have a pending parent link.",
+                code="invalid_student_role",
+            )
+        if self.student_id and self.student.email and self.parent_email:
+            if self.student.email.strip().lower() == self.parent_email.strip().lower():
+                errors["parent_email"] = ValidationError(
+                    "Student email and parent email cannot be identical.",
+                    code="self_link",
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.parent_email = self.parent_email.strip().lower()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.student.username} -> {self.parent_email} (pending)"
+
+
 class TeacherProfile(models.Model):
     """Teaching-side attributes. Only for role 'lead' or 'sub'.
 

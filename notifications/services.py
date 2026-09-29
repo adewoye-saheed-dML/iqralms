@@ -574,3 +574,64 @@ def notify_teacher_invitation(
     """
     raw_token = getattr(invitation, "raw_token", "")
     send_invitation_email(invitation, raw_token)
+
+
+def send_parent_guardian_notification_email(
+    *,
+    student,
+    parent_email: str,
+    is_existing_parent: bool = False,
+    signup_code: str = "",
+    organization=None,
+) -> bool:
+    """Send parent notification or invitation email for a minor student."""
+    from django.conf import settings
+    from django.core.mail import send_mail
+
+    frontend_base_url = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/")
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "notifications@quranacademy.local")
+
+    student_name = f"{student.first_name} {student.last_name}".strip() or student.username
+    academy_part = f" at {organization.name}" if organization else " on Quran Academy"
+
+    if is_existing_parent:
+        subject = f"Your child {student_name} has linked their account{academy_part}"
+        dashboard_url = f"{frontend_base_url}/app/dashboard"
+        message = (
+            f"Assalamu Alaikum,\n\n"
+            f"Your child, {student_name} ({student.email}), has registered{academy_part} and "
+            f"linked their account with you as their parent/guardian.\n\n"
+            f"You can now monitor their learning and progress from your dashboard:\n"
+            f"{dashboard_url}\n"
+        )
+    else:
+        subject = f"Parent Invitation: Link with your child {student_name}{academy_part}"
+        register_url = f"{frontend_base_url}/register"
+        message = (
+            f"Assalamu Alaikum,\n\n"
+            f"Your child, {student_name} ({student.email}), has registered as a student{academy_part}.\n\n"
+            f"Because they are under 18, their account requires a parent or guardian to oversee "
+            f"their learning.\n\n"
+            f"Please register as a parent and verify the link:\n"
+            f"{register_url}\n\n"
+            f"Student Signup Code: {signup_code}\n\n"
+            f"If you already have an account, sign in and use the signup code above in your family settings."
+        )
+
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=from_email,
+            recipient_list=[parent_email],
+            fail_silently=False,
+        )
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Failed to send parent notification email to %s for student %s: %s",
+            parent_email,
+            student.id,
+            exc,
+        )
+        return False

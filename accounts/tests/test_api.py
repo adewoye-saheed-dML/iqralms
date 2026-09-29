@@ -12,7 +12,7 @@ from django.utils import timezone as dj_timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from accounts.models import ParentLink, Role, User
+from accounts.models import ParentLink, PendingParentLink, Role, User
 
 from .factories import (
     DEFAULT_PASSWORD,
@@ -139,6 +139,75 @@ class RegisterAPITests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(User.objects.get(username="newstudent").is_minor)
+
+    def test_minor_student_registration_with_parent_email_creates_pending_link_and_sends_email(self):
+        from django.core import mail
+        response = self.client.post(
+            self.url,
+            registration_payload(
+                username="minorstudent1",
+                email="minor1@example.com",
+                age=12,
+                parent_email="guardian@example.com",
+            ),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "pending_parent_link")
+        self.assertIn("guardian@example.com", response.data["detail"])
+        student = User.objects.get(username="minorstudent1")
+        self.assertTrue(student.is_minor)
+        self.assertTrue(PendingParentLink.objects.filter(student=student, parent_email="guardian@example.com").exists())
+        self.assertTrue(any("guardian@example.com" in m.to for m in mail.outbox))
+
+    def test_parent_registration_fulfills_pending_links(self):
+        student = StudentFactory(is_minor=True)
+        PendingParentLink.objects.create(student=student, parent_email="auto_parent@example.com")
+
+        response = self.client.post(
+            self.url,
+            registration_payload(
+                username="autoparent",
+                email="auto_parent@example.com",
+                role=Role.PARENT.value,
+            ),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        parent_user = User.objects.get(username="autoparent")
+        self.assertTrue(ParentLink.objects.filter(parent=parent_user, student=student).exists())
+        self.assertFalse(PendingParentLink.objects.filter(parent_email="auto_parent@example.com").exists())
+
+    def test_minor_student_with_existing_parent_email_auto_links(self):
+        parent = ParentFactory(email="existing_mom@example.com")
+        response = self.client.post(
+            self.url,
+            registration_payload(
+                username="minorstudent2",
+                email="minor2@example.com",
+                age=14,
+                parent_email="existing_mom@example.com",
+            ),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        student = User.objects.get(username="minorstudent2")
+        self.assertTrue(ParentLink.objects.filter(parent=parent, student=student).exists())
+        self.assertTrue(student.is_fully_active)
+
+    def test_minor_cannot_use_own_email_as_parent_email(self):
+        response = self.client.post(
+            self.url,
+            registration_payload(
+                username="minorstudent3",
+                email="same@example.com",
+                age=10,
+                parent_email="same@example.com",
+            ),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("parent_email", response.data)
 
 
 class LoginAPITests(APITestCase):

@@ -134,6 +134,8 @@ class LinkedStudentSerializer(serializers.ModelSerializer):
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, style={"input_type": "password"})
     role = serializers.ChoiceField(choices=SELF_REGISTERABLE_ROLES)
+    age = serializers.IntegerField(write_only=True, required=False, min_value=1, max_value=120)
+    parent_email = serializers.EmailField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = User
@@ -146,6 +148,8 @@ class RegisterSerializer(serializers.ModelSerializer):
             "role",
             "timezone",
             "date_of_birth",
+            "age",
+            "parent_email",
         ]
         extra_kwargs = {
             "email": {"required": True, "allow_blank": False},
@@ -161,8 +165,30 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Date of birth cannot be in the future.")
         return value
 
+    def validate(self, attrs):
+        age = attrs.get("age")
+        dob = attrs.get("date_of_birth")
+        if age is not None and not dob:
+            import datetime
+            today = dj_timezone.localdate()
+            birth_year = today.year - age
+            dob = datetime.date(birth_year, 1, 1)
+            attrs["date_of_birth"] = dob
+
+        role = attrs.get("role")
+        parent_email = (attrs.get("parent_email") or "").strip()
+        if parent_email:
+            if parent_email.lower() == attrs.get("email", "").strip().lower():
+                raise serializers.ValidationError(
+                    {"parent_email": "Parent email cannot be the same as the student's email."}
+                )
+        return attrs
+
     def create(self, validated_data):
         password = validated_data.pop("password")
+        parent_email = validated_data.pop("parent_email", None)
+        validated_data.pop("age", None)
+
         # is_minor is a signup-time snapshot, never client-supplied.
         validated_data["is_minor"] = User.minor_from_date_of_birth(
             validated_data.get("date_of_birth")
@@ -175,6 +201,15 @@ class RegisterSerializer(serializers.ModelSerializer):
         except DjangoValidationError as exc:
             raise as_drf_error(exc) from exc
         user.save()
+
+        if user.role == Role.STUDENT and user.is_minor and parent_email:
+            from accounts.services import process_minor_student_parent_email
+            process_minor_student_parent_email(student=user, parent_email=parent_email)
+            user._parent_email = parent_email
+        elif user.role == Role.PARENT:
+            from accounts.services import fulfill_pending_parent_links
+            fulfill_pending_parent_links(user)
+
         return user
 
 
