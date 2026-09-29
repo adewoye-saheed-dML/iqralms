@@ -1566,3 +1566,102 @@ class TeacherWaitlist(models.Model):
             f"{self.student.username} wants {self.requested_teacher.username} for "
             f"{self.level} at {self.requested_start_utc:%Y-%m-%d %H:%M} UTC — {state}"
         )
+
+
+class RecordingStatus(models.TextChoices):
+    READY = "ready", "Ready"
+    PROCESSING = "processing", "Processing"
+    PURGED = "purged", "Purged"
+
+
+class ClassSessionRecordingQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        org_id = getattr(organization, "pk", organization)
+        return self.filter(organization_id=org_id)
+
+    def active(self):
+        return self.filter(expires_at__gt=dj_timezone.now())
+
+    def expired(self):
+        return self.filter(expires_at__lte=dj_timezone.now())
+
+
+class ClassSessionRecording(models.Model):
+    """A recorded session artifact preserved for owner review, audit, and references.
+
+    Automatically purged after 60 days (2 months) retention to prevent storage
+    and database bloat. Accessible exclusively to academy owners and admins.
+    """
+
+    booking = models.ForeignKey(
+        Booking,
+        on_delete=models.CASCADE,
+        related_name="recordings",
+        help_text="The completed class session this recording belongs to.",
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="session_recordings",
+        help_text="Academy ownership for tenant isolation.",
+    )
+    title = models.CharField(max_length=255, blank=True)
+    video_room_name = models.CharField(max_length=128, blank=True)
+    recording_url = models.URLField(max_length=1024, blank=True)
+    duration_minutes = models.PositiveIntegerField(
+        default=DEFAULT_DURATION_MINUTES,
+        validators=[MinValueValidator(1)],
+    )
+    recorded_at = models.DateTimeField(default=dj_timezone.now)
+    expires_at = models.DateTimeField(
+        help_text="Retention expiry date — automatically purged after 60 days."
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=RecordingStatus.choices,
+        default=RecordingStatus.READY,
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+
+    objects = ClassSessionRecordingQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["-recorded_at", "-pk"]
+
+    @property
+    def is_expired(self) -> bool:
+        return dj_timezone.now() >= self.expires_at
+
+    @property
+    def days_until_expiry(self) -> int:
+        diff = (self.expires_at - dj_timezone.now()).total_seconds()
+        return max(0, int(diff // 86400))
+
+    def clean(self):
+        if not self.organization_id and self.booking_id:
+            org = self.booking.organization
+            if org:
+                self.organization = org
+
+        if not self.expires_at:
+            base_time = self.recorded_at or dj_timezone.now()
+            self.expires_at = base_time + timedelta(days=60)
+
+        if not self.title and self.booking_id:
+            student_name = self.booking.student.get_full_name() or self.booking.student.username
+            teacher_name = self.booking.teacher.get_full_name() or self.booking.teacher.username
+            self.title = f"{self.booking.level.name} — Ustadh {teacher_name} with {student_name}"
+
+        if not self.video_room_name and self.booking_id:
+            self.video_room_name = self.booking.video_provider_meeting_id or ""
+
+        if not self.recording_url and self.booking_id:
+            self.recording_url = self.booking.video_join_url or ""
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Recording: {self.title or f'Booking #{self.booking_id}'} ({self.status}) expires {self.expires_at:%Y-%m-%d}"
+

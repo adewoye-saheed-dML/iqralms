@@ -4,6 +4,8 @@ from django.urls import path
 
 from .views import (
     AcademyBookingListView,
+    AcademySessionRecordingDetailView,
+    AcademySessionRecordingListView,
     AcademyWaitlistListView,
     AvailabilityDetailView,
     AvailabilityListView,
@@ -72,6 +74,17 @@ urlpatterns = [
         f"{ACADEMY}bookings/<int:pk>/meeting/",
         BookingMeetingView.as_view(),
         name="booking-meeting",
+    ),
+    # Owner-only session recordings with 60-day auto-retention policy
+    path(
+        f"{ACADEMY}recordings/",
+        AcademySessionRecordingListView.as_view(),
+        name="recording-list",
+    ),
+    path(
+        f"{ACADEMY}recordings/<int:pk>/",
+        AcademySessionRecordingDetailView.as_view(),
+        name="recording-detail",
     ),
     # Phase 4 — the system picks the teacher, and group classes exist.
     path(

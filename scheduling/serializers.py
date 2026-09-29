@@ -27,6 +27,7 @@ from curriculum.serializers import LevelSerializer
 from .models import (
     Availability,
     Booking,
+    ClassSessionRecording,
     Cohort,
     DEFAULT_DURATION_MINUTES,
     DEFAULT_MAX_STUDENTS,
@@ -586,4 +587,38 @@ class BookingMeetingSerializer(serializers.Serializer):
     provider_meeting_id = serializers.CharField(read_only=True)
     join_url = serializers.URLField(read_only=True)
     display_name = serializers.CharField(read_only=True)
+
+
+class ClassSessionRecordingSerializer(serializers.ModelSerializer):
+    """Owner/Admin serializer for inspecting and managing class session recordings."""
+
+    student = BookingPartySerializer(source="booking.student", read_only=True)
+    teacher = BookingPartySerializer(source="booking.teacher", read_only=True)
+    level_name = serializers.CharField(source="booking.level.name", read_only=True)
+    track_name = serializers.CharField(source="booking.level.track.name", read_only=True)
+    is_expired = serializers.BooleanField(read_only=True)
+    days_until_expiry = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = ClassSessionRecording
+        fields = [
+            "id",
+            "booking",
+            "title",
+            "video_room_name",
+            "recording_url",
+            "duration_minutes",
+            "recorded_at",
+            "expires_at",
+            "days_until_expiry",
+            "is_expired",
+            "status",
+            "metadata",
+            "student",
+            "teacher",
+            "level_name",
+            "track_name",
+        ]
+        read_only_fields = fields
+
 

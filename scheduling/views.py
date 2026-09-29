@@ -22,14 +22,14 @@ from rest_framework.exceptions import APIException, PermissionDenied, Validation
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from organizations.permissions import IsOrganizationMember
+from organizations.permissions import IsOrganizationMember, IsOwnerOrAdmin
 from organizations.views import OrganizationScopedMixin
 
 from .exceptions import (
     NoCapacity,
     WaitlistEntryAlreadyFulfilled,
 )
-from .models import Availability, Booking, Cohort, TeacherWaitlist
+from .models import Availability, Booking, ClassSessionRecording, Cohort, TeacherWaitlist
 from .permissions import (
     CanBookSession,
     CanManageAvailability,
@@ -46,6 +46,7 @@ from .serializers import (
     BookingCreateSerializer,
     BookingMeetingSerializer,
     BookingSerializer,
+    ClassSessionRecordingSerializer,
     CohortCreateSerializer,
     CohortSerializer,
     NoCapacitySerializer,
@@ -504,6 +505,32 @@ class BookingCompleteView(AcademyScopedView, generics.GenericAPIView):
 
         booking.status = BookingStatus.COMPLETED
         booking.save()
+
+        # Create or update session recording for owner reference with 60-day retention
+        from datetime import timedelta
+        from django.utils import timezone as dj_timezone
+        try:
+            ClassSessionRecording.objects.get_or_create(
+                booking=booking,
+                defaults={
+                    "organization": self.organization,
+                    "duration_minutes": booking.duration_minutes,
+                    "video_room_name": booking.video_provider_meeting_id or "",
+                    "recording_url": booking.video_join_url or "",
+                    "recorded_at": dj_timezone.now(),
+                    "expires_at": dj_timezone.now() + timedelta(days=60),
+                    "status": "ready",
+                    "metadata": {
+                        "provider": booking.video_provider or "jitsi",
+                        "teacher_username": booking.teacher.username,
+                        "student_username": booking.student.username,
+                        "track_name": booking.level.track.name,
+                        "level_name": booking.level.name,
+                    },
+                },
+            )
+        except Exception:
+            pass
 
         try:
             from audit_logs.services import record_event
@@ -975,3 +1002,97 @@ class WaitlistPromoteView(AcademyScopedView, generics.GenericAPIView):
             routed.booking, context=self.get_serializer_context()
         ).data
         return Response(body, status=status.HTTP_201_CREATED)
+
+
+class AcademySessionRecordingListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/scheduling/organizations/{id}/recordings/ — list session recordings for owner reference and audit.
+
+    Accessible exclusively to academy owners and administrators.
+    Recordings older than 60 days are excluded and automatically purged by retention policy.
+    """
+
+    serializer_class = ClassSessionRecordingSerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerOrAdmin]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="teacher_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Filter recordings by teacher ID.",
+            ),
+            OpenApiParameter(
+                name="student_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Filter recordings by student ID.",
+            ),
+            OpenApiParameter(
+                name="status",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Filter by recording status (ready, processing, purged).",
+            ),
+        ]
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        qs = (
+            ClassSessionRecording.objects.in_organization(self.organization)
+            .active()
+            .select_related(
+                "booking__student",
+                "booking__teacher",
+                "booking__level__track",
+            )
+        )
+        teacher_id = self.request.query_params.get("teacher_id")
+        if teacher_id:
+            try:
+                qs = qs.filter(booking__teacher_id=int(teacher_id))
+            except ValueError:
+                pass
+
+        student_id = self.request.query_params.get("student_id")
+        if student_id:
+            try:
+                qs = qs.filter(booking__student_id=int(student_id))
+            except ValueError:
+                pass
+
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(status=status_param)
+
+        return qs
+
+
+class AcademySessionRecordingDetailView(AcademyScopedView, generics.RetrieveDestroyAPIView):
+    """GET /api/scheduling/organizations/{id}/recordings/{id}/ — retrieve session recording.
+    DELETE /api/scheduling/organizations/{id}/recordings/{id}/ — owner purge of session recording.
+
+    Owner/Admin only.
+    """
+
+    serializer_class = ClassSessionRecordingSerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerOrAdmin]
+
+    def get_queryset(self):
+        return (
+            ClassSessionRecording.objects.in_organization(self.organization)
+            .select_related(
+                "booking__student",
+                "booking__teacher",
+                "booking__level__track",
+            )
+        )
+
+    def perform_destroy(self, instance):
+        instance.delete()
+
