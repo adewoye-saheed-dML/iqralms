@@ -731,6 +731,7 @@ class OrganizationInvitationRegistrationTests(TenantWorld):
             status=InvitationStatus.PENDING,
         ).first()
         self.assertIsNotNone(parent_invitation)
+        self.assertTrue(any(f"Student Code: {student.signup_code}" in m.body for m in mail.outbox))
 
         # Now when mother registers with her invitation
         raw_mom_token, mom_digest = OrganizationInvitation.generate_token_and_digest()

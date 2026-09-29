@@ -118,7 +118,12 @@ def process_minor_student_parent_email(
         if existing_invitation and existing_invitation.is_valid():
             raw_token = getattr(existing_invitation, "raw_token", "")
             if raw_token:
-                send_invitation_email(existing_invitation, raw_token)
+                send_invitation_email(
+                    existing_invitation,
+                    raw_token,
+                    student=student,
+                    signup_code=student.signup_code,
+                )
         else:
             token, digest = OrganizationInvitation.generate_token_and_digest()
             invitation = OrganizationInvitation.objects.create(
@@ -130,7 +135,12 @@ def process_minor_student_parent_email(
                 status=InvitationStatus.PENDING,
             )
             invitation.raw_token = token
-            send_invitation_email(invitation, token)
+            send_invitation_email(
+                invitation,
+                token,
+                student=student,
+                signup_code=student.signup_code,
+            )
     else:
         send_parent_guardian_notification_email(
             student=student,

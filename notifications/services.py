@@ -475,6 +475,9 @@ def notify_progress_ready(
 def send_invitation_email(
     invitation: "organizations.models.OrganizationInvitation",
     raw_token: str,
+    *,
+    student=None,
+    signup_code: str = "",
 ) -> "organizations.models.InvitationDelivery":
     """Send an invitation email using Django's email infrastructure and record the delivery outcome.
 
@@ -504,12 +507,44 @@ def send_invitation_email(
     subject = f"Invitation to join {org.name}"
     expires_str = invitation.expires_at.strftime("%Y-%m-%d %H:%M UTC") if invitation.expires_at else "7 days"
 
-    message = (
-        f"You have been invited to join {org.name} as {role_phrase}.\n\n"
-        f"To accept your invitation, please click the link below:\n"
-        f"{accept_url}\n\n"
-        f"This invitation will expire on {expires_str}.\n"
-    )
+    if invitation.role == "parent":
+        if not student:
+            from accounts.models import PendingParentLink
+            pending = (
+                PendingParentLink.objects.filter(parent_email__iexact=invitation.email)
+                .select_related("student")
+                .first()
+            )
+            if pending:
+                student = pending.student
+
+        if student:
+            code = signup_code or getattr(student, "signup_code", "")
+            student_name = f"{student.first_name} {student.last_name}".strip() or student.username
+            subject = f"Invitation to join {org.name} as a parent for {student_name}"
+            message = (
+                f"Assalamu Alaikum,\n\n"
+                f"You have been invited to join {org.name} as a parent to oversee your child {student_name} ({student.email}).\n\n"
+                f"Because they are under 18, their student account requires parent/guardian verification.\n\n"
+                f"Student Code: {code}\n\n"
+                f"To accept your invitation and activate their account, please click the link below:\n"
+                f"{accept_url}\n\n"
+                f"This invitation will expire on {expires_str}.\n"
+            )
+        else:
+            message = (
+                f"You have been invited to join {org.name} as {role_phrase}.\n\n"
+                f"To accept your invitation, please click the link below:\n"
+                f"{accept_url}\n\n"
+                f"This invitation will expire on {expires_str}.\n"
+            )
+    else:
+        message = (
+            f"You have been invited to join {org.name} as {role_phrase}.\n\n"
+            f"To accept your invitation, please click the link below:\n"
+            f"{accept_url}\n\n"
+            f"This invitation will expire on {expires_str}.\n"
+        )
 
     from_email = getattr(
         settings, "DEFAULT_FROM_EMAIL", "notifications@quranacademy.local"

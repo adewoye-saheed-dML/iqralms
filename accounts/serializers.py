@@ -232,6 +232,10 @@ class ParentLinkCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         parent = self.context["request"].user
         student = validated_data["student"]
+        if ParentLink.objects.filter(parent=parent, student=student).exists():
+            raise serializers.ValidationError(
+                {"student_code": "This student is already linked to your account."}
+            )
         link = ParentLink(parent=parent, student=student)
         try:
             # ParentLink.save() runs full_clean(), which covers both the role
