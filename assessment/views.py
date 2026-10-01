@@ -13,17 +13,25 @@ Nothing here changes routing, a booking's status, or a placement's
 nothing else — CLAUDE.md's Phase 7 boundary, and the tests assert it.
 """
 
+import os
+
 from django.db.models import Q
+from django.http import FileResponse, Http404
+from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_datetime
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from accounts.models import ParentLink, Role, User
 from accounts.tenancy import children_in_organization
 from curriculum.models import Track
+from curriculum.views import QueryParamTokenAuthentication
 from organizations.models import OrganizationRole
 from organizations.permissions import (
     IsOrganizationMember,
@@ -1337,5 +1345,124 @@ class StudentWardAssessmentsView(AcademyScopedView, generics.GenericAPIView):
             "average_score_pct": avg_score_pct,
             "recent_submissions": recent_submissions,
         })
+
+
+@extend_schema(
+    responses={
+        200: OpenApiResponse(response=OpenApiTypes.BINARY, description="Submission audio stream / download"),
+        403: OpenApiResponse(description="Permission denied"),
+        404: OpenApiResponse(description="Submission or audio not found"),
+    }
+)
+class SubmissionAudioStreamView(AcademyScopedView, APIView):
+    """GET /api/assessment/organizations/{org_id}/submissions/{pk}/audio/ — stream or download submission audio."""
+
+    authentication_classes = [QueryParamTokenAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get(self, request, *args, **kwargs):
+        submission = get_object_or_404(
+            AssignmentSubmission.objects.in_organization(self.organization).select_related("assignment", "student"),
+            pk=kwargs["pk"],
+        )
+        user = request.user
+        membership = self.caller_membership
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_student = submission.student_id == user.id
+        is_parent = False
+        if user.role == Role.PARENT:
+            is_parent = ParentLink.objects.filter(parent=user, student=submission.student).exists()
+
+        if not (is_manager or is_teacher or is_student or is_parent):
+            raise PermissionDenied("You do not have permission to access this audio.")
+
+        if not submission.audio_recording:
+            raise Http404("No audio recording attached to this submission.")
+
+        try:
+            file_handle = submission.audio_recording.open("rb")
+            return FileResponse(
+                file_handle,
+                content_type="audio/webm",
+                filename=os.path.basename(submission.audio_recording.name),
+            )
+        except FileNotFoundError:
+            raise Http404("Audio file not found on disk.")
+
+
+@extend_schema(
+    responses={
+        200: OpenApiResponse(response=OpenApiTypes.BINARY, description="Submission attachment file stream / download"),
+        403: OpenApiResponse(description="Permission denied"),
+        404: OpenApiResponse(description="Submission or attachment not found"),
+    }
+)
+class SubmissionAttachmentFileView(AcademyScopedView, APIView):
+    """GET /api/assessment/organizations/{org_id}/submissions/{pk}/attachment/ — download submission attachment."""
+
+    authentication_classes = [QueryParamTokenAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get(self, request, *args, **kwargs):
+        submission = get_object_or_404(
+            AssignmentSubmission.objects.in_organization(self.organization).select_related("assignment", "student"),
+            pk=kwargs["pk"],
+        )
+        user = request.user
+        membership = self.caller_membership
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_student = submission.student_id == user.id
+        is_parent = False
+        if user.role == Role.PARENT:
+            is_parent = ParentLink.objects.filter(parent=user, student=submission.student).exists()
+
+        if not (is_manager or is_teacher or is_student or is_parent):
+            raise PermissionDenied("You do not have permission to access this attachment.")
+
+        if not submission.attachment_file:
+            raise Http404("No attachment file attached to this submission.")
+
+        try:
+            file_handle = submission.attachment_file.open("rb")
+            return FileResponse(
+                file_handle,
+                filename=os.path.basename(submission.attachment_file.name),
+            )
+        except FileNotFoundError:
+            raise Http404("Attachment file not found on disk.")
+
+
+@extend_schema(
+    responses={
+        200: OpenApiResponse(response=OpenApiTypes.BINARY, description="Assignment resource file stream / download"),
+        403: OpenApiResponse(description="Permission denied"),
+        404: OpenApiResponse(description="Assignment or resource file not found"),
+    }
+)
+class AssignmentResourceFileView(AcademyScopedView, APIView):
+    """GET /api/assessment/organizations/{org_id}/assignments/{pk}/resource/ — download assignment resource file."""
+
+    authentication_classes = [QueryParamTokenAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get(self, request, *args, **kwargs):
+        assignment = get_object_or_404(
+            StudentAssignment.objects.in_organization(self.organization),
+            pk=kwargs["pk"],
+        )
+        if not assignment.resource_file:
+            raise Http404("No resource file attached to this assignment.")
+
+        try:
+            file_handle = assignment.resource_file.open("rb")
+            return FileResponse(
+                file_handle,
+                filename=os.path.basename(assignment.resource_file.name),
+            )
+        except FileNotFoundError:
+            raise Http404("Resource file not found on disk.")
+
 
 

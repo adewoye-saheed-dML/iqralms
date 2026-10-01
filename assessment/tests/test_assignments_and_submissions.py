@@ -193,3 +193,75 @@ class AssignmentAndSubmissionTests(APITestCase):
         url = f"/api/assessment/organizations/{self.org.id}/assignments/{assignment.id}/submit/"
         res = self.client.post(url, {"written_response": "Illegal submission"})
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_submission_with_audio_and_attachment_streaming(self):
+        # 1. Create Assignment with Resource File
+        self.client.force_authenticate(user=self.teacher)
+        res_file = SimpleUploadedFile("assignment_guide.pdf", b"%PDF-1.4 sample content", content_type="application/pdf")
+        assignment_url = f"/api/assessment/organizations/{self.org.id}/assignments/"
+        assignment_res = self.client.post(
+            assignment_url,
+            {
+                "title": "Recitation with Audio & PDF",
+                "submission_type": SubmissionType.AUDIO_RECITATION,
+                "resource_file": res_file,
+                "max_score": 100,
+            },
+            format="multipart",
+        )
+        self.assertEqual(assignment_res.status_code, status.HTTP_201_CREATED)
+        assignment_id = assignment_res.data["id"]
+        self.assertIn(f"/api/assessment/organizations/{self.org.id}/assignments/{assignment_id}/resource/", assignment_res.data["resource_file"])
+
+        # 2. Verify Assignment Resource Download
+        res_download_url = f"/api/assessment/organizations/{self.org.id}/assignments/{assignment_id}/resource/"
+        res_download = self.client.get(res_download_url)
+        self.assertEqual(res_download.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(res_download.streaming_content), b"%PDF-1.4 sample content")
+
+        # 3. Student Submits Audio + Attachment
+        self.client.force_authenticate(user=self.student)
+        submit_url = f"/api/assessment/organizations/{self.org.id}/assignments/{assignment_id}/submit/"
+        audio_content = b"\x1a\x45\xdf\xa3\x01\x00\x00\x00" + b"\x00" * 64
+        audio_file = SimpleUploadedFile("recitation.webm", audio_content, content_type="audio/webm")
+        attachment_file = SimpleUploadedFile("notes.txt", b"Student homework notes.", content_type="text/plain")
+
+        submit_res = self.client.post(
+            submit_url,
+            {
+                "audio_recording": audio_file,
+                "attachment_file": attachment_file,
+                "written_response": "Here is my audio submission.",
+            },
+            format="multipart",
+        )
+        self.assertEqual(submit_res.status_code, status.HTTP_201_CREATED)
+        submission_id = submit_res.data["id"]
+        self.assertIn(f"/api/assessment/organizations/{self.org.id}/submissions/{submission_id}/audio/", submit_res.data["audio_recording"])
+        self.assertIn(f"/api/assessment/organizations/{self.org.id}/submissions/{submission_id}/attachment/", submit_res.data["attachment_file"])
+
+        # 4. Student streams own audio and attachment
+        audio_stream_url = f"/api/assessment/organizations/{self.org.id}/submissions/{submission_id}/audio/"
+        audio_res = self.client.get(audio_stream_url)
+        self.assertEqual(audio_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(audio_res.streaming_content), audio_content)
+
+        attachment_stream_url = f"/api/assessment/organizations/{self.org.id}/submissions/{submission_id}/attachment/"
+        attachment_res = self.client.get(attachment_stream_url)
+        self.assertEqual(attachment_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(attachment_res.streaming_content), b"Student homework notes.")
+
+        # 5. Teacher and Parent can also access audio and attachment
+        self.client.force_authenticate(user=self.teacher)
+        self.assertEqual(self.client.get(audio_stream_url).status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get(attachment_stream_url).status_code, status.HTTP_200_OK)
+
+        self.client.force_authenticate(user=self.parent)
+        self.assertEqual(self.client.get(audio_stream_url).status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get(attachment_stream_url).status_code, status.HTTP_200_OK)
+
+        # 6. Stranger cannot access audio or attachment
+        self.client.force_authenticate(user=self.stranger)
+        self.assertEqual(self.client.get(audio_stream_url).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get(attachment_stream_url).status_code, status.HTTP_403_FORBIDDEN)
+

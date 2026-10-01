@@ -698,6 +698,8 @@ class AssignmentSubmissionSerializer(serializers.ModelSerializer):
     surah_number = serializers.IntegerField(source="assignment.surah_number", read_only=True)
     ayah_start = serializers.IntegerField(source="assignment.ayah_start", read_only=True)
     ayah_end = serializers.IntegerField(source="assignment.ayah_end", read_only=True)
+    audio_recording = serializers.SerializerMethodField()
+    attachment_file = serializers.SerializerMethodField()
 
     class Meta:
         model = AssignmentSubmission
@@ -723,6 +725,42 @@ class AssignmentSubmissionSerializer(serializers.ModelSerializer):
             "rubric_scores",
         ]
         read_only_fields = fields
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_audio_recording(self, obj) -> str | None:
+        if not obj.audio_recording:
+            return None
+        from django.urls import reverse
+
+        try:
+            url = reverse(
+                "assessment:submission-audio",
+                kwargs={"organization_pk": obj.assignment.organization_id, "pk": obj.pk},
+            )
+            request = self.context.get("request")
+            if request is not None:
+                return request.build_absolute_uri(url)
+            return url
+        except Exception:
+            return None
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_attachment_file(self, obj) -> str | None:
+        if not obj.attachment_file:
+            return None
+        from django.urls import reverse
+
+        try:
+            url = reverse(
+                "assessment:submission-attachment",
+                kwargs={"organization_pk": obj.assignment.organization_id, "pk": obj.pk},
+            )
+            request = self.context.get("request")
+            if request is not None:
+                return request.build_absolute_uri(url)
+            return url
+        except Exception:
+            return None
 
     def get_student(self, obj):
         if not obj.student:
@@ -790,6 +828,7 @@ class StudentAssignmentSerializer(serializers.ModelSerializer):
     submissions_count = serializers.SerializerMethodField()
     pending_submissions_count = serializers.SerializerMethodField()
     my_submission = serializers.SerializerMethodField()
+    resource_file = serializers.SerializerMethodField()
 
     class Meta:
         model = StudentAssignment
@@ -819,6 +858,24 @@ class StudentAssignmentSerializer(serializers.ModelSerializer):
             "my_submission",
         ]
         read_only_fields = fields
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_resource_file(self, obj) -> str | None:
+        if not obj.resource_file:
+            return None
+        from django.urls import reverse
+
+        try:
+            url = reverse(
+                "assessment:assignment-resource",
+                kwargs={"organization_pk": obj.organization_id, "pk": obj.pk},
+            )
+            request = self.context.get("request")
+            if request is not None:
+                return request.build_absolute_uri(url)
+            return url
+        except Exception:
+            return None
 
     def get_created_by(self, obj):
         if not obj.created_by:

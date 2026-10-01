@@ -14,6 +14,7 @@ from .views import (
     AssessmentRubricListCreateView,
     AssignmentDetailView,
     AssignmentListCreateView,
+    AssignmentResourceFileView,
     AssignmentSubmissionCreateView,
     ChildProgressView,
     ChildSnapshotListView,
@@ -28,6 +29,8 @@ from .views import (
     ProgressSnapshotCreateView,
     SessionAssessmentCreateView,
     StudentWardAssessmentsView,
+    SubmissionAttachmentFileView,
+    SubmissionAudioStreamView,
     SubmissionGradeView,
     TeacherAssessmentListView,
     TeacherQualityReportView,
@@ -51,6 +54,11 @@ urlpatterns = [
         name="assignment-detail",
     ),
     path(
+        f"{ACADEMY}assignments/<int:pk>/resource/",
+        AssignmentResourceFileView.as_view(),
+        name="assignment-resource",
+    ),
+    path(
         f"{ACADEMY}assignments/<int:assignment_id>/submit/",
         AssignmentSubmissionCreateView.as_view(),
         name="assignment-submit",
@@ -59,6 +67,16 @@ urlpatterns = [
         f"{ACADEMY}submissions/",
         AcademySubmissionsListView.as_view(),
         name="submission-list",
+    ),
+    path(
+        f"{ACADEMY}submissions/<int:pk>/audio/",
+        SubmissionAudioStreamView.as_view(),
+        name="submission-audio",
+    ),
+    path(
+        f"{ACADEMY}submissions/<int:pk>/attachment/",
+        SubmissionAttachmentFileView.as_view(),
+        name="submission-attachment",
     ),
     path(
         f"{ACADEMY}submissions/<int:pk>/grade/",
