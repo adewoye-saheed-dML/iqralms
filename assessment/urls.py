@@ -16,25 +16,17 @@ from .views import (
     AssignmentListCreateView,
     AssignmentResourceFileView,
     AssignmentSubmissionCreateView,
-    ChildProgressView,
-    ChildSnapshotListView,
     LeadAssessmentDetailView,
     LeadReviewQueueView,
     LeadReviewView,
-    LeadSnapshotListView,
     MyAssessmentListView,
     MyChildAssessmentListView,
-    MyProgressView,
-    MySnapshotListView,
-    ProgressSnapshotCreateView,
     SessionAssessmentCreateView,
     StudentWardAssessmentsView,
     SubmissionAttachmentFileView,
     SubmissionAudioStreamView,
     SubmissionGradeView,
     TeacherAssessmentListView,
-    TeacherQualityReportView,
-    TeachingProgressView,
 )
 
 app_name = "assessment"
@@ -127,48 +119,6 @@ urlpatterns = [
         f"{ACADEMY}review/queue/",
         LeadReviewQueueView.as_view(),
         name="review-queue",
-    ),
-    # Reporting and progress.
-    path(
-        f"{ACADEMY}reports/teachers/",
-        TeacherQualityReportView.as_view(),
-        name="report-teachers",
-    ),
-    path(
-        f"{ACADEMY}progress/mine/",
-        MyProgressView.as_view(),
-        name="progress-mine",
-    ),
-    path(
-        f"{ACADEMY}progress/child/",
-        ChildProgressView.as_view(),
-        name="progress-child",
-    ),
-    path(
-        f"{ACADEMY}progress/teaching/",
-        TeachingProgressView.as_view(),
-        name="progress-teaching",
-    ),
-    # Snapshots.
-    path(
-        f"{ACADEMY}snapshots/",
-        ProgressSnapshotCreateView.as_view(),
-        name="snapshot-create",
-    ),
-    path(
-        f"{ACADEMY}snapshots/all/",
-        LeadSnapshotListView.as_view(),
-        name="snapshot-list",
-    ),
-    path(
-        f"{ACADEMY}snapshots/mine/",
-        MySnapshotListView.as_view(),
-        name="snapshot-mine",
-    ),
-    path(
-        f"{ACADEMY}snapshots/child/",
-        ChildSnapshotListView.as_view(),
-        name="snapshot-child",
     ),
     # Numeric routes last: they would otherwise shadow the literals above.
     path(

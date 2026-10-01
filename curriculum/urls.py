@@ -32,23 +32,16 @@ Literal segments sit above id routes, the repository's usual ordering.
 from django.urls import path
 
 from .views import (
-    AcademyChildrenPlacementListView,
     AcademyLearningMaterialDetailView,
     AcademyLearningMaterialFileView,
     AcademyLearningMaterialListCreateView,
     AcademyLevelDetailView,
     AcademyLevelListCreateView,
-    AcademyMyPlacementListView,
     AcademyMyTeacherTrackListView,
-    AcademyPendingPlacementListView,
-    AcademyPlacementAudioURLView,
-    AcademyPlacementCreateView,
-    AcademyPlacementReviewView,
     AcademyTeacherTrackDetailView,
     AcademyTeacherTrackListCreateView,
     AcademyTrackDetailView,
     AcademyTrackListCreateView,
-    PlacementAudioDownloadView,
 )
 
 app_name = "curriculum"
@@ -108,42 +101,5 @@ urlpatterns = [
         f"{ACADEMY}teachers/<int:pk>/",
         AcademyTeacherTrackDetailView.as_view(),
         name="academy-teacher-track-detail",
-    ),
-    # --- Placements ----------------------------------------------------------
-    path(
-        f"{ACADEMY}placements/",
-        AcademyPlacementCreateView.as_view(),
-        name="academy-placement-create",
-    ),
-    path(
-        f"{ACADEMY}placements/mine/",
-        AcademyMyPlacementListView.as_view(),
-        name="academy-placement-mine",
-    ),
-    path(
-        f"{ACADEMY}placements/children/",
-        AcademyChildrenPlacementListView.as_view(),
-        name="academy-placement-children",
-    ),
-    path(
-        f"{ACADEMY}placements/pending/",
-        AcademyPendingPlacementListView.as_view(),
-        name="academy-placement-pending",
-    ),
-    path(
-        f"{ACADEMY}placements/<int:pk>/review/",
-        AcademyPlacementReviewView.as_view(),
-        name="academy-placement-review",
-    ),
-    path(
-        f"{ACADEMY}placements/<int:pk>/audio-url/",
-        AcademyPlacementAudioURLView.as_view(),
-        name="academy-placement-audio-url",
-    ),
-    # --- Bearer-token audio download (deliberately not tenant-scoped) --------
-    path(
-        "placements/<int:pk>/audio/",
-        PlacementAudioDownloadView.as_view(),
-        name="placement-audio-download",
     ),
 ]
