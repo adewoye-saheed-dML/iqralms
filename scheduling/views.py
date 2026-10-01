@@ -307,15 +307,19 @@ class MyBookingListView(AcademyScopedView, generics.ListAPIView):
     """
 
     serializer_class = BookingSerializer
-    permission_classes = [IsAuthenticated, IsOrganizationMember, IsStudent]
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsStudentOrParent]
 
     def get_queryset(self):
+        user = self.request.user
         return (
             Booking.objects.filter(
                 level__track__organization=self.organization,
-                student=self.request.user,
+            )
+            .filter(
+                Q(student=user) | Q(student__parent_links__parent=user)
             )
             .select_related(*BOOKING_RELATED)
+            .distinct()
         )
 
 

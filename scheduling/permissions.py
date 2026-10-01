@@ -33,7 +33,7 @@ class IsTeacher(BasePermission):
 
 
 class IsStudentOrParent(BasePermission):
-    message = "Only a student or a parent of a student can book a session."
+    message = "Only a student or a parent of a student can access these sessions."
 
     def has_permission(self, request, view):
         user = request.user

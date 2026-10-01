@@ -581,15 +581,25 @@ class MyBookingsAPITests(APITestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_a_non_student_has_no_bookings_of_their_own(self):
-        for user in (
-            self.window.teacher,
-            admit(ParentFactory(), self.organization).user,
-        ):
-            with self.subTest(role=user.role):
-                self.client.force_authenticate(user=user)
-                response = self.client.get(self.url)
-                self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+    def test_a_teacher_cannot_access_my_bookings(self):
+        self.client.force_authenticate(user=self.window.teacher)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_parent_sees_their_linked_children_bookings(self):
+        parent_user = admit(ParentFactory(), self.organization).user
+        ParentLinkFactory(parent=parent_user, student=self.student)
+        self.client.force_authenticate(user=parent_user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([b["id"] for b in response.data], [self.mine.pk])
+
+    def test_a_parent_without_links_sees_empty_bookings(self):
+        unlinked_parent = admit(ParentFactory(), self.organization).user
+        self.client.force_authenticate(user=unlinked_parent)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list(response.data), [])
 
 
 class TeachingBookingsAPITests(APITestCase):
