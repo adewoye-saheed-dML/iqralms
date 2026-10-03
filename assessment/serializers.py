@@ -959,6 +959,40 @@ class StudentAssignmentCreateSerializer(AcademyScopedSerializerMixin, serializer
             "resource_file",
         ]
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        request = self.context.get("request")
+        org = self.organization
+        if request and request.user and org:
+            from organizations.models import OrganizationRole, active_membership
+            from .services import get_teacher_organization_tracks, teacher_is_attached_to_student
+
+            user = request.user
+            membership = active_membership(user=user, organization=org)
+            is_manager = (
+                (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN])
+                or user.role == Role.LEAD
+            )
+            if not is_manager:
+                assigned_student = attrs.get("assigned_student")
+                track = attrs.get("track")
+                if assigned_student:
+                    if not teacher_is_attached_to_student(user, assigned_student, org):
+                        raise serializers.ValidationError({
+                            "assigned_student": "You do not have an assigned teaching relationship with this student."
+                        })
+                    if track and not teacher_is_attached_to_student(user, assigned_student, org, track=track):
+                        raise serializers.ValidationError({
+                            "track": "You do not offer this subject to this student."
+                        })
+                elif track:
+                    teacher_tracks = get_teacher_organization_tracks(user, org)
+                    if track.id not in teacher_tracks:
+                        raise serializers.ValidationError({
+                            "track": "You do not teach this subject in this academy."
+                        })
+        return attrs
+
     def create(self, validated_data):
         org = self.organization
         if not org:
@@ -969,5 +1003,46 @@ class StudentAssignmentCreateSerializer(AcademyScopedSerializerMixin, serializer
             created_by=user,
             **validated_data,
         )
+
+
+class StudentLearningSpaceSessionAssessmentSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    booking_id = serializers.IntegerField()
+    track_id = serializers.IntegerField()
+    track_name = serializers.CharField()
+    level_name = serializers.CharField(allow_null=True)
+    teacher_name = serializers.CharField()
+    taught_at = serializers.DateTimeField(allow_null=True)
+    assessed_at = serializers.DateTimeField()
+    teacher_summary = serializers.CharField(allow_blank=True)
+    overall_score = serializers.DecimalField(max_digits=4, decimal_places=2, allow_null=True)
+    scores = serializers.ListField(child=serializers.DictField())
+
+
+class StudentTrackProgressSerializer(serializers.Serializer):
+    track_id = serializers.IntegerField()
+    track_name = serializers.CharField()
+    level_name = serializers.CharField(allow_null=True)
+    assigned_teacher_name = serializers.CharField(allow_null=True)
+    session_assessments_count = serializers.IntegerField()
+    session_average_score = serializers.DecimalField(max_digits=4, decimal_places=2, allow_null=True)
+    assignments_count = serializers.IntegerField()
+    submissions_count = serializers.IntegerField()
+    assignment_average_pct = serializers.FloatField(allow_null=True)
+
+
+class StudentLearningSpaceSerializer(serializers.Serializer):
+    student = serializers.DictField()
+    total_assigned = serializers.IntegerField()
+    total_submitted = serializers.IntegerField()
+    total_graded = serializers.IntegerField()
+    average_score_pct = serializers.FloatField(allow_null=True)
+    average_assignment_score_pct = serializers.FloatField(allow_null=True)
+    recent_submissions = AssignmentSubmissionSerializer(many=True)
+    total_sessions_assessed = serializers.IntegerField()
+    overall_session_average = serializers.DecimalField(max_digits=4, decimal_places=2, allow_null=True)
+    recent_session_assessments = StudentLearningSpaceSessionAssessmentSerializer(many=True)
+    tracks_progress = StudentTrackProgressSerializer(many=True)
+
 
 

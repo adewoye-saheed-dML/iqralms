@@ -74,6 +74,7 @@ from .serializers import (
     SessionAssessmentCreateSerializer,
     StudentAssignmentCreateSerializer,
     StudentAssignmentSerializer,
+    StudentLearningSpaceSerializer,
     StudentProgressSerializer,
     TeacherAssessmentSerializer,
     TeacherReportSerializer,
@@ -792,13 +793,11 @@ class TeachingProgressView(ProgressView):
         from organizations.permissions import is_owner_or_admin
 
         if not is_owner_or_admin(self, request.user):
-            taught = Booking.objects.filter(
-                level__track__organization=self.organization,
-                teacher=request.user,
-                student=student,
-            ).exists()
-            if not taught:
-                raise PermissionDenied("You do not have an assigned teaching relationship with this student.")
+            from .services import teacher_is_attached_to_student
+
+            track = requested_track(request, organization=self.organization)
+            if not teacher_is_attached_to_student(request.user, student, self.organization, track=track):
+                raise PermissionDenied("You do not offer this subject to this student.")
         return student
 
     @extend_schema(
@@ -1045,6 +1044,18 @@ class AssignmentListCreateView(AcademyScopedView, generics.ListCreateAPIView):
         if is_manager:
             return qs
         elif is_teacher:
+            from .services import get_teacher_tracks_for_student, teacher_is_attached_to_student
+
+            if student_id:
+                target_student = User.objects.filter(pk=student_id).first()
+                if not target_student or not teacher_is_attached_to_student(user, target_student, org):
+                    raise PermissionDenied("You do not have an assigned teaching relationship with this student.")
+                allowed_tracks = get_teacher_tracks_for_student(user, target_student, org)
+                if track_id:
+                    if track_id not in allowed_tracks:
+                        raise PermissionDenied("You do not offer this subject to this student.")
+                else:
+                    qs = qs.filter(track_id__in=allowed_tracks)
             return qs.filter(Q(created_by=user) | Q(assigned_student__isnull=True))
         elif is_student:
             return qs.filter(Q(assigned_student=user) | Q(assigned_student__isnull=True))
@@ -1084,6 +1095,30 @@ class AssignmentDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyAPIV
             .select_related("track", "level", "assigned_student", "created_by", "rubric")
             .prefetch_related("submissions")
         )
+
+    def get_object(self):
+        obj = super().get_object()
+        user = self.request.user
+        membership = self.caller_membership
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_student = user.role == Role.STUDENT
+        is_parent = user.role == Role.PARENT
+
+        if is_student:
+            if obj.assigned_student and obj.assigned_student_id != user.id:
+                raise PermissionDenied("You do not have permission to view this assignment.")
+        elif is_parent:
+            if obj.assigned_student:
+                if not ParentLink.objects.filter(parent=user, student=obj.assigned_student).exists():
+                    raise PermissionDenied("You do not have permission to view this assignment.")
+        elif is_teacher and not is_manager:
+            if obj.assigned_student and obj.created_by_id != user.id:
+                from .services import teacher_is_attached_to_student
+
+                if not teacher_is_attached_to_student(user, obj.assigned_student, self.organization, track=obj.track):
+                    raise PermissionDenied("You do not offer this subject to this student.")
+        return obj
 
     def perform_update(self, serializer):
         assignment = self.get_object()
@@ -1189,6 +1224,16 @@ class SubmissionGradeView(AcademyScopedView, generics.GenericAPIView):
         if not submission:
             raise NotFound("Submission not found.")
 
+        if is_teacher and not is_manager:
+            from .services import teacher_is_attached_to_student
+
+            track = submission.assignment.track
+            if not (
+                submission.assignment.created_by_id == user.id
+                or teacher_is_attached_to_student(user, submission.student, self.organization, track=track)
+            ):
+                raise PermissionDenied("You do not offer this subject to this student.")
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -1252,8 +1297,14 @@ class AcademySubmissionsListView(AcademyScopedView, generics.ListAPIView):
             return qs
 
         if is_teacher:
+            from .services import get_teacher_tracks_for_student, teacher_is_attached_to_student
+
             if student_id:
-                qs = qs.filter(student_id=student_id)
+                target_student = User.objects.filter(pk=student_id).first()
+                if not target_student or not teacher_is_attached_to_student(user, target_student, org):
+                    raise PermissionDenied("You do not have an assigned teaching relationship with this student.")
+                allowed_tracks = get_teacher_tracks_for_student(user, target_student, org)
+                qs = qs.filter(student_id=student_id, assignment__track_id__in=allowed_tracks)
             return qs.filter(Q(assignment__created_by=user) | Q(graded_by=user))
 
         if is_student:
@@ -1272,10 +1323,46 @@ class AcademySubmissionsListView(AcademyScopedView, generics.ListAPIView):
         return qs.none()
 
 
+@extend_schema(
+    summary="Student personal learning space and ward progress",
+    parameters=[
+        OpenApiParameter(
+            name="student_id",
+            type=int,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Student ID (required for parent/teacher; defaults to authenticated student).",
+        ),
+        OpenApiParameter(
+            name="track_id",
+            type=int,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Optional track ID to scope progress to a single subject.",
+        ),
+    ],
+    responses={
+        200: StudentLearningSpaceSerializer,
+        400: OpenApiResponse(description="Student ID required or invalid parameters."),
+        403: OpenApiResponse(description="Teacher not attached or does not offer subject, or parent not linked."),
+        404: OpenApiResponse(description="Student not found."),
+    },
+)
 class StudentWardAssessmentsView(AcademyScopedView, generics.GenericAPIView):
-    """GET /api/assessment/organizations/<organization_pk>/ward-progress/?student_id="""
+    """GET /api/assessment/organizations/<organization_pk>/ward-progress/?student_id=&track_id=
+    GET /api/assessment/organizations/<organization_pk>/learning-space/?student_id=&track_id=
+
+    Returns the student's joined personal learning space:
+    - Live session evaluations and rubric scores
+    - Continuous assignments, submissions, and feedback
+    - Overall averages and track-by-track breakdown
+
+    Enforces that teachers who are not attached to the student cannot view their learning space,
+    and teachers who do not offer them the subject cannot see assessments or progress for other subjects.
+    """
 
     permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = StudentLearningSpaceSerializer
 
     def get(self, request, *args, **kwargs):
         user = request.user
@@ -1287,6 +1374,8 @@ class StudentWardAssessmentsView(AcademyScopedView, generics.GenericAPIView):
         is_student = user.role == Role.STUDENT
         is_parent = user.role == Role.PARENT
 
+        track_id = optional_int_param(request, "track_id")
+
         if is_student:
             target_student = user
         elif is_parent:
@@ -1294,57 +1383,24 @@ class StudentWardAssessmentsView(AcademyScopedView, generics.GenericAPIView):
             target_student = linked_child(user, student_id, organization=org)
         elif is_manager or is_teacher:
             student_id = optional_int_param(request, "student_id")
-            if student_id:
-                target_student = User.objects.filter(pk=student_id).first()
-                if not target_student:
-                    raise NotFound("Student not found.")
-            else:
-                target_student = None
+            if not student_id:
+                return Response({"detail": "Student ID required."}, status=status.HTTP_400_BAD_REQUEST)
+            target_student = User.objects.filter(pk=student_id, role=Role.STUDENT).first()
+            if not target_student:
+                raise NotFound("Student not found.")
         else:
             raise PermissionDenied("Unauthorized role.")
 
-        if not target_student:
-            return Response({"detail": "Student ID required."}, status=400)
+        from .services import get_student_learning_space
 
-        assignments_qs = StudentAssignment.objects.in_organization(org).filter(
-            Q(assigned_student=target_student) | Q(assigned_student__isnull=True)
+        data = get_student_learning_space(
+            student=target_student,
+            organization=org,
+            caller_user=user,
+            track_id=track_id,
+            serializer_context=self.get_serializer_context(),
         )
-        total_assigned = assignments_qs.count()
-
-        submissions = (
-            AssignmentSubmission.objects.in_organization(org)
-            .filter(student=target_student)
-            .select_related("assignment", "graded_by")
-            .order_by("-submitted_at")
-        )
-        total_submitted = submissions.count()
-        graded_submissions = submissions.filter(status=SubmissionStatus.GRADED)
-        total_graded = graded_submissions.count()
-
-        scores_list = [
-            float((s.score / s.assignment.max_score) * 100)
-            for s in graded_submissions
-            if s.score is not None and s.assignment.max_score > 0
-        ]
-        avg_score_pct = round(sum(scores_list) / len(scores_list), 1) if scores_list else None
-
-        recent_submissions = AssignmentSubmissionSerializer(
-            submissions[:10], many=True, context=self.get_serializer_context()
-        ).data
-
-        return Response({
-            "student": {
-                "id": target_student.id,
-                "username": target_student.username,
-                "first_name": target_student.first_name,
-                "last_name": target_student.last_name,
-            },
-            "total_assigned": total_assigned,
-            "total_submitted": total_submitted,
-            "total_graded": total_graded,
-            "average_score_pct": avg_score_pct,
-            "recent_submissions": recent_submissions,
-        })
+        return Response(data, status=status.HTTP_200_OK)
 
 
 @extend_schema(
@@ -1373,6 +1429,17 @@ class SubmissionAudioStreamView(AcademyScopedView, APIView):
         is_parent = False
         if user.role == Role.PARENT:
             is_parent = ParentLink.objects.filter(parent=user, student=submission.student).exists()
+
+        if is_teacher and not is_manager:
+            from .services import teacher_is_attached_to_student
+
+            track = submission.assignment.track
+            if not (
+                submission.assignment.created_by_id == user.id
+                or submission.graded_by_id == user.id
+                or teacher_is_attached_to_student(user, submission.student, self.organization, track=track)
+            ):
+                raise PermissionDenied("You do not offer this subject to this student.")
 
         if not (is_manager or is_teacher or is_student or is_parent):
             raise PermissionDenied("You do not have permission to access this audio.")
@@ -1417,6 +1484,17 @@ class SubmissionAttachmentFileView(AcademyScopedView, APIView):
         is_parent = False
         if user.role == Role.PARENT:
             is_parent = ParentLink.objects.filter(parent=user, student=submission.student).exists()
+
+        if is_teacher and not is_manager:
+            from .services import teacher_is_attached_to_student
+
+            track = submission.assignment.track
+            if not (
+                submission.assignment.created_by_id == user.id
+                or submission.graded_by_id == user.id
+                or teacher_is_attached_to_student(user, submission.student, self.organization, track=track)
+            ):
+                raise PermissionDenied("You do not offer this subject to this student.")
 
         if not (is_manager or is_teacher or is_student or is_parent):
             raise PermissionDenied("You do not have permission to access this attachment.")

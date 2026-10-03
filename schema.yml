@@ -742,6 +742,57 @@ paths:
           description: ''
         '403':
           description: Not a parent, or not this parent's child.
+  /api/assessment/organizations/{organization_pk}/learning-space/:
+    get:
+      operationId: assessment_organizations_learning_space_retrieve
+      description: |-
+        GET /api/assessment/organizations/<organization_pk>/ward-progress/?student_id=&track_id=
+        GET /api/assessment/organizations/<organization_pk>/learning-space/?student_id=&track_id=
+
+        Returns the student's joined personal learning space:
+        - Live session evaluations and rubric scores
+        - Continuous assignments, submissions, and feedback
+        - Overall averages and track-by-track breakdown
+
+        Enforces that teachers who are not attached to the student cannot view their learning space,
+        and teachers who do not offer them the subject cannot see assessments or progress for other subjects.
+      summary: Student personal learning space and ward progress
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+        description: Student ID (required for parent/teacher; defaults to authenticated
+          student).
+      - in: query
+        name: track_id
+        schema:
+          type: integer
+        description: Optional track ID to scope progress to a single subject.
+      tags:
+      - assessment
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentLearningSpace'
+          description: ''
+        '400':
+          description: Student ID required or invalid parameters.
+        '403':
+          description: Teacher not attached or does not offer subject, or parent not
+            linked.
+        '404':
+          description: Student not found.
   /api/assessment/organizations/{organization_pk}/mine/:
     get:
       operationId: assessment_organizations_mine_list
@@ -1150,13 +1201,35 @@ paths:
   /api/assessment/organizations/{organization_pk}/ward-progress/:
     get:
       operationId: assessment_organizations_ward_progress_retrieve
-      description: GET /api/assessment/organizations/<organization_pk>/ward-progress/?student_id=
+      description: |-
+        GET /api/assessment/organizations/<organization_pk>/ward-progress/?student_id=&track_id=
+        GET /api/assessment/organizations/<organization_pk>/learning-space/?student_id=&track_id=
+
+        Returns the student's joined personal learning space:
+        - Live session evaluations and rubric scores
+        - Continuous assignments, submissions, and feedback
+        - Overall averages and track-by-track breakdown
+
+        Enforces that teachers who are not attached to the student cannot view their learning space,
+        and teachers who do not offer them the subject cannot see assessments or progress for other subjects.
+      summary: Student personal learning space and ward progress
       parameters:
       - in: path
         name: organization_pk
         schema:
           type: integer
         required: true
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+        description: Student ID (required for parent/teacher; defaults to authenticated
+          student).
+      - in: query
+        name: track_id
+        schema:
+          type: integer
+        description: Optional track ID to scope progress to a single subject.
       tags:
       - assessment
       security:
@@ -1164,7 +1237,18 @@ paths:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentLearningSpace'
+          description: ''
+        '400':
+          description: Student ID required or invalid parameters.
+        '403':
+          description: Teacher not attached or does not offer subject, or parent not
+            linked.
+        '404':
+          description: Student not found.
   /api/auth/login/:
     post:
       operationId: auth_login_create
@@ -8704,6 +8788,104 @@ components:
       description: |-
         * `active` - Active
         * `inactive` - Inactive
+    StudentLearningSpace:
+      type: object
+      properties:
+        student:
+          type: object
+          additionalProperties: {}
+        total_assigned:
+          type: integer
+        total_submitted:
+          type: integer
+        total_graded:
+          type: integer
+        average_score_pct:
+          type: number
+          format: double
+          nullable: true
+        average_assignment_score_pct:
+          type: number
+          format: double
+          nullable: true
+        recent_submissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssignmentSubmission'
+        total_sessions_assessed:
+          type: integer
+        overall_session_average:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,2}(?:\.\d{0,2})?$
+          nullable: true
+        recent_session_assessments:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudentLearningSpaceSessionAssessment'
+        tracks_progress:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudentTrackProgress'
+      required:
+      - average_assignment_score_pct
+      - average_score_pct
+      - overall_session_average
+      - recent_session_assessments
+      - recent_submissions
+      - student
+      - total_assigned
+      - total_graded
+      - total_sessions_assessed
+      - total_submitted
+      - tracks_progress
+    StudentLearningSpaceSessionAssessment:
+      type: object
+      properties:
+        id:
+          type: integer
+        booking_id:
+          type: integer
+        track_id:
+          type: integer
+        track_name:
+          type: string
+        level_name:
+          type: string
+          nullable: true
+        teacher_name:
+          type: string
+        taught_at:
+          type: string
+          format: date-time
+          nullable: true
+        assessed_at:
+          type: string
+          format: date-time
+        teacher_summary:
+          type: string
+        overall_score:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,2}(?:\.\d{0,2})?$
+          nullable: true
+        scores:
+          type: array
+          items:
+            type: object
+            additionalProperties: {}
+      required:
+      - assessed_at
+      - booking_id
+      - id
+      - level_name
+      - overall_score
+      - scores
+      - taught_at
+      - teacher_name
+      - teacher_summary
+      - track_id
+      - track_name
     StudentList:
       type: object
       description: A student's enrollment, as seen in the academy's list.
@@ -8776,6 +8958,44 @@ components:
       - updated_at
       - user_id
       - username
+    StudentTrackProgress:
+      type: object
+      properties:
+        track_id:
+          type: integer
+        track_name:
+          type: string
+        level_name:
+          type: string
+          nullable: true
+        assigned_teacher_name:
+          type: string
+          nullable: true
+        session_assessments_count:
+          type: integer
+        session_average_score:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,2}(?:\.\d{0,2})?$
+          nullable: true
+        assignments_count:
+          type: integer
+        submissions_count:
+          type: integer
+        assignment_average_pct:
+          type: number
+          format: double
+          nullable: true
+      required:
+      - assigned_teacher_name
+      - assignment_average_pct
+      - assignments_count
+      - level_name
+      - session_assessments_count
+      - session_average_score
+      - submissions_count
+      - track_id
+      - track_name
     SubaccountSetup:
       type: object
       description: Payload to configure an academy's settlement bank details.

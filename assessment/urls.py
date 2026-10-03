@@ -80,6 +80,11 @@ urlpatterns = [
         StudentWardAssessmentsView.as_view(),
         name="ward-progress",
     ),
+    path(
+        f"{ACADEMY}learning-space/",
+        StudentWardAssessmentsView.as_view(),
+        name="learning-space",
+    ),
 
     # Rubric configuration — lead only.
     path(
