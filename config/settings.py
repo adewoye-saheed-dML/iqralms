@@ -150,6 +150,8 @@ INSTALLED_APPS = [
     "notifications",
     "imports",
     "audit_logs",
+    "billing",
+    "payments",
 ]
 
 MIDDLEWARE = [
@@ -560,4 +562,9 @@ DEFAULT_FROM_EMAIL = env_str(
     "DEFAULT_FROM_EMAIL",
     default="notifications@quranacademy.local",
 )
+
+# --- Paystack (Phase 9) -----------------------------------------------------
+PAYSTACK_SECRET_KEY = env_str("PAYSTACK_SECRET_KEY", default="sk_test_placeholder")
+PAYSTACK_PUBLIC_KEY = env_str("PAYSTACK_PUBLIC_KEY", default="pk_test_placeholder")
+PAYSTACK_PLAN_CODE = env_str("PAYSTACK_PLAN_CODE", default="PLN_monthly_sub")
 

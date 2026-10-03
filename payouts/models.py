@@ -46,7 +46,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone as dj_timezone
 
-from accounts.models import User
+from accounts.models import CompensationType, FixedPeriodCadence, User
 from organizations.models import active_membership
 from scheduling.models import Booking, BookingStatus, Cohort, MINUTES_PER_HOUR
 
@@ -126,6 +126,7 @@ IMMUTABLE_FIELDS = (
     "teacher_id",
     "booking_id",
     "cohort_id",
+    "compensation_type",
     "minutes_paid",
     "rate_used",
     "amount",
@@ -191,6 +192,12 @@ class TeacherPayout(models.Model):
             "constraint below can enforce one payout per cohort session. Always "
             "equal to booking.cohort."
         ),
+    )
+    compensation_type = models.CharField(
+        max_length=20,
+        choices=CompensationType.choices,
+        default=CompensationType.HOURLY,
+        help_text="How this payout was calculated: hourly or per_class.",
     )
     minutes_paid = models.PositiveIntegerField(
         validators=[MinValueValidator(1)],
@@ -425,17 +432,26 @@ class TeacherPayout(models.Model):
             )
 
         if self.minutes_paid and self.rate_used is not None:
-            expected = payout_amount(self.minutes_paid, self.rate_used)
-            if self.amount != expected:
-                # The stored amount must be the one the formula produces, or the
-                # record is not evidence of anything. This is what stops an
-                # amount from being edited on its own.
-                errors["amount"] = ValidationError(
-                    "amount must be minutes_paid / 60 × rate_used = %(expected)s "
-                    "(got %(actual)s).",
-                    code="payout_amount_mismatch",
-                    params={"expected": expected, "actual": self.amount},
-                )
+            if self.compensation_type == CompensationType.PER_CLASS:
+                expected = Decimal(self.rate_used).quantize(MONEY_PRECISION, rounding=ROUND_HALF_UP)
+                if self.amount != expected:
+                    errors["amount"] = ValidationError(
+                        "amount must equal per_class rate_used = %(expected)s (got %(actual)s).",
+                        code="payout_amount_mismatch",
+                        params={"expected": expected, "actual": self.amount},
+                    )
+            else:
+                expected = payout_amount(self.minutes_paid, self.rate_used)
+                if self.amount != expected:
+                    # The stored amount must be the one the formula produces, or the
+                    # record is not evidence of anything. This is what stops an
+                    # amount from being edited on its own.
+                    errors["amount"] = ValidationError(
+                        "amount must be minutes_paid / 60 × rate_used = %(expected)s "
+                        "(got %(actual)s).",
+                        code="payout_amount_mismatch",
+                        params={"expected": expected, "actual": self.amount},
+                    )
 
         stamped = self.finalized_at is not None
         if self.is_finalized != stamped:
@@ -461,3 +477,152 @@ class TeacherPayout(models.Model):
             f"{self.teacher.username}: {self.amount} {self.currency} for "
             f"{self.booking.start_time_utc:%Y-%m-%d %H:%M} UTC ({self.status})"
         )
+
+
+FIXED_PERIOD_IMMUTABLE_FIELDS = (
+    "teacher_id",
+    "organization_id",
+    "period_start",
+    "period_end",
+    "cadence",
+    "amount",
+    "currency",
+)
+
+
+class TeacherFixedPeriodPayoutQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        if organization is None:
+            return self.none()
+        organization_id = getattr(organization, "pk", organization)
+        return self.filter(organization_id=organization_id)
+
+
+class TeacherFixedPeriodPayout(models.Model):
+    """One teacher's fixed compensation for a calendar period (weekly or monthly)."""
+
+    objects = TeacherFixedPeriodPayoutQuerySet.as_manager()
+
+    teacher = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="fixed_period_payouts",
+        help_text="The teacher owed this fixed period compensation.",
+    )
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.PROTECT,
+        related_name="fixed_period_payouts",
+        help_text="The academy paying this fixed compensation.",
+    )
+    period_start = models.DateTimeField(
+        help_text="Start of the compensation period in UTC.",
+    )
+    period_end = models.DateTimeField(
+        help_text="End of the compensation period in UTC.",
+    )
+    cadence = models.CharField(
+        max_length=20,
+        choices=FixedPeriodCadence.choices,
+        help_text="Cadence: weekly or monthly.",
+    )
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(MINIMUM_AMOUNT)],
+        help_text="Fixed compensation amount for the period.",
+    )
+    currency = models.CharField(
+        max_length=3,
+        default=PAYOUT_CURRENCY,
+        help_text="ISO code, NGN.",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=PayoutStatus.choices,
+        default=PayoutStatus.GENERATED,
+        help_text="generated → finalized.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    finalized_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["period_start", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "teacher", "period_start", "period_end"],
+                name="unique_fixed_payout_per_org_teacher_period",
+                violation_error_message="A fixed period payout already exists for this teacher and period.",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(status=PayoutStatus.GENERATED, finalized_at__isnull=True)
+                    | Q(status=PayoutStatus.FINALIZED, finalized_at__isnull=False)
+                ),
+                name="fixed_payout_finalized_at_matches_status",
+                violation_error_message="finalized_at is set exactly when status is 'finalized'.",
+            ),
+        ]
+
+    @property
+    def is_finalized(self) -> bool:
+        return self.status == PayoutStatus.FINALIZED
+
+    def finalize(self, *, when=None):
+        if self.is_finalized:
+            raise PayoutAlreadyFinalized(
+                f"Fixed period payout {self.pk} was already finalized at {self.finalized_at}."
+            )
+        self.status = PayoutStatus.FINALIZED
+        self.finalized_at = when or dj_timezone.now()
+        self.save()
+        return self
+
+    def clean(self):
+        errors = {}
+        if not self._state.adding:
+            stored = type(self).objects.filter(pk=self.pk).first()
+            if stored is not None:
+                if stored.status == PayoutStatus.FINALIZED:
+                    errors[NON_FIELD_ERRORS] = ValidationError(
+                        "Fixed payout %(pk)s was finalized on %(when)s and cannot be changed.",
+                        code="payout_finalized",
+                        params={"pk": self.pk, "when": stored.finalized_at},
+                    )
+                else:
+                    for field in FIXED_PERIOD_IMMUTABLE_FIELDS:
+                        if getattr(self, field) != getattr(stored, field):
+                            errors[field.removesuffix("_id")] = ValidationError(
+                                "Fixed payout field %(field)s is fixed at generation.",
+                                code="payout_field_immutable",
+                                params={"field": field.removesuffix("_id")},
+                            )
+
+        if self.period_start and self.period_end and self.period_end <= self.period_start:
+            errors["period_end"] = ValidationError(
+                "period_end must be strictly after period_start.",
+                code="invalid_period_bounds",
+            )
+
+        if self.teacher_id and not self.teacher.is_teacher:
+            errors["teacher"] = ValidationError(
+                "Only a teacher account earns a payout.",
+                code="payout_invalid_teacher_role",
+            )
+
+        stamped = self.finalized_at is not None
+        if self.is_finalized != stamped:
+            errors["finalized_at"] = ValidationError(
+                "finalized_at is set exactly when status is 'finalized'.",
+                code="payout_finalized_at_mismatch",
+            )
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.teacher.username}: {self.amount} {self.currency} for {self.period_start:%Y-%m-%d} to {self.period_end:%Y-%m-%d} ({self.status})"

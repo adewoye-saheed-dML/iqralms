@@ -138,6 +138,12 @@ class Organization(models.Model):
         default="jitsi",
         help_text="The preferred video provider for this academy."
     )
+    paystack_subaccount_code = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        help_text="Paystack subaccount code for routing tuition directly to the academy bank account.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

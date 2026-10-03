@@ -20,6 +20,7 @@ which scheduling now reads directly when operating in an organization context.
 Nothing about curriculum, booking or payment behaviour lives here.
 """
 
+from decimal import Decimal
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from django.core.validators import MinValueValidator
@@ -301,6 +302,17 @@ class TeacherProfile(models.Model):
         return f"TeacherProfile({self.user.username})"
 
 
+class CompensationType(models.TextChoices):
+    HOURLY = "hourly", "Hourly"
+    PER_CLASS = "per_class", "Per Class"
+    FIXED_PERIOD = "fixed_period", "Fixed Period"
+
+
+class FixedPeriodCadence(models.TextChoices):
+    WEEKLY = "weekly", "Weekly"
+    MONTHLY = "monthly", "Monthly"
+
+
 class OrganizationTeacherConfiguration(models.Model):
     """How one teacher operates inside one academy: approved, capacity, rate.
 
@@ -346,6 +358,12 @@ class OrganizationTeacherConfiguration(models.Model):
             "TeacherProfile.max_weekly_hours until scheduling tenancy lands."
         ),
     )
+    compensation_type = models.CharField(
+        max_length=20,
+        choices=CompensationType.choices,
+        default=CompensationType.HOURLY,
+        help_text="Compensation structure: hourly, per_class, or fixed_period.",
+    )
     hourly_payout_rate = models.DecimalField(
         max_digits=8,
         decimal_places=2,
@@ -353,8 +371,31 @@ class OrganizationTeacherConfiguration(models.Model):
         blank=True,
         help_text=(
             "What this academy pays per hour. Null means no per-hour rate, as on "
-            "TeacherProfile. Payout calculation still reads that one."
+            "TeacherProfile. Payout calculation reads this when compensation_type is hourly."
         ),
+    )
+    per_class_rate = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Fixed payment per completed class/session.",
+    )
+    fixed_period_amount = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Fixed compensation amount paid per cadence period.",
+    )
+    fixed_period_cadence = models.CharField(
+        max_length=20,
+        choices=FixedPeriodCadence.choices,
+        null=True,
+        blank=True,
+        help_text="Cadence for fixed period compensation: weekly or monthly.",
     )
     approved = models.BooleanField(
         default=False,
@@ -380,6 +421,7 @@ class OrganizationTeacherConfiguration(models.Model):
         return self.membership.organization
 
     def clean(self):
+        errors = {}
         # The same rule TeacherProfile enforces, and deliberately the same rule:
         # only a 'lead' or 'sub' account can be configured to teach. Phase 2 was
         # asked to preserve existing product behaviour rather than let an
@@ -392,16 +434,39 @@ class OrganizationTeacherConfiguration(models.Model):
         # lead teacher who founded their own academy and therefore holds the
         # 'owner' row (see accounts/tenancy.py).
         if self.membership_id and not self.membership.user.is_teacher:
-            raise ValidationError(
-                {
-                    "membership": ValidationError(
-                        "Only a member whose account role is 'lead' or 'sub' can "
-                        "be configured to teach (got '%(role)s').",
-                        code="invalid_role_for_teacher_configuration",
-                        params={"role": self.membership.user.role},
-                    )
-                }
+            errors["membership"] = ValidationError(
+                "Only a member whose account role is 'lead' or 'sub' can "
+                "be configured to teach (got '%(role)s').",
+                code="invalid_role_for_teacher_configuration",
+                params={"role": self.membership.user.role},
             )
+
+        if self.compensation_type == CompensationType.HOURLY:
+            if self.hourly_payout_rate is not None and self.hourly_payout_rate < Decimal("0.00"):
+                errors["hourly_payout_rate"] = ValidationError(
+                    "Hourly payout rate cannot be negative.",
+                    code="negative_hourly_rate",
+                )
+        elif self.compensation_type == CompensationType.PER_CLASS:
+            if self.per_class_rate is not None and self.per_class_rate < Decimal("0.00"):
+                errors["per_class_rate"] = ValidationError(
+                    "Per class rate cannot be negative.",
+                    code="negative_per_class_rate",
+                )
+        elif self.compensation_type == CompensationType.FIXED_PERIOD:
+            if self.fixed_period_amount is not None and self.fixed_period_amount < Decimal("0.00"):
+                errors["fixed_period_amount"] = ValidationError(
+                    "Fixed period amount cannot be negative.",
+                    code="negative_fixed_period_amount",
+                )
+            if self.fixed_period_amount is not None and not self.fixed_period_cadence:
+                errors["fixed_period_cadence"] = ValidationError(
+                    "Fixed period cadence is required when fixed period amount is set.",
+                    code="missing_fixed_period_cadence",
+                )
+
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         # The repository convention: validate in save() so the API, the admin and a

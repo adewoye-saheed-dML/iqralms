@@ -18,15 +18,18 @@ would make "which sessions were completed" depend on who ran the payroll.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 
 from scheduling.models import Booking
 
+from accounts.models import CompensationType
+
 from .models import (
     MINIMUM_AMOUNT,
+    MONEY_PRECISION,
     PAYOUT_CURRENCY,
     PAYABLE_BOOKING_STATUSES,
     PayoutStatus,
@@ -112,12 +115,11 @@ class Statement:
     payouts: list
 
 
-def applicable_rate(teacher, *, organization=None):
-    """The rate ``teacher`` earns per hour today, or None if they have none.
+def applicable_compensation(teacher, *, organization=None):
+    """Return (compensation_type, rate) for a teaching session.
 
-    The authoritative rate source is ``OrganizationTeacherConfiguration.hourly_payout_rate``
-    for the teacher's active membership in ``organization``.
-    Does not use the global ``TeacherProfile.hourly_payout_rate`` as a fallback for an academy-scoped payout.
+    If compensation_type is fixed_period, rate is None because fixed period teachers
+    do not earn per-session payouts.
     """
     if organization is not None:
         from accounts.models import OrganizationTeacherConfiguration
@@ -125,19 +127,30 @@ def applicable_rate(teacher, *, organization=None):
 
         membership = active_membership(user=teacher, organization=organization)
         if membership is None:
-            return None
+            return (None, None)
 
         config = OrganizationTeacherConfiguration.objects.filter(
             membership=membership,
         ).first()
         if config is None or not config.approved:
-            return None
-        return config.hourly_payout_rate
+            return (None, None)
+
+        if config.compensation_type == CompensationType.PER_CLASS:
+            return (CompensationType.PER_CLASS, config.per_class_rate)
+        elif config.compensation_type == CompensationType.FIXED_PERIOD:
+            return (CompensationType.FIXED_PERIOD, None)
+        return (CompensationType.HOURLY, config.hourly_payout_rate)
 
     profile = getattr(teacher, "teacher_profile", None)
     if profile is None:
-        return None
-    return profile.hourly_payout_rate
+        return (None, None)
+    return (CompensationType.HOURLY, profile.hourly_payout_rate)
+
+
+def applicable_rate(teacher, *, organization=None):
+    """The rate ``teacher`` earns per hour (or per class) today, or None if they have none."""
+    comp_type, rate = applicable_compensation(teacher, organization=organization)
+    return rate
 
 
 def eligible_bookings(*, organization, period_start, period_end, teacher=None):
@@ -240,7 +253,7 @@ def generate_payouts(*, organization, period_start, period_end, teacher=None):
                 )
                 continue
 
-        rate = applicable_rate(booking.teacher, organization=organization)
+        comp_type, rate = applicable_compensation(booking.teacher, organization=organization)
         if rate is None:
             # The lead teaching their own session lands here, by decision: they
             # are not paid per hour. Reported, so a genuinely unset sub-teacher
@@ -248,13 +261,19 @@ def generate_payouts(*, organization, period_start, period_end, teacher=None):
             result.skipped.append(_skip(booking, SKIP_NO_PAYOUT_RATE))
             continue
 
+        if comp_type == CompensationType.PER_CLASS:
+            amount = Decimal(rate).quantize(MONEY_PRECISION, rounding=ROUND_HALF_UP)
+        else:
+            amount = payout_amount(booking.duration_minutes, rate)
+
         payout = TeacherPayout(
             teacher=booking.teacher,
             booking=booking,
             cohort=booking.cohort,
+            compensation_type=comp_type,
             minutes_paid=booking.duration_minutes,
             rate_used=rate,
-            amount=payout_amount(booking.duration_minutes, rate),
+            amount=amount,
             currency=PAYOUT_CURRENCY,
         )
         payout.save()
@@ -341,3 +360,83 @@ def _statement_status(session_count, finalized_count):
     if finalized_count == session_count:
         return StatementStatus.FINALIZED
     return StatementStatus.PARTLY_FINALIZED
+
+
+@dataclass
+class FixedPeriodGenerationResult:
+    period_start: datetime
+    period_end: datetime
+    created: list = field(default_factory=list)
+    skipped: list = field(default_factory=list)
+
+    @property
+    def created_count(self) -> int:
+        return len(self.created)
+
+    @property
+    def skipped_count(self) -> int:
+        return len(self.skipped)
+
+    @property
+    def total_amount(self) -> Decimal:
+        return sum((p.amount for p in self.created), MINIMUM_AMOUNT)
+
+
+@transaction.atomic
+def generate_fixed_period_payouts(*, organization, period_start, period_end, teacher=None):
+    """Generate fixed period payouts for eligible approved teachers with fixed_period compensation."""
+    if organization is None:
+        raise ValueError("An explicit organization context is required for fixed payout generation.")
+    from accounts.models import CompensationType, OrganizationTeacherConfiguration
+    from organizations.models import Organization, active_membership
+    from .models import TeacherFixedPeriodPayout
+
+    result = FixedPeriodGenerationResult(period_start=period_start, period_end=period_end)
+
+    org_obj = organization if hasattr(organization, "pk") else Organization.objects.get(pk=organization)
+
+    configs_qs = OrganizationTeacherConfiguration.objects.filter(
+        membership__organization=org_obj,
+        membership__status="active",
+        approved=True,
+        compensation_type=CompensationType.FIXED_PERIOD,
+    ).select_related("membership", "membership__user")
+
+    if teacher is not None:
+        configs_qs = configs_qs.filter(membership__user=getattr(teacher, "pk", teacher))
+
+    existing_payout_teachers = set(
+        TeacherFixedPeriodPayout.objects.in_organization(org_obj)
+        .filter(
+            period_start=period_start,
+            period_end=period_end,
+        )
+        .values_list("teacher_id", flat=True)
+    )
+
+    for config in configs_qs:
+        teacher_obj = config.user
+        if teacher_obj.pk in existing_payout_teachers:
+            result.skipped.append({"teacher_id": teacher_obj.pk, "reason": "already_paid_for_period"})
+            continue
+        if config.fixed_period_amount is None or config.fixed_period_amount <= Decimal("0"):
+            result.skipped.append({"teacher_id": teacher_obj.pk, "reason": "no_fixed_amount"})
+            continue
+        if not config.fixed_period_cadence:
+            result.skipped.append({"teacher_id": teacher_obj.pk, "reason": "no_cadence"})
+            continue
+
+        payout = TeacherFixedPeriodPayout(
+            teacher=teacher_obj,
+            organization=org_obj,
+            period_start=period_start,
+            period_end=period_end,
+            cadence=config.fixed_period_cadence,
+            amount=config.fixed_period_amount,
+            currency=PAYOUT_CURRENCY,
+        )
+        payout.save()
+        result.created.append(payout)
+        existing_payout_teachers.add(teacher_obj.pk)
+
+    return result

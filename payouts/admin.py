@@ -21,7 +21,50 @@ correction is an explicit later phase rather than an edit to history.
 
 from django.contrib import admin
 
-from .models import PayoutStatus, TeacherPayout
+from .models import PayoutStatus, TeacherFixedPeriodPayout, TeacherPayout
+
+
+@admin.register(TeacherFixedPeriodPayout)
+class TeacherFixedPeriodPayoutAdmin(admin.ModelAdmin):
+    list_display = (
+        "teacher",
+        "organization",
+        "period_start",
+        "period_end",
+        "cadence",
+        "amount",
+        "currency",
+        "status",
+        "finalized_at",
+    )
+    list_filter = ("status", "cadence", "currency", "organization")
+    search_fields = (
+        "teacher__username",
+        "organization__name",
+    )
+    readonly_fields = (
+        "teacher",
+        "organization",
+        "period_start",
+        "period_end",
+        "cadence",
+        "amount",
+        "currency",
+        "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        if obj is not None and obj.status == PayoutStatus.FINALIZED:
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.status == PayoutStatus.FINALIZED:
+            return False
+        return super().has_delete_permission(request, obj)
 
 
 @admin.register(TeacherPayout)

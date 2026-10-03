@@ -25,6 +25,8 @@ from rest_framework import serializers
 from organizations.models import OrganizationMembership
 
 from .models import (
+    CompensationType,
+    FixedPeriodCadence,
     OrganizationTeacherConfiguration,
     ParentLink,
     Role,
@@ -278,7 +280,11 @@ class OrganizationTeacherConfigurationSerializer(serializers.ModelSerializer):
             "username",
             "organization",
             "max_weekly_hours",
+            "compensation_type",
             "hourly_payout_rate",
+            "per_class_rate",
+            "fixed_period_amount",
+            "fixed_period_cadence",
             "approved",
             "created_at",
             "updated_at",
@@ -302,8 +308,20 @@ class OrganizationTeacherConfigurationCreateSerializer(serializers.Serializer):
 
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
     max_weekly_hours = serializers.IntegerField(min_value=1)
+    compensation_type = serializers.ChoiceField(
+        choices=CompensationType.choices, required=False, default=CompensationType.HOURLY
+    )
     hourly_payout_rate = serializers.DecimalField(
         max_digits=8, decimal_places=2, required=False, allow_null=True, default=None
+    )
+    per_class_rate = serializers.DecimalField(
+        max_digits=8, decimal_places=2, required=False, allow_null=True, default=None
+    )
+    fixed_period_amount = serializers.DecimalField(
+        max_digits=8, decimal_places=2, required=False, allow_null=True, default=None
+    )
+    fixed_period_cadence = serializers.ChoiceField(
+        choices=FixedPeriodCadence.choices, required=False, allow_null=True, default=None
     )
     approved = serializers.BooleanField(required=False, default=False)
 
@@ -345,8 +363,12 @@ class OrganizationTeacherConfigurationCreateSerializer(serializers.Serializer):
         configuration = OrganizationTeacherConfiguration(
             membership=membership,
             max_weekly_hours=validated_data["max_weekly_hours"],
-            hourly_payout_rate=validated_data["hourly_payout_rate"],
-            approved=validated_data["approved"],
+            compensation_type=validated_data.get("compensation_type", CompensationType.HOURLY),
+            hourly_payout_rate=validated_data.get("hourly_payout_rate"),
+            per_class_rate=validated_data.get("per_class_rate"),
+            fixed_period_amount=validated_data.get("fixed_period_amount"),
+            fixed_period_cadence=validated_data.get("fixed_period_cadence"),
+            approved=validated_data.get("approved", False),
         )
         try:
             configuration.save()
@@ -358,28 +380,44 @@ class OrganizationTeacherConfigurationCreateSerializer(serializers.Serializer):
 class OrganizationTeacherConfigurationUpdateSerializer(serializers.Serializer):
     """Changing what this academy asks of, and pays, one of its teachers.
 
-    All three fields optional, so one shape covers approving a teacher, re-capping
-    their week and re-rating their hour. ``membership`` is absent and not editable:
-    moving these terms to a different person or a different academy is not a change
-    to a relationship, it is a different relationship.
+    Fields optional, covering compensation types, rates, hours, and approval.
     """
 
     max_weekly_hours = serializers.IntegerField(min_value=1, required=False)
+    compensation_type = serializers.ChoiceField(
+        choices=CompensationType.choices, required=False
+    )
     hourly_payout_rate = serializers.DecimalField(
         max_digits=8, decimal_places=2, required=False, allow_null=True
+    )
+    per_class_rate = serializers.DecimalField(
+        max_digits=8, decimal_places=2, required=False, allow_null=True
+    )
+    fixed_period_amount = serializers.DecimalField(
+        max_digits=8, decimal_places=2, required=False, allow_null=True
+    )
+    fixed_period_cadence = serializers.ChoiceField(
+        choices=FixedPeriodCadence.choices, required=False, allow_null=True
     )
     approved = serializers.BooleanField(required=False)
 
     def validate(self, attrs):
         if not attrs:
             raise serializers.ValidationError(
-                "Send 'max_weekly_hours', 'hourly_payout_rate' or 'approved' — "
-                "there is nothing else to change."
+                "Send at least one field to change."
             )
         return attrs
 
     def update(self, configuration, validated_data):
-        for field in ("max_weekly_hours", "hourly_payout_rate", "approved"):
+        for field in (
+            "max_weekly_hours",
+            "compensation_type",
+            "hourly_payout_rate",
+            "per_class_rate",
+            "fixed_period_amount",
+            "fixed_period_cadence",
+            "approved",
+        ):
             if field in validated_data:
                 setattr(configuration, field, validated_data[field])
         try:

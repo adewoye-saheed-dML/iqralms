@@ -392,6 +392,257 @@ paths:
           description: Not the lead teacher.
         '404':
           description: No such assessment.
+  /api/assessment/organizations/{organization_pk}/assignments/:
+    get:
+      operationId: assessment_organizations_assignments_list
+      description: GET / POST /api/assessment/organizations/<organization_pk>/assignments/
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StudentAssignment'
+          description: ''
+    post:
+      operationId: assessment_organizations_assignments_create
+      description: GET / POST /api/assessment/organizations/<organization_pk>/assignments/
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentAssignmentCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/StudentAssignmentCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/StudentAssignmentCreate'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentAssignmentCreate'
+          description: ''
+  /api/assessment/organizations/{organization_pk}/assignments/{assignment_id}/submit/:
+    post:
+      operationId: assessment_organizations_assignments_submit_create
+      description: POST /api/assessment/organizations/<organization_pk>/assignments/<assignment_id>/submit/
+      parameters:
+      - in: path
+        name: assignment_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignmentSubmissionCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AssignmentSubmissionCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AssignmentSubmissionCreate'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignmentSubmissionCreate'
+          description: ''
+  /api/assessment/organizations/{organization_pk}/assignments/{id}/:
+    get:
+      operationId: assessment_organizations_assignments_retrieve
+      description: GET / PATCH / DELETE /api/assessment/organizations/<organization_pk>/assignments/<pk>/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentAssignment'
+          description: ''
+    put:
+      operationId: assessment_organizations_assignments_update
+      description: GET / PATCH / DELETE /api/assessment/organizations/<organization_pk>/assignments/<pk>/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentAssignment'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/StudentAssignment'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/StudentAssignment'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentAssignment'
+          description: ''
+    patch:
+      operationId: assessment_organizations_assignments_partial_update
+      description: GET / PATCH / DELETE /api/assessment/organizations/<organization_pk>/assignments/<pk>/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedStudentAssignment'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedStudentAssignment'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedStudentAssignment'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentAssignment'
+          description: ''
+    delete:
+      operationId: assessment_organizations_assignments_destroy
+      description: GET / PATCH / DELETE /api/assessment/organizations/<organization_pk>/assignments/<pk>/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/assessment/organizations/{organization_pk}/assignments/{id}/resource/:
+    get:
+      operationId: assessment_organizations_assignments_resource_retrieve
+      description: GET /api/assessment/organizations/{org_id}/assignments/{pk}/resource/
+        — download assignment resource file.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      security:
+      - queryParamTokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: string
+                format: binary
+          description: Assignment resource file stream / download
+        '403':
+          description: Permission denied
+        '404':
+          description: Assignment or resource file not found
   /api/assessment/organizations/{organization_pk}/bookings/{booking_id}/:
     post:
       operationId: assessment_organizations_bookings_create
@@ -525,210 +776,6 @@ paths:
                 items:
                   $ref: '#/components/schemas/FamilyAssessment'
           description: ''
-  /api/assessment/organizations/{organization_pk}/progress/child/:
-    get:
-      operationId: assessment_organizations_progress_child_retrieve
-      description: |-
-        GET /api/assessment/organizations/<organization_pk>/progress/child/?student_id=&track_id= — a linked child's.
-
-        The ``ParentLink`` check is the whole endpoint: an unrelated parent asking about
-        somebody else's child is refused, and the refusal happens before any progress is
-        computed, not by omitting fields from a response that was built anyway.
-      parameters:
-      - in: query
-        name: from
-        schema:
-          type: string
-        description: Inclusive ISO-8601 start of the period, by session date.
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: student_id
-        schema:
-          type: integer
-        description: Which of your children.
-        required: true
-      - in: query
-        name: to
-        schema:
-          type: string
-        description: Exclusive ISO-8601 end of the period, by session date.
-      - in: query
-        name: track_id
-        schema:
-          type: integer
-        required: true
-      tags:
-      - assessment
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StudentProgress'
-          description: ''
-        '400':
-          description: A missing or unknown parameter.
-        '403':
-          description: Not a parent, or not a parent of that student.
-  /api/assessment/organizations/{organization_pk}/progress/mine/:
-    get:
-      operationId: assessment_organizations_progress_mine_retrieve
-      description: GET /api/assessment/organizations/<organization_pk>/progress/mine/?track_id=
-        — the student's own progress.
-      parameters:
-      - in: query
-        name: from
-        schema:
-          type: string
-        description: Inclusive ISO-8601 start of the period, by session date.
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: to
-        schema:
-          type: string
-        description: Exclusive ISO-8601 end of the period, by session date.
-      - in: query
-        name: track_id
-        schema:
-          type: integer
-        description: Which track's progress. Progress is per track.
-        required: true
-      tags:
-      - assessment
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StudentProgress'
-          description: ''
-        '400':
-          description: track_id missing or unknown.
-        '403':
-          description: Not a student account.
-  /api/assessment/organizations/{organization_pk}/progress/teaching/:
-    get:
-      operationId: assessment_organizations_progress_teaching_retrieve
-      description: |-
-        GET /api/assessment/organizations/<organization_pk>/progress/teaching/?student_id=&track_id= — an assigned student's progress.
-
-        Lead teacher and teacher can inspect the progress of students they have an active teaching relationship with (via Booking).
-        Owners and admins have academy-wide access.
-      parameters:
-      - in: query
-        name: from
-        schema:
-          type: string
-        description: Inclusive ISO-8601 start of the period, by session date.
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: student_id
-        schema:
-          type: integer
-        description: Which assigned student.
-        required: true
-      - in: query
-        name: to
-        schema:
-          type: string
-        description: Exclusive ISO-8601 end of the period, by session date.
-      - in: query
-        name: track_id
-        schema:
-          type: integer
-        description: Which track's progress.
-        required: true
-      tags:
-      - assessment
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StudentProgress'
-          description: ''
-        '400':
-          description: A missing or unknown parameter.
-        '403':
-          description: You do not have an assigned teaching relationship with this
-            student.
-        '404':
-          description: Student not found.
-  /api/assessment/organizations/{organization_pk}/reports/teachers/:
-    get:
-      operationId: assessment_organizations_reports_teachers_retrieve
-      description: |-
-        GET /api/assessment/organizations/<organization_pk>/reports/teachers/ — lead-only quality visibility.
-
-        Optionally narrowed by ``from``/``to`` and ``track_id``. Per teacher: how many
-        sessions they assessed, the overall average, the average per track, how many
-        they flagged, and how many of those flags are still waiting on the lead.
-
-        Two things it is not. It is **not** a leaderboard: rows come back ordered by
-        username and carry no rank. And it does **not** invent rows — a teacher who
-        assessed nothing in the window is absent rather than present with 0.00, because
-        a missing assessment is missing data and a zero next to someone's name is an
-        accusation.
-      parameters:
-      - in: query
-        name: from
-        schema:
-          type: string
-        description: Inclusive ISO-8601 start of the period, by session date.
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: to
-        schema:
-          type: string
-        description: Exclusive ISO-8601 end of the period, by session date.
-      - in: query
-        name: track_id
-        schema:
-          type: integer
-        description: Restrict to one track.
-      tags:
-      - assessment
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/TeacherReport'
-          description: ''
-        '400':
-          description: An unparseable period or track_id.
-        '403':
-          description: Not the lead teacher — a sub-teacher has no academy-wide view.
   /api/assessment/organizations/{organization_pk}/review/queue/:
     get:
       operationId: assessment_organizations_review_queue_list
@@ -941,28 +988,17 @@ paths:
           description: A repeated order, or a criterion id from another rubric.
         '403':
           description: Not the lead teacher.
-  /api/assessment/organizations/{organization_pk}/snapshots/:
+  /api/assessment/organizations/{organization_pk}/submissions/:
     get:
-      operationId: assessment_organizations_snapshots_list
-      description: |-
-        GET / POST /api/assessment/organizations/<organization_pk>/snapshots/ — snapshots management for owner/admin/lead.
-
-        GET lists academy snapshots.
-        POST freezes a period.
+      operationId: assessment_organizations_submissions_list
+      description: GET /api/assessment/organizations/<organization_pk>/submissions/
+        — filterable submissions list.
       parameters:
       - in: path
         name: organization_pk
         schema:
           type: integer
         required: true
-      - in: query
-        name: student_id
-        schema:
-          type: integer
-      - in: query
-        name: track_id
-        schema:
-          type: integer
       tags:
       - assessment
       security:
@@ -975,18 +1011,84 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ProgressSnapshot'
+                  $ref: '#/components/schemas/AssignmentSubmission'
           description: ''
-        '403':
-          description: Not an authorized reviewer.
-    post:
-      operationId: assessment_organizations_snapshots_create
-      description: |-
-        GET / POST /api/assessment/organizations/<organization_pk>/snapshots/ — snapshots management for owner/admin/lead.
-
-        GET lists academy snapshots.
-        POST freezes a period.
+  /api/assessment/organizations/{organization_pk}/submissions/{id}/attachment/:
+    get:
+      operationId: assessment_organizations_submissions_attachment_retrieve
+      description: GET /api/assessment/organizations/{org_id}/submissions/{pk}/attachment/
+        — download submission attachment.
       parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      security:
+      - queryParamTokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: string
+                format: binary
+          description: Submission attachment file stream / download
+        '403':
+          description: Permission denied
+        '404':
+          description: Submission or attachment not found
+  /api/assessment/organizations/{organization_pk}/submissions/{id}/audio/:
+    get:
+      operationId: assessment_organizations_submissions_audio_retrieve
+      description: GET /api/assessment/organizations/{org_id}/submissions/{pk}/audio/
+        — stream or download submission audio.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      security:
+      - queryParamTokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: string
+                format: binary
+          description: Submission audio stream / download
+        '403':
+          description: Permission denied
+        '404':
+          description: Submission or audio not found
+  /api/assessment/organizations/{organization_pk}/submissions/{id}/grade/:
+    post:
+      operationId: assessment_organizations_submissions_grade_create
+      description: POST /api/assessment/organizations/<organization_pk>/submissions/<pk>/grade/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
       - in: path
         name: organization_pk
         schema:
@@ -998,59 +1100,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProgressSnapshotCreate'
+              $ref: '#/components/schemas/AssignmentGrade'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/ProgressSnapshotCreate'
+              $ref: '#/components/schemas/AssignmentGrade'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/ProgressSnapshotCreate'
-        required: true
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '201':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProgressSnapshot'
-          description: Generated.
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProgressSnapshot'
-          description: This period was already snapshotted. The existing row is returned
-            untouched — no duplicate, and no recomputation.
-        '400':
-          description: Not a student, an inverted period, or an unknown track.
-        '403':
-          description: Not the lead teacher, owner, or admin.
-  /api/assessment/organizations/{organization_pk}/snapshots/all/:
-    get:
-      operationId: assessment_organizations_snapshots_all_list
-      description: |-
-        GET /api/assessment/organizations/<organization_pk>/snapshots/?student_id=&track_id= — the lead's own view.
-
-        Unpublished rows included: the lead generated them, and needs to see what is
-        waiting to be released.
-      parameters:
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: student_id
-        schema:
-          type: integer
-      - in: query
-        name: track_id
-        schema:
-          type: integer
-      tags:
-      - assessment
+              $ref: '#/components/schemas/AssignmentGrade'
       security:
       - tokenAuth: []
       - cookieAuth: []
@@ -1059,74 +1115,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ProgressSnapshot'
-          description: ''
-  /api/assessment/organizations/{organization_pk}/snapshots/child/:
-    get:
-      operationId: assessment_organizations_snapshots_child_list
-      description: GET /api/assessment/organizations/<organization_pk>/snapshots/child/?student_id=&track_id=
-        — a linked child's.
-      parameters:
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: student_id
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: track_id
-        schema:
-          type: integer
-      tags:
-      - assessment
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/FamilyProgressSnapshot'
-          description: ''
-        '403':
-          description: Not a parent of that student.
-  /api/assessment/organizations/{organization_pk}/snapshots/mine/:
-    get:
-      operationId: assessment_organizations_snapshots_mine_list
-      description: GET /api/assessment/organizations/<organization_pk>/snapshots/mine/?track_id=
-        — the student's published snapshots.
-      parameters:
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: track_id
-        schema:
-          type: integer
-      tags:
-      - assessment
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/FamilyProgressSnapshot'
+                $ref: '#/components/schemas/AssignmentGrade'
           description: ''
   /api/assessment/organizations/{organization_pk}/teacher/mine/:
     get:
@@ -1158,6 +1147,24 @@ paths:
                 items:
                   $ref: '#/components/schemas/TeacherAssessment'
           description: ''
+  /api/assessment/organizations/{organization_pk}/ward-progress/:
+    get:
+      operationId: assessment_organizations_ward_progress_retrieve
+      description: GET /api/assessment/organizations/<organization_pk>/ward-progress/?student_id=
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - assessment
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
   /api/auth/login/:
     post:
       operationId: auth_login_create
@@ -1215,6 +1222,120 @@ paths:
               schema:
                 $ref: '#/components/schemas/RestAuthDetail'
           description: ''
+  /api/auth/password/reset/:
+    post:
+      operationId: auth_password_reset_create
+      description: |-
+        Calls Django Auth PasswordResetForm save method.
+
+        Accepts the following POST parameters: email
+        Returns the success/fail message.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomPasswordReset'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CustomPasswordReset'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CustomPasswordReset'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestAuthDetail'
+          description: ''
+  /api/auth/password/reset/confirm/:
+    post:
+      operationId: auth_password_reset_confirm_create
+      description: |-
+        Password reset e-mail link is confirmed, therefore
+        this resets the user's password.
+
+        Accepts the following POST parameters: token, uid,
+            new_password1, new_password2
+        Returns the success/fail message.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirm'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirm'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirm'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestAuthDetail'
+          description: ''
+  /api/auth/password/reset/confirm/{uidb64}/{token}/:
+    post:
+      operationId: auth_password_reset_confirm_create_2
+      description: |-
+        Password reset e-mail link is confirmed, therefore
+        this resets the user's password.
+
+        Accepts the following POST parameters: token, uid,
+            new_password1, new_password2
+        Returns the success/fail message.
+      parameters:
+      - in: path
+        name: token
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: uidb64
+        schema:
+          type: string
+        required: true
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirm'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirm'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirm'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestAuthDetail'
+          description: ''
   /api/auth/register/:
     post:
       operationId: auth_register_create
@@ -1245,6 +1366,89 @@ paths:
         '201':
           description: Created. Body carries the user, an account status of 'active'
             or 'pending_parent_link', and a human-readable detail message.
+  /api/billing/status/:
+    get:
+      operationId: billing_status_retrieve
+      description: View subscription status for an academy (Owner/Admin only).
+      summary: Get platform subscription status for an academy
+      parameters:
+      - in: query
+        name: organization_id
+        schema:
+          type: integer
+        description: Organization ID to check subscription status for.
+      tags:
+      - billing
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformSubscription'
+          description: ''
+        '404':
+          description: No subscription found.
+  /api/billing/subscribe/:
+    post:
+      operationId: billing_subscribe_create
+      description: Subscribe an academy to IqraLMS platform plan (Owner only).
+      summary: Subscribe organization to IqraLMS platform plan
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SubscribeRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubscribeRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformSubscription'
+          description: ''
+        '403':
+          description: Only organization owner can subscribe.
+  /api/billing/webhook/paystack/:
+    post:
+      operationId: billing_webhook_paystack_create
+      description: |-
+        Webhook endpoint for Paystack platform subscription events.
+
+        Verifies HMAC-SHA512 signature on raw payload.
+      summary: Paystack platform subscription webhook endpoint
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          description: Webhook event processed or acknowledged.
   /api/curriculum/organizations/{organization_pk}/levels/:
     get:
       operationId: curriculum_organizations_levels_list
@@ -1422,23 +1626,67 @@ paths:
           description: No such object in this organization. A valid id belonging to
             another academy answers the same way — the response never confirms that
             a row exists elsewhere.
-  /api/curriculum/organizations/{organization_pk}/placements/:
-    post:
-      operationId: curriculum_organizations_placements_create
+  /api/curriculum/organizations/{organization_pk}/materials/:
+    get:
+      operationId: curriculum_organizations_materials_list
       description: |-
-        POST .../placements/ — a student of this academy submits audio or a skip.
-
-        Two gates, both required. ``IsStudent`` is the account role, unchanged from
-        Phase 2; ``IsOrganizationMember`` is the tenant, and it is what stops a student
-        enrolled at Academy A from submitting into Academy B by knowing its id. The
-        track then resolves inside this academy only, and ``PlacementResult.clean()``
-        re-checks the membership at the model layer, so the admin and a direct ORM
-        write are held to the same rule.
-
-        Re-submitting for a track the student already has a placement for updates that
-        row back to pending; it never creates a second one. A minor with no parent link
-        yet may still submit — placement is a pre-enrolment step, and
-        ``is_fully_active`` gates booking, not this.
+        GET /api/curriculum/organizations/{id}/materials/ — list academy learning materials.
+        POST /api/curriculum/organizations/{id}/materials/ — upload a learning material / book.
+      parameters:
+      - in: query
+        name: include_general
+        schema:
+          type: boolean
+        description: Include general materials alongside track/level specific ones.
+      - in: query
+        name: level_id
+        schema:
+          type: integer
+        description: Filter by level ID.
+      - in: query
+        name: material_type
+        schema:
+          type: string
+        description: Filter by material type (pdf, book, worksheet, etc.).
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: track_id
+        schema:
+          type: integer
+        description: Filter by track ID.
+      tags:
+      - curriculum
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LearningMaterial'
+          description: ''
+        '201':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LearningMaterial'
+          description: ''
+        '403':
+          description: Not an active member of this organization.
+    post:
+      operationId: curriculum_organizations_materials_create
+      description: |-
+        GET /api/curriculum/organizations/{id}/materials/ — list academy learning materials.
+        POST /api/curriculum/organizations/{id}/materials/ — upload a learning material / book.
       parameters:
       - in: path
         name: organization_pk
@@ -1449,15 +1697,15 @@ paths:
       - curriculum
       requestBody:
         content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PlacementSubmit'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/PlacementSubmit'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/PlacementSubmit'
+              $ref: '#/components/schemas/LearningMaterialCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LearningMaterialCreate'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LearningMaterialCreate'
         required: true
       security:
       - tokenAuth: []
@@ -1467,42 +1715,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PlacementResult'
-          description: Created or updated. A beginner skip comes back already 'reviewed'
-            with the track's first level and no reviewer.
-        '400':
-          description: No such track in this academy, both audio and skip, neither
-            of them, or a rejected upload.
-        '401':
-          description: Not authenticated.
-        '403':
-          description: Not an active member, or not a student account.
-  /api/curriculum/organizations/{organization_pk}/placements/{id}/audio-url/:
+                $ref: '#/components/schemas/LearningMaterialCreate'
+          description: ''
+  /api/curriculum/organizations/{organization_pk}/materials/{id}/:
     get:
-      operationId: curriculum_organizations_placements_audio_url_retrieve
+      operationId: curriculum_organizations_materials_retrieve
       description: |-
-        GET .../placements/{id}/audio-url/ — temporary access to a sample.
-
-        Phase 6's authorisation step, with the academy check in front of it. Minting
-        the URL *is* the authorisation, so the whole question of who may hear a
-        recitation sample is decided here, and SaaS Phase 3 answers it with a
-        conjunction:
-
-        .. code-block:: text
-
-            authenticated
-                + active member of this academy
-                + placement belongs to this academy
-                + Phase 6's rule: the lead teacher, or the student themselves
-
-        Nothing was widened. Sub-teachers and parents are still refused — a minor's
-        voice recording is the last thing a tenancy phase should open up — and the
-        roles are exactly Phase 6's.
-
-        Everything unauthorised is a 404 rather than a 403, because the queryset is
-        what narrows it: another academy's placement, another student's placement and a
-        beginner skip with no recording all answer the same way, and none of them
-        confirms that a row exists.
+        GET /api/curriculum/organizations/{id}/materials/{id}/ — retrieve a material.
+        PATCH /api/curriculum/organizations/{id}/materials/{id}/ — update a material.
+        DELETE /api/curriculum/organizations/{id}/materials/{id}/ — delete a material.
       parameters:
       - in: path
         name: id
@@ -1524,31 +1745,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PlacementAudioAccess'
-          description: A short-lived URL for the recitation sample. It expires; ask
-            again rather than storing it.
-        '401':
-          description: Not authenticated.
-        '403':
-          description: Not an active member of this academy, or neither the lead teacher
-            nor a student.
-        '404':
-          description: No such placement in this academy, not this student's placement,
-            or a beginner skip with no recording.
-  /api/curriculum/organizations/{organization_pk}/placements/{id}/review/:
-    post:
-      operationId: curriculum_organizations_placements_review_create
+                $ref: '#/components/schemas/LearningMaterial'
+          description: ''
+    put:
+      operationId: curriculum_organizations_materials_update
       description: |-
-        POST .../placements/{id}/review/ — this academy's lead sets the level.
-
-        ``Lead A + Placement A`` is allowed and ``Lead A + Placement B`` is a 404, from
-        the scoped queryset rather than from a permission class — the placement is not
-        in this academy's queryset, so the response cannot confirm it exists. The
-        model refuses the same thing again in ``clean()``: a reviewer must be an active
-        member of the academy that owns the track.
-
-        Review is still a one-way transition: an already-reviewed placement returns
-        409. Correcting a level means the admin, or the student re-submitting.
+        GET /api/curriculum/organizations/{id}/materials/{id}/ — retrieve a material.
+        PATCH /api/curriculum/organizations/{id}/materials/{id}/ — update a material.
+        DELETE /api/curriculum/organizations/{id}/materials/{id}/ — delete a material.
       parameters:
       - in: path
         name: id
@@ -1566,13 +1770,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PlacementReview'
+              $ref: '#/components/schemas/LearningMaterialCreate'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/PlacementReview'
+              $ref: '#/components/schemas/LearningMaterialCreate'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/PlacementReview'
+              $ref: '#/components/schemas/LearningMaterialCreate'
         required: true
       security:
       - tokenAuth: []
@@ -1582,134 +1786,104 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PlacementResult'
+                $ref: '#/components/schemas/LearningMaterialCreate'
           description: ''
-        '400':
-          description: No such level in this academy, or a level from a different
-            track than the placement's.
-        '401':
-          description: Not authenticated.
-        '403':
-          description: Not an active member, or not the lead teacher.
+    patch:
+      operationId: curriculum_organizations_materials_partial_update
+      description: |-
+        GET /api/curriculum/organizations/{id}/materials/{id}/ — retrieve a material.
+        PATCH /api/curriculum/organizations/{id}/materials/{id}/ — update a material.
+        DELETE /api/curriculum/organizations/{id}/materials/{id}/ — delete a material.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - curriculum
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedLearningMaterialCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedLearningMaterialCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedLearningMaterialCreate'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LearningMaterialCreate'
+          description: ''
+    delete:
+      operationId: curriculum_organizations_materials_destroy
+      description: |-
+        GET /api/curriculum/organizations/{id}/materials/{id}/ — retrieve a material.
+        PATCH /api/curriculum/organizations/{id}/materials/{id}/ — update a material.
+        DELETE /api/curriculum/organizations/{id}/materials/{id}/ — delete a material.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - curriculum
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/curriculum/organizations/{organization_pk}/materials/{id}/file/:
+    get:
+      operationId: curriculum_organizations_materials_file_retrieve
+      description: GET /api/curriculum/organizations/{id}/materials/{id}/file/ — stream
+        or download the material file.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - curriculum
+      security:
+      - queryParamTokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: string
+                format: binary
+          description: Material file stream / download
         '404':
-          description: No such object in this organization. A valid id belonging to
-            another academy answers the same way — the response never confirms that
-            a row exists elsewhere.
-        '409':
-          description: Already reviewed.
-  /api/curriculum/organizations/{organization_pk}/placements/children/:
-    get:
-      operationId: curriculum_organizations_placements_children_list
-      description: |-
-        GET .../placements/children/ — a parent's linked children, in this academy.
-
-        Three conditions, and the phase spec is explicit that all three must hold: the
-        parent is active here, the child is active here, and a ``ParentLink`` exists.
-        ``accounts.tenancy.children_in_organization()`` is where that rule lives and
-        this view calls it rather than re-deriving it — a second copy is the one that
-        would eventually disagree, and the disagreement would be a parent reading
-        another academy's student.
-
-        A ``ParentLink`` is a global family fact, not a key: the same parent sees
-        different children through Academy A's route and Academy B's.
-
-        Read-only, and no audio. Phase 6 decided that a recitation sample is for the
-        lead teacher and the student themselves, and SaaS Phase 3 is forbidden from
-        widening that — so a parent can see *that* their child submitted a sample and
-        where they were placed, and cannot hear it.
-      parameters:
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      tags:
-      - curriculum
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PlacementResult'
-          description: Placements of the caller's linked children who are active members
-            of this academy. Empty when none are.
-        '401':
-          description: Not authenticated.
-        '403':
-          description: Not an active member, or not a parent account.
-  /api/curriculum/organizations/{organization_pk}/placements/mine/:
-    get:
-      operationId: curriculum_organizations_placements_mine_list
-      description: |-
-        GET .../placements/mine/ — the caller's own placements *in this academy*.
-
-        A student studying at two academies calls this twice, once per route, and gets
-        two disjoint lists. Their global set of placements is not something any single
-        academy is shown.
-      parameters:
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      tags:
-      - curriculum
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PlacementResult'
-          description: ''
-        '401':
-          description: Not authenticated.
-        '403':
-          description: Not an active member, or not a student account.
-  /api/curriculum/organizations/{organization_pk}/placements/pending/:
-    get:
-      operationId: curriculum_organizations_placements_pending_list
-      description: |-
-        GET .../placements/pending/ — this academy's review queue.
-
-        The endpoint Phase 2 got most wrong for a multi-tenant platform: it handed
-        every pending placement on the platform to any lead teacher who asked. Now the
-        queue is the intersection of "a lead teacher" and "a member of this academy",
-        and it contains only placements whose track this academy owns and whose student
-        it has admitted.
-      parameters:
-      - in: path
-        name: organization_pk
-        schema:
-          type: integer
-        required: true
-      tags:
-      - curriculum
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PlacementResult'
-          description: Pending placements in this academy only.
-        '401':
-          description: Not authenticated.
-        '403':
-          description: Not an active member, or not the lead teacher.
+          description: Material or file not found
   /api/curriculum/organizations/{organization_pk}/teachers/:
     get:
       operationId: curriculum_organizations_teachers_list
@@ -2123,56 +2297,6 @@ paths:
           description: No such object in this organization. A valid id belonging to
             another academy answers the same way — the response never confirms that
             a row exists elsewhere.
-  /api/curriculum/placements/{id}/audio/:
-    get:
-      operationId: curriculum_placements_audio_retrieve
-      description: |-
-        GET /api/curriculum/placements/{id}/audio/?token=... — the local path.
-
-        Only used when the storage backend cannot sign its own URLs, i.e. local
-        private storage in development and tests. Against a private bucket the
-        minted URL is presigned and points at the bucket, so nothing reaches here.
-
-        **Deliberately not organization-scoped, and that is not a hole.** The token is
-        a bearer capability standing in for a presigned URL, minted only after
-        ``AcademyPlacementAudioURLView`` has checked the caller's membership, the
-        placement's academy and the Phase 6 role rule. Requiring a tenant in the path
-        here would add a check that proves nothing — the holder of the token is
-        authorised by having been given it — while an ``<audio src>`` element cannot
-        send an Authorization header, which is exactly why presigned URLs exist.
-
-        What it does check, on every request:
-
-        * the token's signature and its age (``read_audio_token``);
-        * that the token names *this* placement — a token for one sample cannot be
-          pointed at another by editing the path;
-        * that the placement still holds the object the token was minted for, so a
-          re-submitted sample invalidates outstanding tokens immediately rather than
-          at expiry.
-
-        Every failure is the same 404. Telling the caller which check failed would
-        let someone probing tokens narrow down why.
-      parameters:
-      - in: path
-        name: id
-        schema:
-          type: integer
-        required: true
-      - in: query
-        name: token
-        schema:
-          type: string
-        description: The signed token from the audio-url endpoint.
-        required: true
-      tags:
-      - curriculum
-      security:
-      - {}
-      responses:
-        '200':
-          description: The audio file itself.
-        '404':
-          description: Missing, invalid, expired or superseded token.
   /api/imports/organizations/{organization_pk}/{id}/commit/:
     post:
       operationId: imports_commit
@@ -3165,6 +3289,191 @@ paths:
           description: ''
         '401':
           description: Not authenticated.
+  /api/payments/children/:
+    get:
+      operationId: payments_children_list
+      description: List payment history for linked children (Parent only).
+      summary: List payment history for linked children (Parent only)
+      parameters:
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+        description: Optional filter for a specific linked child.
+      tags:
+      - payments
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FamilyPayment'
+          description: ''
+        '403':
+          description: Only parents can view children payments.
+  /api/payments/initialize/:
+    post:
+      operationId: payments_initialize_create
+      description: Initialize a tuition payment for an adult student or by a linked
+        parent.
+      summary: Initialize tuition payment for an adult student or by a parent
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentInitialize'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentInitialize'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentInitialize'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentInitializeResponse'
+          description: ''
+        '403':
+          description: Minors or unlinked parents are denied.
+  /api/payments/mine/:
+    get:
+      operationId: payments_mine_list
+      description: List payment history for the authenticated adult student.
+      summary: List payment history for authenticated adult student
+      tags:
+      - payments
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FamilyPayment'
+          description: ''
+        '403':
+          description: Minor students are forbidden.
+  /api/payments/organization/:
+    get:
+      operationId: payments_organization_list
+      description: List payment history for an academy (Owner/Admin or Lead Teacher).
+      summary: List payment history for an academy (Owner/Admin or Lead Teacher)
+      parameters:
+      - in: query
+        name: organization_id
+        schema:
+          type: integer
+        description: Organization ID to fetch payments for.
+        required: true
+      tags:
+      - payments
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FamilyPayment'
+          description: ''
+        '403':
+          description: Unauthorized to view academy payments.
+  /api/payments/subaccount/setup/:
+    post:
+      operationId: payments_subaccount_setup_create
+      description: Owner onboard bank details for tuition routing to their academy.
+      summary: Setup academy Paystack subaccount for tuition routing
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubaccountSetup'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SubaccountSetup'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubaccountSetup'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubaccountSetupResponse'
+          description: ''
+        '403':
+          description: Only academy owner can configure bank details.
+  /api/payments/verify/{reference}/:
+    get:
+      operationId: payments_verify_retrieve
+      description: Immediate payment check on Paystack following redirect (does not
+        mark paid).
+      summary: Immediate payment verification check
+      parameters:
+      - in: path
+        name: reference
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: Payment verification details and Paystack transaction status.
+        '403':
+          description: Unauthorized to view this payment.
+  /api/payments/webhook/paystack/:
+    post:
+      operationId: payments_webhook_paystack_create
+      description: Webhook endpoint for Paystack tuition payments.
+      summary: Paystack tuition webhook endpoint
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          description: Webhook event processed or acknowledged.
   /api/payouts/organizations/{organization_pk}/{id}/finalize/:
     post:
       operationId: payouts_organizations_finalize_create
@@ -3572,8 +3881,9 @@ paths:
   /api/scheduling/organizations/{organization_pk}/availability/:
     get:
       operationId: scheduling_organizations_availability_list
-      description: GET /api/scheduling/organizations/{id}/availability/?teacher_id=
-        — one teacher's hours.
+      description: |-
+        GET /api/scheduling/organizations/{id}/availability/?teacher_id= — one teacher's hours.
+        POST /api/scheduling/organizations/{id}/availability/ — declare availability windows.
       parameters:
       - in: path
         name: organization_pk
@@ -3584,8 +3894,7 @@ paths:
         name: teacher_id
         schema:
           type: integer
-        description: Whose availability to list.
-        required: true
+        description: Whose availability to list. Defaults to the requesting teacher.
       tags:
       - scheduling
       security:
@@ -3600,6 +3909,67 @@ paths:
                 items:
                   $ref: '#/components/schemas/Availability'
           description: ''
+    post:
+      operationId: scheduling_organizations_availability_create
+      description: |-
+        GET /api/scheduling/organizations/{id}/availability/?teacher_id= — one teacher's hours.
+        POST /api/scheduling/organizations/{id}/availability/ — declare availability windows.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailabilityCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AvailabilityCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AvailabilityCreate'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Availability'
+          description: ''
+  /api/scheduling/organizations/{organization_pk}/availability/{id}/:
+    delete:
+      operationId: scheduling_organizations_availability_destroy
+      description: DELETE /api/scheduling/organizations/{id}/availability/{id}/ —
+        delete a declared window.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/scheduling/organizations/{organization_pk}/bookings/:
     post:
       operationId: scheduling_organizations_bookings_create
@@ -3687,6 +4057,43 @@ paths:
           description: No such booking for this caller in this organization.
         '409':
           description: Already cancelled, or completed and now history.
+  /api/scheduling/organizations/{organization_pk}/bookings/{id}/complete/:
+    post:
+      operationId: scheduling_organizations_bookings_complete_create
+      description: |-
+        POST /api/scheduling/organizations/{id}/bookings/{id}/complete/ — teacher or staff marks session completed.
+
+        This records the actual session duration, transitions status to 'completed', and makes
+        the booking eligible for teacher payout generation and session assessment.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+          description: ''
+        '403':
+          description: Not an active member of this organization.
+        '404':
+          description: Booking not found or not your session.
+        '409':
+          description: Already cancelled.
   /api/scheduling/organizations/{organization_pk}/bookings/{id}/meeting/:
     get:
       operationId: scheduling_organizations_bookings_meeting_retrieve
@@ -3975,6 +4382,106 @@ paths:
                 items:
                   $ref: '#/components/schemas/Cohort'
           description: ''
+  /api/scheduling/organizations/{organization_pk}/recordings/:
+    get:
+      operationId: scheduling_organizations_recordings_list
+      description: |-
+        GET /api/scheduling/organizations/{id}/recordings/ — list session recordings for owner reference and audit.
+
+        Accessible exclusively to academy owners and administrators.
+        Recordings older than 60 days are excluded and automatically purged by retention policy.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: Filter by recording status (ready, processing, purged).
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+        description: Filter recordings by student ID.
+      - in: query
+        name: teacher_id
+        schema:
+          type: integer
+        description: Filter recordings by teacher ID.
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ClassSessionRecording'
+          description: ''
+  /api/scheduling/organizations/{organization_pk}/recordings/{id}/:
+    get:
+      operationId: scheduling_organizations_recordings_retrieve
+      description: |-
+        GET /api/scheduling/organizations/{id}/recordings/{id}/ — retrieve session recording.
+        DELETE /api/scheduling/organizations/{id}/recordings/{id}/ — owner purge of session recording.
+
+        Owner/Admin only.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClassSessionRecording'
+          description: ''
+    delete:
+      operationId: scheduling_organizations_recordings_destroy
+      description: |-
+        GET /api/scheduling/organizations/{id}/recordings/{id}/ — retrieve session recording.
+        DELETE /api/scheduling/organizations/{id}/recordings/{id}/ — owner purge of session recording.
+
+        Owner/Admin only.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/scheduling/organizations/{organization_pk}/route/:
     post:
       operationId: scheduling_organizations_route_create
@@ -4047,6 +4554,36 @@ paths:
             outside their hours or over their cap to avoid this. For a ``preferred_teacher``
             request this is also the waitlisted outcome: ``considered.waitlist`` carries
             the entry, and no other teacher has been assigned.'
+  /api/scheduling/organizations/{organization_pk}/waitlist/:
+    get:
+      operationId: scheduling_organizations_waitlist_list
+      description: GET /api/scheduling/organizations/{id}/waitlist/ — all open student
+        requests across academy.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: teacher_id
+        schema:
+          type: integer
+        description: Filter by requested teacher ID.
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WaitlistEntry'
+          description: ''
   /api/scheduling/organizations/{organization_pk}/waitlist/{id}/promote/:
     post:
       operationId: scheduling_organizations_waitlist_promote_create
@@ -4563,6 +5100,133 @@ components:
         * `teacher` - teacher
         * `parent` - parent
         * `student` - student
+    AssignmentGrade:
+      type: object
+      properties:
+        score:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+          nullable: true
+        teacher_feedback:
+          type: string
+        rubric_scores: {}
+        request_resubmission:
+          type: boolean
+          default: false
+    AssignmentSubmission:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        assignment:
+          type: integer
+          readOnly: true
+        assignment_title:
+          type: string
+          readOnly: true
+        max_score:
+          type: integer
+          readOnly: true
+        submission_type:
+          type: string
+          readOnly: true
+        surah_number:
+          type: integer
+          readOnly: true
+        ayah_start:
+          type: integer
+          readOnly: true
+        ayah_end:
+          type: integer
+          readOnly: true
+        student:
+          type: string
+          readOnly: true
+        audio_recording:
+          type: string
+          nullable: true
+          readOnly: true
+        written_response:
+          type: string
+          readOnly: true
+        attachment_file:
+          type: string
+          nullable: true
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/AssignmentSubmissionStatusEnum'
+          readOnly: true
+        submitted_at:
+          type: string
+          format: date-time
+          readOnly: true
+        graded_by:
+          type: string
+          readOnly: true
+        graded_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        score:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        teacher_feedback:
+          type: string
+          readOnly: true
+        rubric_scores:
+          readOnly: true
+          description: 'Snapshot of criteria scores: [{criterion_id, criterion_name,
+            score, comment}]'
+      required:
+      - assignment
+      - assignment_title
+      - attachment_file
+      - audio_recording
+      - ayah_end
+      - ayah_start
+      - graded_at
+      - graded_by
+      - id
+      - max_score
+      - rubric_scores
+      - score
+      - status
+      - student
+      - submission_type
+      - submitted_at
+      - surah_number
+      - teacher_feedback
+      - written_response
+    AssignmentSubmissionCreate:
+      type: object
+      properties:
+        audio_recording:
+          type: string
+          format: uri
+          nullable: true
+        written_response:
+          type: string
+        attachment_file:
+          type: string
+          format: uri
+          nullable: true
+    AssignmentSubmissionStatusEnum:
+      enum:
+      - submitted
+      - graded
+      - resubmission_requested
+      type: string
+      description: |-
+        * `submitted` - Submitted
+        * `graded` - Graded
+        * `resubmission_requested` - Resubmission Requested
     AuditLog:
       type: object
       properties:
@@ -4658,6 +5322,26 @@ components:
       - teacher_username
       - weekday
       - weekday_display
+    AvailabilityCreate:
+      type: object
+      description: Payload to declare a weekly teaching availability window.
+      properties:
+        weekday:
+          type: integer
+          maximum: 6
+          minimum: 0
+        start_time:
+          type: string
+          format: time
+        end_time:
+          type: string
+          format: time
+        teacher_id:
+          type: integer
+      required:
+      - end_time
+      - start_time
+      - weekday
     Booking:
       type: object
       description: Read representation, shared by create, both listings, cancel and
@@ -4859,6 +5543,93 @@ components:
         * `telegram` - Telegram
         * `push` - Push
         * `in_app` - In-App
+    ClassSessionRecording:
+      type: object
+      description: Owner/Admin serializer for inspecting and managing class session
+        recordings.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        booking:
+          type: integer
+          readOnly: true
+          description: The completed class session this recording belongs to.
+        title:
+          type: string
+          readOnly: true
+        video_room_name:
+          type: string
+          readOnly: true
+        recording_url:
+          type: string
+          format: uri
+          readOnly: true
+        duration_minutes:
+          type: integer
+          readOnly: true
+        recorded_at:
+          type: string
+          format: date-time
+          readOnly: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Retention expiry date — automatically purged after 60 days.
+        days_until_expiry:
+          type: integer
+          readOnly: true
+        is_expired:
+          type: boolean
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/ClassSessionRecordingStatusEnum'
+          readOnly: true
+        metadata:
+          readOnly: true
+        student:
+          allOf:
+          - $ref: '#/components/schemas/BookingParty'
+          readOnly: true
+        teacher:
+          allOf:
+          - $ref: '#/components/schemas/BookingParty'
+          readOnly: true
+        level_name:
+          type: string
+          readOnly: true
+        track_name:
+          type: string
+          readOnly: true
+      required:
+      - booking
+      - days_until_expiry
+      - duration_minutes
+      - expires_at
+      - id
+      - is_expired
+      - level_name
+      - metadata
+      - recorded_at
+      - recording_url
+      - status
+      - student
+      - teacher
+      - title
+      - track_name
+      - video_room_name
+    ClassSessionRecordingStatusEnum:
+      enum:
+      - ready
+      - processing
+      - purged
+      type: string
+      description: |-
+        * `ready` - Ready
+        * `processing` - Processing
+        * `purged` - Purged
     Cohort:
       type: object
       description: |-
@@ -4939,31 +5710,25 @@ components:
       - level
       - schedule_start_utc
       - teacher
-    CriterionAverage:
+    CompensationTypeEnum:
+      enum:
+      - hourly
+      - per_class
+      - fixed_period
+      type: string
+      description: |-
+        * `hourly` - Hourly
+        * `per_class` - Per Class
+        * `fixed_period` - Fixed Period
+    CustomPasswordReset:
       type: object
-      description: One criterion's average over a period. ``average`` is null when
-        unscored.
+      description: Custom password reset serializer providing frontend URL context.
       properties:
-        criterion_id:
-          type: integer
-          readOnly: true
-        criterion_name:
+        email:
           type: string
-          readOnly: true
-        average:
-          type: string
-          format: decimal
-          pattern: ^-?\d{0,1}(?:\.\d{0,2})?$
-          readOnly: true
-          nullable: true
-        score_count:
-          type: integer
-          readOnly: true
+          format: email
       required:
-      - average
-      - criterion_id
-      - criterion_name
-      - score_count
+      - email
     EventTypeEnum:
       enum:
       - booking_confirmed
@@ -5043,74 +5808,113 @@ components:
       - scores
       - teacher_summary
       - track
-    FamilyProgressSnapshot:
+    FamilyPayment:
       type: object
-      description: |-
-        The family's view. No ``generated_by``, and only published rows reach it.
-
-        ``visible_to_family`` is absent from the shape because the endpoint already
-        filters on it: a row a family can read is published by definition, so
-        publishing it again as a field would be noise. Which rows those are is the
-        view's decision, not this class's.
+      description: Detailed view of a family tuition payment.
       properties:
         id:
           type: integer
           readOnly: true
-        track:
-          allOf:
-          - $ref: '#/components/schemas/TrackBrief'
-          readOnly: true
-        period_start:
-          type: string
-          format: date-time
-          readOnly: true
-          description: Inclusive. Stored UTC.
-        period_end:
-          type: string
-          format: date-time
-          readOnly: true
-          description: Exclusive. Stored UTC.
-        generated_at:
-          type: string
-          format: date-time
-          readOnly: true
-        completed_sessions:
+        student:
           type: integer
           readOnly: true
-          description: Sessions taught in the period, assessed or not.
-        assessed_sessions:
+          description: Student whose tuition is being paid. Must have role 'student'.
+        student_username:
+          type: string
+          readOnly: true
+        student_name:
+          type: string
+          readOnly: true
+        organization:
           type: integer
           readOnly: true
-          description: How many of those carry an assessment. Never inflated to match.
-        overall_average:
+          description: The academy receiving this tuition directly via Paystack subaccount.
+        organization_name:
+          type: string
+          readOnly: true
+        initiated_by:
+          type: integer
+          readOnly: true
+          description: User who initiated payment (adult student or parent; never
+            a minor).
+        initiated_by_username:
+          type: string
+          readOnly: true
+        pricing_agreement:
+          type: integer
+          readOnly: true
+          description: The PricingAgreement snapshot this payment satisfies.
+        amount:
           type: string
           format: decimal
-          pattern: ^-?\d{0,1}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
           readOnly: true
-          nullable: true
-          description: 'Null when nothing in the period was assessed. Deliberately
-            nullable: ''no assessments'' is missing data, and 0.00 would read as a
-            score of zero out of five.'
-        criterion_averages:
-          readOnly: true
-          description: 'Snapshot of the per-criterion averages: [{criterion_id, criterion_name,
-            average, score_count}].'
-        summary:
+          description: Snapshotted amount in NGN at initialization. Never recomputed.
+        currency:
           type: string
           readOnly: true
-          description: Short human line. Auto-composed from the numbers unless the
-            lead supplies one.
+          description: Tuition currency, matching payouts (NGN).
+        paystack_reference:
+          type: string
+          readOnly: true
+          description: Server-generated unique reference sent to Paystack.
+        status:
+          allOf:
+          - $ref: '#/components/schemas/FamilyPaymentStatusEnum'
+          readOnly: true
+          description: |-
+            pending -> paid | failed | abandoned.
+
+            * `pending` - Pending
+            * `paid` - Paid
+            * `failed` - Failed
+            * `abandoned` - Abandoned
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        paid_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Timestamp when charge.success finalized this payment.
       required:
-      - assessed_sessions
-      - completed_sessions
-      - criterion_averages
-      - generated_at
+      - amount
+      - created_at
+      - currency
       - id
-      - overall_average
-      - period_end
-      - period_start
-      - summary
-      - track
+      - initiated_by
+      - initiated_by_username
+      - organization
+      - organization_name
+      - paid_at
+      - paystack_reference
+      - pricing_agreement
+      - status
+      - student
+      - student_name
+      - student_username
+    FamilyPaymentStatusEnum:
+      enum:
+      - pending
+      - paid
+      - failed
+      - abandoned
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `paid` - Paid
+        * `failed` - Failed
+        * `abandoned` - Abandoned
+    FixedPeriodCadenceEnum:
+      enum:
+      - weekly
+      - monthly
+      type: string
+      description: |-
+        * `weekly` - Weekly
+        * `monthly` - Monthly
     GenerationResult:
       type: object
       description: What a generation run did — created records, and skipped bookings.
@@ -5415,6 +6219,153 @@ components:
         lead_review_note:
           type: string
           maxLength: 4000
+    LearningMaterial:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        organization:
+          type: integer
+          readOnly: true
+          description: The academy that owns this learning material.
+        track:
+          type: integer
+          nullable: true
+          description: Optional track this material belongs to.
+        track_name:
+          type: string
+          readOnly: true
+          nullable: true
+        level:
+          type: integer
+          nullable: true
+          description: Optional level this material belongs to.
+        level_name:
+          type: string
+          readOnly: true
+          nullable: true
+        level_order:
+          type: integer
+          readOnly: true
+          nullable: true
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        material_type:
+          $ref: '#/components/schemas/MaterialTypeEnum'
+        file:
+          type: string
+          nullable: true
+          readOnly: true
+        file_url:
+          type: string
+          nullable: true
+          readOnly: true
+        external_url:
+          description: External URL or embed link if not an uploaded file.
+          oneOf:
+          - type: string
+            format: uri
+            maxLength: 500
+          - type: string
+            maxLength: 0
+        content_text:
+          type: string
+          description: Structured Arabic / English text, ayah passages, or study notes.
+        is_active:
+          type: boolean
+          description: Whether this material is active and accessible in the classroom.
+        uploaded_by:
+          type: integer
+          readOnly: true
+          nullable: true
+        uploaded_by_name:
+          type: string
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - file
+      - file_url
+      - id
+      - level_name
+      - level_order
+      - organization
+      - title
+      - track_name
+      - updated_at
+      - uploaded_by
+      - uploaded_by_name
+    LearningMaterialCreate:
+      type: object
+      description: |-
+        Base for the write shapes: relations resolve inside one academy only.
+
+        ``scoped_querysets`` names the related fields to narrow and the queryset to
+        narrow each to. It is applied in ``get_fields()`` rather than ``__init__``
+        because the context — and therefore the organization — is attached to the
+        serializer after construction, and a field whose queryset was built before the
+        tenant was known would be a global lookup wearing a scoped name.
+
+        The narrowing is the security boundary, not a convenience: a track id from
+        another academy is *absent* from the field's queryset, so it comes back as
+        "object does not exist" without the response ever confirming that the row is
+        real somewhere else.
+
+        Each scoped field is *declared* with an empty queryset, which is what makes the
+        arrangement fail closed. Outside a request there is no organization in the
+        context — drf-spectacular instantiates serializers bare to read their fields —
+        and the empty queryset is left in place. If a view ever forgot to put the
+        organization in its context, the result would be an endpoint that rejects every
+        id, not one that accepts any.
+      properties:
+        track:
+          type: integer
+          nullable: true
+        level:
+          type: integer
+          nullable: true
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          default: ''
+        material_type:
+          allOf:
+          - $ref: '#/components/schemas/MaterialTypeEnum'
+          default: pdf
+        file:
+          type: string
+          format: uri
+          nullable: true
+        external_url:
+          oneOf:
+          - type: string
+            format: uri
+            default: ''
+            maxLength: 500
+          - type: string
+            maxLength: 0
+        content_text:
+          type: string
+          default: ''
+        is_active:
+          type: boolean
+          default: true
+      required:
+      - title
     Level:
       type: object
       description: |-
@@ -5571,6 +6522,24 @@ components:
           type: string
       required:
       - password
+    MaterialTypeEnum:
+      enum:
+      - pdf
+      - book
+      - worksheet
+      - image
+      - audio
+      - link
+      - text
+      type: string
+      description: |-
+        * `pdf` - PDF Book / Document
+        * `book` - Digital Book / Reader
+        * `worksheet` - Worksheet / Exercise
+        * `image` - Image / Infographic
+        * `audio` - Audio Recording
+        * `link` - External Resource / Web Link
+        * `text` - Text / Surah Excerpt / Notes
     MembershipStatusEnum:
       enum:
       - active
@@ -6029,6 +6998,9 @@ components:
         * `sent` - Sent
         * `delivered` - Delivered
         * `failed` - Failed
+    NullEnum:
+      enum:
+      - null
     Organization:
       type: object
       description: |-
@@ -6201,6 +7173,19 @@ components:
           type: string
           format: date
           nullable: true
+        age:
+          type: integer
+          maximum: 120
+          minimum: 1
+          writeOnly: true
+        parent_email:
+          writeOnly: true
+          oneOf:
+          - type: string
+            format: email
+            default: ''
+          - type: string
+            maxLength: 0
       required:
       - password
       - timezone
@@ -6360,6 +7345,16 @@ components:
           readOnly: true
           description: Capacity dial for this academy only. Scheduling still enforces
             TeacherProfile.max_weekly_hours until scheduling tenancy lands.
+        compensation_type:
+          allOf:
+          - $ref: '#/components/schemas/CompensationTypeEnum'
+          readOnly: true
+          description: |-
+            Compensation structure: hourly, per_class, or fixed_period.
+
+            * `hourly` - Hourly
+            * `per_class` - Per Class
+            * `fixed_period` - Fixed Period
         hourly_payout_rate:
           type: string
           format: decimal
@@ -6367,7 +7362,33 @@ components:
           readOnly: true
           nullable: true
           description: What this academy pays per hour. Null means no per-hour rate,
-            as on TeacherProfile. Payout calculation still reads that one.
+            as on TeacherProfile. Payout calculation reads this when compensation_type
+            is hourly.
+        per_class_rate:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+          description: Fixed payment per completed class/session.
+        fixed_period_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+          description: Fixed compensation amount paid per cadence period.
+        fixed_period_cadence:
+          readOnly: true
+          nullable: true
+          description: |-
+            Cadence for fixed period compensation: weekly or monthly.
+
+            * `weekly` - Weekly
+            * `monthly` - Monthly
+          oneOf:
+          - $ref: '#/components/schemas/FixedPeriodCadenceEnum'
+          - $ref: '#/components/schemas/NullEnum'
         approved:
           type: boolean
           readOnly: true
@@ -6383,12 +7404,16 @@ components:
           readOnly: true
       required:
       - approved
+      - compensation_type
       - created_at
+      - fixed_period_amount
+      - fixed_period_cadence
       - hourly_payout_rate
       - id
       - max_weekly_hours
       - membership
       - organization
+      - per_class_rate
       - updated_at
       - user
       - username
@@ -6412,11 +7437,30 @@ components:
         max_weekly_hours:
           type: integer
           minimum: 1
+        compensation_type:
+          allOf:
+          - $ref: '#/components/schemas/CompensationTypeEnum'
+          default: hourly
         hourly_payout_rate:
           type: string
           format: decimal
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
           nullable: true
+        per_class_rate:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          nullable: true
+        fixed_period_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          nullable: true
+        fixed_period_cadence:
+          nullable: true
+          oneOf:
+          - $ref: '#/components/schemas/FixedPeriodCadenceEnum'
+          - $ref: '#/components/schemas/NullEnum'
         approved:
           type: boolean
           default: false
@@ -6464,6 +7508,25 @@ components:
       required:
       - student
       - student_code
+    PasswordResetConfirm:
+      type: object
+      description: Serializer for confirming a password reset attempt.
+      properties:
+        new_password1:
+          type: string
+          maxLength: 128
+        new_password2:
+          type: string
+          maxLength: 128
+        uid:
+          type: string
+        token:
+          type: string
+      required:
+      - new_password1
+      - new_password2
+      - token
+      - uid
     PatchedAssessmentRubricUpdate:
       type: object
       description: |-
@@ -6487,6 +7550,63 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AssessmentCriterionWrite'
+    PatchedLearningMaterialCreate:
+      type: object
+      description: |-
+        Base for the write shapes: relations resolve inside one academy only.
+
+        ``scoped_querysets`` names the related fields to narrow and the queryset to
+        narrow each to. It is applied in ``get_fields()`` rather than ``__init__``
+        because the context — and therefore the organization — is attached to the
+        serializer after construction, and a field whose queryset was built before the
+        tenant was known would be a global lookup wearing a scoped name.
+
+        The narrowing is the security boundary, not a convenience: a track id from
+        another academy is *absent* from the field's queryset, so it comes back as
+        "object does not exist" without the response ever confirming that the row is
+        real somewhere else.
+
+        Each scoped field is *declared* with an empty queryset, which is what makes the
+        arrangement fail closed. Outside a request there is no organization in the
+        context — drf-spectacular instantiates serializers bare to read their fields —
+        and the empty queryset is left in place. If a view ever forgot to put the
+        organization in its context, the result would be an endpoint that rejects every
+        id, not one that accepts any.
+      properties:
+        track:
+          type: integer
+          nullable: true
+        level:
+          type: integer
+          nullable: true
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          default: ''
+        material_type:
+          allOf:
+          - $ref: '#/components/schemas/MaterialTypeEnum'
+          default: pdf
+        file:
+          type: string
+          format: uri
+          nullable: true
+        external_url:
+          oneOf:
+          - type: string
+            format: uri
+            default: ''
+            maxLength: 500
+          - type: string
+            maxLength: 0
+        content_text:
+          type: string
+          default: ''
+        is_active:
+          type: boolean
+          default: true
     PatchedLevelUpdate:
       type: object
       description: |-
@@ -6529,21 +7649,125 @@ components:
       description: |-
         Changing what this academy asks of, and pays, one of its teachers.
 
-        All three fields optional, so one shape covers approving a teacher, re-capping
-        their week and re-rating their hour. ``membership`` is absent and not editable:
-        moving these terms to a different person or a different academy is not a change
-        to a relationship, it is a different relationship.
+        Fields optional, covering compensation types, rates, hours, and approval.
       properties:
         max_weekly_hours:
           type: integer
           minimum: 1
+        compensation_type:
+          $ref: '#/components/schemas/CompensationTypeEnum'
         hourly_payout_rate:
           type: string
           format: decimal
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
           nullable: true
+        per_class_rate:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          nullable: true
+        fixed_period_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          nullable: true
+        fixed_period_cadence:
+          nullable: true
+          oneOf:
+          - $ref: '#/components/schemas/FixedPeriodCadenceEnum'
+          - $ref: '#/components/schemas/NullEnum'
         approved:
           type: boolean
+    PatchedStudentAssignment:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        description:
+          type: string
+          readOnly: true
+        track:
+          type: integer
+          readOnly: true
+          nullable: true
+        track_name:
+          type: string
+          readOnly: true
+        level:
+          type: integer
+          readOnly: true
+          nullable: true
+        level_name:
+          type: string
+          readOnly: true
+        assigned_student:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: 'Optional: specific student this assignment is directed to.
+            Null = whole class/track.'
+        assigned_student_name:
+          type: string
+          readOnly: true
+        submission_type:
+          allOf:
+          - $ref: '#/components/schemas/SubmissionTypeEnum'
+          readOnly: true
+        surah_number:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: Optional Quran Surah number (1-114)
+        ayah_start:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: Optional starting Ayah number
+        ayah_end:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: Optional ending Ayah number
+        due_date:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        max_score:
+          type: integer
+          readOnly: true
+        rubric:
+          type: integer
+          readOnly: true
+          nullable: true
+        resource_file:
+          type: string
+          nullable: true
+          readOnly: true
+        created_by:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        submissions_count:
+          type: string
+          readOnly: true
+        pending_submissions_count:
+          type: string
+          readOnly: true
+        my_submission:
+          type: string
+          readOnly: true
     PatchedStudentEnrollmentUpdate:
       type: object
       description: Updating a student's enrollment status.
@@ -6554,6 +7778,9 @@ components:
           type: integer
           nullable: true
         level_id:
+          type: integer
+          nullable: true
+        teacher_id:
           type: integer
           nullable: true
     PatchedTeacherTrackUpdate:
@@ -6591,6 +7818,46 @@ components:
           type: string
           maxLength: 80
           pattern: ^[-a-zA-Z0-9_]+$
+    PaymentInitialize:
+      type: object
+      description: Payload to initiate a tuition payment.
+      properties:
+        pricing_agreement_id:
+          type: integer
+        student_id:
+          type: integer
+        callback_url:
+          oneOf:
+          - type: string
+            format: uri
+          - type: string
+            maxLength: 0
+      required:
+      - pricing_agreement_id
+    PaymentInitializeResponse:
+      type: object
+      description: Response returned upon successful payment initialization.
+      properties:
+        payment_id:
+          type: integer
+        reference:
+          type: string
+        amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+        currency:
+          type: string
+        authorization_url:
+          type: string
+          format: uri
+        access_code:
+          type: string
+      required:
+      - amount
+      - currency
+      - payment_id
+      - reference
     PayoutGenerate:
       type: object
       description: |-
@@ -6681,206 +7948,85 @@ components:
       description: |-
         * `generated` - Generated
         * `finalized` - Finalized
-    PlacementAudioAccess:
+    PaystackWebhookPayload:
       type: object
-      description: |-
-        The response of the audio-access endpoint: a URL with an expiry.
-
-        Serializer rather than a hand-built dict so the field types reach the
-        OpenAPI schema — a client needs to know the URL stops working, and
-        ``expires_at`` is the only thing telling it that.
+      description: Generic schema for Paystack webhook events.
       properties:
-        url:
+        event:
           type: string
-          format: uri
-          readOnly: true
-          description: 'Short-lived private access to the recitation sample. Treat
-            it as a secret: whoever holds it can fetch the file until it expires.'
-        expires_at:
-          type: string
-          format: date-time
-          readOnly: true
-          description: UTC instant after which the URL stops working.
-        expires_in:
-          type: integer
-          readOnly: true
-          description: Seconds of remaining validity when issued.
+        data:
+          type: object
+          additionalProperties: {}
       required:
-      - expires_at
-      - expires_in
-      - url
-    PlacementResult:
+      - data
+      - event
+    PlatformSubscription:
       type: object
-      description: |-
-        Read representation, shared by the submit, queue, 'mine' and children endpoints.
-
-        Carries no URL for the audio. ``has_audio_sample`` is what a client branches
-        on, ``audio_filename`` is what it shows in a list, and a signed URL comes
-        from the dedicated endpoint when someone actually presses play.
-
-        ``organization`` is the placement's own academy, read through its track. It is
-        the only academy identifier in the payload — the spec forbids exposing
-        unrelated ones, and there is nowhere here for one to come from.
+      description: Current subscription status for an academy.
       properties:
         id:
           type: integer
           readOnly: true
-        student:
-          allOf:
-          - $ref: '#/components/schemas/PlacementStudent'
-          readOnly: true
-        organization:
+        organization_id:
           type: integer
-          description: The owning academy's id, without loading the organization row.
           readOnly: true
-        track:
+        organization_name:
           type: string
-          description: Unique within the owning academy, not across the platform.
           readOnly: true
-        has_audio_sample:
-          type: boolean
-          readOnly: true
-        audio_filename:
+        organization_slug:
           type: string
-          nullable: true
-          description: |-
-            The sample's filename, without the storage path that holds it.
-
-            The basename only. The full key is an implementation detail of the
-            private bucket, and publishing it would put the one piece of the storage
-            layout a client has no use for into every response.
           readOnly: true
-        skipped_as_beginner:
-          type: boolean
-          readOnly: true
-          description: Student declared themselves a complete beginner instead of
-            recording. Mutually exclusive with audio_sample.
-        recommended_level:
-          allOf:
-          - $ref: '#/components/schemas/Level'
-          readOnly: true
-        reviewed_by:
+        paystack_plan_code:
           type: string
-          description: Required. 150 characters or fewer. Letters, digits and @/./+/-/_
-            only.
           readOnly: true
-        reviewed_at:
-          type: string
-          format: date-time
-          readOnly: true
-          nullable: true
-        reviewed_at_local:
-          type: string
-          nullable: true
-          description: reviewed_at (stored UTC) in the requesting user's own timezone.
-          readOnly: true
+          description: Paystack Plan code for IqraLMS platform access.
         status:
           allOf:
-          - $ref: '#/components/schemas/PlacementResultStatusEnum'
+          - $ref: '#/components/schemas/PlatformSubscriptionStatusEnum'
           readOnly: true
           description: |-
-            Recomputed from reviewed_at on every save(); never set by a client.
+            Current subscription lifecycle status.
 
-            * `pending` - Pending review
-            * `reviewed` - Reviewed
+            * `active` - Active
+            * `past_due` - Past Due
+            * `not_renewing` - Not Renewing
+            * `disabled` - Disabled
+        current_period_end:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: End of the current paid billing period.
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
       required:
-      - audio_filename
-      - has_audio_sample
+      - created_at
+      - current_period_end
       - id
-      - organization
-      - recommended_level
-      - reviewed_at
-      - reviewed_at_local
-      - reviewed_by
-      - skipped_as_beginner
+      - organization_id
+      - organization_name
+      - organization_slug
+      - paystack_plan_code
       - status
-      - student
-      - track
-    PlacementResultStatusEnum:
+      - updated_at
+    PlatformSubscriptionStatusEnum:
       enum:
-      - pending
-      - reviewed
+      - active
+      - past_due
+      - not_renewing
+      - disabled
       type: string
       description: |-
-        * `pending` - Pending review
-        * `reviewed` - Reviewed
-    PlacementReview:
-      type: object
-      description: |-
-        The lead teacher sets the level; the model stamps who and when.
-
-        Two narrowings, one inside the other. ``recommended_level`` is restricted to
-        levels of *this academy's* tracks, and then to this placement's own track — the
-        first is the tenant boundary, the second is the Phase 2 product rule, and
-        neither substitutes for the other.
-      properties:
-        recommended_level:
-          type: integer
-      required:
-      - recommended_level
-    PlacementStudent:
-      type: object
-      description: The student as the review queue needs them — no signup_code, no
-        sprawl.
-      properties:
-        id:
-          type: integer
-          readOnly: true
-        username:
-          type: string
-          readOnly: true
-          description: Required. 150 characters or fewer. Letters, digits and @/./+/-/_
-            only.
-        first_name:
-          type: string
-          readOnly: true
-        last_name:
-          type: string
-          readOnly: true
-        timezone:
-          type: string
-          readOnly: true
-          description: IANA zone name, e.g. 'Africa/Lagos'. Required at signup.
-        is_minor:
-          type: boolean
-          readOnly: true
-          description: Snapshot computed from date_of_birth at signup. Not recomputed
-            on birthdays — see learnings.md.
-      required:
-      - first_name
-      - id
-      - is_minor
-      - last_name
-      - timezone
-      - username
-    PlacementSubmit:
-      type: object
-      description: |-
-        A student submits a recitation sample, or declares themselves a beginner.
-
-        Exactly one of the two. Rejected at this layer with a 400 so the client gets
-        a field error rather than the model's invariant surfacing as a 500 — which
-        is the same reason the Phase 6 upload rules are attached to the field here
-        rather than only enforced in the model.
-
-        SaaS Phase 3 narrowed ``track`` to the academy in the URL. A student who
-        belongs to two academies submits to each through its own route, and a track id
-        from the academy they are *not* addressing is simply not in the queryset.
-      properties:
-        track:
-          type: integer
-        audio_sample:
-          type: string
-          format: uri
-          nullable: true
-          description: 'Up to 15 MB, one of: .flac, .m4a, .mp3, .mp4, .oga, .ogg,
-            .opus, .wav, .webm. The file''s actual contents are checked, not just
-            its name and declared type.'
-        skipped_as_beginner:
-          type: boolean
-          default: false
-      required:
-      - track
+        * `active` - Active
+        * `past_due` - Past Due
+        * `not_renewing` - Not Renewing
+        * `disabled` - Disabled
     PricingAgreement:
       type: object
       description: |-
@@ -7020,116 +8166,6 @@ components:
       - last_name
       - timezone
       - username
-    ProgressSnapshot:
-      type: object
-      description: The lead's view of a snapshot, including who generated it.
-      properties:
-        id:
-          type: integer
-          readOnly: true
-        student:
-          allOf:
-          - $ref: '#/components/schemas/AssessmentParty'
-          readOnly: true
-        track:
-          allOf:
-          - $ref: '#/components/schemas/TrackBrief'
-          readOnly: true
-        period_start:
-          type: string
-          format: date-time
-          readOnly: true
-          description: Inclusive. Stored UTC.
-        period_end:
-          type: string
-          format: date-time
-          readOnly: true
-          description: Exclusive. Stored UTC.
-        generated_at:
-          type: string
-          format: date-time
-          readOnly: true
-        completed_sessions:
-          type: integer
-          readOnly: true
-          description: Sessions taught in the period, assessed or not.
-        assessed_sessions:
-          type: integer
-          readOnly: true
-          description: How many of those carry an assessment. Never inflated to match.
-        overall_average:
-          type: string
-          format: decimal
-          pattern: ^-?\d{0,1}(?:\.\d{0,2})?$
-          readOnly: true
-          nullable: true
-          description: 'Null when nothing in the period was assessed. Deliberately
-            nullable: ''no assessments'' is missing data, and 0.00 would read as a
-            score of zero out of five.'
-        criterion_averages:
-          readOnly: true
-          description: 'Snapshot of the per-criterion averages: [{criterion_id, criterion_name,
-            average, score_count}].'
-        summary:
-          type: string
-          readOnly: true
-          description: Short human line. Auto-composed from the numbers unless the
-            lead supplies one.
-        generated_by:
-          type: string
-          description: Required. 150 characters or fewer. Letters, digits and @/./+/-/_
-            only.
-          readOnly: true
-        visible_to_family:
-          type: boolean
-          readOnly: true
-          description: Off until the lead publishes it. A family reads only published
-            snapshots.
-      required:
-      - assessed_sessions
-      - completed_sessions
-      - criterion_averages
-      - generated_at
-      - generated_by
-      - id
-      - overall_average
-      - period_end
-      - period_start
-      - student
-      - summary
-      - track
-      - visible_to_family
-    ProgressSnapshotCreate:
-      type: object
-      description: |-
-        The lead generates a snapshot for one student, track and period.
-
-        Every number in the result is computed here, not supplied: a snapshot a caller
-        could hand values to would not be evidence of anything. Repeating the same
-        request returns the existing row and a 200 rather than creating a second one.
-      properties:
-        student:
-          type: integer
-          description: Must be a student account; the model enforces the role.
-        track:
-          type: integer
-        period_start:
-          type: string
-          format: date-time
-        period_end:
-          type: string
-          format: date-time
-        summary:
-          type: string
-          maxLength: 2000
-        visible_to_family:
-          type: boolean
-          default: false
-      required:
-      - period_end
-      - period_start
-      - student
-      - track
     ReasonEnum:
       enum:
       - discount_hardship
@@ -7142,30 +8178,6 @@ components:
         * `premium_direct` - Premium — chose the lead teacher directly
         * `sibling_discount` - Sibling discount
         * `standard` - Standard — no negotiation
-    RecentSummary:
-      type: object
-      description: A teacher summary as a family reads it — the one free-text field
-        they see.
-      properties:
-        assessment_id:
-          type: integer
-          readOnly: true
-        taught_at:
-          type: string
-          format: date-time
-          readOnly: true
-        assessed_at:
-          type: string
-          format: date-time
-          readOnly: true
-        teacher_summary:
-          type: string
-          readOnly: true
-      required:
-      - assessed_at
-      - assessment_id
-      - taught_at
-      - teacher_summary
     Register:
       type: object
       properties:
@@ -7199,6 +8211,18 @@ components:
           type: string
           format: date
           nullable: true
+        age:
+          type: integer
+          maximum: 120
+          minimum: 1
+          writeOnly: true
+        parent_email:
+          writeOnly: true
+          oneOf:
+          - type: string
+            format: email
+          - type: string
+            maxLength: 0
       required:
       - email
       - password
@@ -7408,6 +8432,181 @@ components:
         * `generated` - Generated, none finalized
         * `partly_finalized` - Partly finalized
         * `finalized` - Fully finalized
+    StudentAssignment:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        description:
+          type: string
+          readOnly: true
+        track:
+          type: integer
+          readOnly: true
+          nullable: true
+        track_name:
+          type: string
+          readOnly: true
+        level:
+          type: integer
+          readOnly: true
+          nullable: true
+        level_name:
+          type: string
+          readOnly: true
+        assigned_student:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: 'Optional: specific student this assignment is directed to.
+            Null = whole class/track.'
+        assigned_student_name:
+          type: string
+          readOnly: true
+        submission_type:
+          allOf:
+          - $ref: '#/components/schemas/SubmissionTypeEnum'
+          readOnly: true
+        surah_number:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: Optional Quran Surah number (1-114)
+        ayah_start:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: Optional starting Ayah number
+        ayah_end:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: Optional ending Ayah number
+        due_date:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        max_score:
+          type: integer
+          readOnly: true
+        rubric:
+          type: integer
+          readOnly: true
+          nullable: true
+        resource_file:
+          type: string
+          nullable: true
+          readOnly: true
+        created_by:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        submissions_count:
+          type: string
+          readOnly: true
+        pending_submissions_count:
+          type: string
+          readOnly: true
+        my_submission:
+          type: string
+          readOnly: true
+      required:
+      - assigned_student
+      - assigned_student_name
+      - ayah_end
+      - ayah_start
+      - created_at
+      - created_by
+      - description
+      - due_date
+      - id
+      - level
+      - level_name
+      - max_score
+      - my_submission
+      - pending_submissions_count
+      - resource_file
+      - rubric
+      - submission_type
+      - submissions_count
+      - surah_number
+      - title
+      - track
+      - track_name
+      - updated_at
+    StudentAssignmentCreate:
+      type: object
+      description: |-
+        Base mixin for assessment write shapes: relations resolve inside one academy only.
+
+        ``scoped_querysets`` names the related fields to narrow and the queryset to
+        narrow each to. It is applied in ``get_fields()`` rather than ``__init__``
+        because the context — and therefore the organization — is attached to the
+        serializer after construction.
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        track:
+          type: integer
+          nullable: true
+        level:
+          type: integer
+          nullable: true
+        assigned_student:
+          type: integer
+          nullable: true
+        submission_type:
+          $ref: '#/components/schemas/SubmissionTypeEnum'
+        surah_number:
+          type: integer
+          maximum: 114
+          minimum: 1
+          nullable: true
+          description: Optional Quran Surah number (1-114)
+        ayah_start:
+          type: integer
+          maximum: 2147483647
+          minimum: 1
+          nullable: true
+          description: Optional starting Ayah number
+        ayah_end:
+          type: integer
+          maximum: 2147483647
+          minimum: 1
+          nullable: true
+          description: Optional ending Ayah number
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
+        max_score:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+        rubric:
+          type: integer
+          nullable: true
+        resource_file:
+          type: string
+          format: uri
+          nullable: true
+      required:
+      - title
     StudentDetail:
       type: object
       description: A student's enrollment, as seen in the academy's detail view.
@@ -7448,6 +8647,14 @@ components:
           type: integer
           readOnly: true
           nullable: true
+        teacher_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        teacher_name:
+          type: string
+          nullable: true
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7466,6 +8673,8 @@ components:
       - is_minor
       - last_name
       - level_id
+      - teacher_id
+      - teacher_name
       - track_id
       - updated_at
       - user_id
@@ -7480,6 +8689,9 @@ components:
           type: integer
           nullable: true
         level_id:
+          type: integer
+          nullable: true
+        teacher_id:
           type: integer
           nullable: true
       required:
@@ -7532,6 +8744,14 @@ components:
           type: integer
           readOnly: true
           nullable: true
+        teacher_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        teacher_name:
+          type: string
+          nullable: true
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7550,76 +8770,70 @@ components:
       - is_minor
       - last_name
       - level_id
+      - teacher_id
+      - teacher_name
       - track_id
       - updated_at
       - user_id
       - username
-    StudentProgress:
+    SubaccountSetup:
       type: object
-      description: |-
-        Progress in one track, for the student or their linked parent.
-
-        ``overall_average`` and every criterion average are nullable, and null means
-        "nothing assessed in this period" rather than "scored zero". ``recommended_level``
-        is read from Phase 2's placement result and is never written by this app.
+      description: Payload to configure an academy's settlement bank details.
       properties:
-        track:
-          allOf:
-          - $ref: '#/components/schemas/TrackBrief'
-          readOnly: true
-        recommended_level:
-          allOf:
-          - $ref: '#/components/schemas/Level'
-          readOnly: true
-          nullable: true
-        period_start:
-          type: string
-          format: date-time
-          readOnly: true
-          nullable: true
-        period_end:
-          type: string
-          format: date-time
-          readOnly: true
-          nullable: true
-        completed_sessions:
+        organization_id:
           type: integer
-          readOnly: true
-        assessed_sessions:
-          type: integer
-          readOnly: true
-        overall_average:
+        bank_code:
           type: string
-          format: decimal
-          pattern: ^-?\d{0,1}(?:\.\d{0,2})?$
-          readOnly: true
-          nullable: true
-        criterion_averages:
-          type: array
-          items:
-            $ref: '#/components/schemas/CriterionAverage'
-          readOnly: true
-        last_assessed_at:
+          maxLength: 10
+        account_number:
           type: string
-          format: date-time
-          readOnly: true
-          nullable: true
-        recent_summaries:
-          type: array
-          items:
-            $ref: '#/components/schemas/RecentSummary'
-          readOnly: true
+          maxLength: 20
+        business_name:
+          type: string
+          default: ''
       required:
-      - assessed_sessions
-      - completed_sessions
-      - criterion_averages
-      - last_assessed_at
-      - overall_average
-      - period_end
-      - period_start
-      - recent_summaries
-      - recommended_level
-      - track
+      - account_number
+      - bank_code
+      - organization_id
+    SubaccountSetupResponse:
+      type: object
+      description: Response after resolving and creating subaccount.
+      properties:
+        account_name:
+          type: string
+        subaccount_code:
+          type: string
+        bank_code:
+          type: string
+        account_number:
+          type: string
+      required:
+      - account_name
+      - account_number
+      - bank_code
+      - subaccount_code
+    SubmissionTypeEnum:
+      enum:
+      - audio_recitation
+      - written_text
+      - file_upload
+      - mixed
+      type: string
+      description: |-
+        * `audio_recitation` - Quran Audio Recitation
+        * `written_text` - Written Response
+        * `file_upload` - File / Worksheet Upload
+        * `mixed` - Mixed (Audio, Text, or File)
+    SubscribeRequest:
+      type: object
+      description: Request payload to subscribe an organization.
+      properties:
+        organization_id:
+          type: integer
+        plan_code:
+          type: string
+      required:
+      - organization_id
     TeacherAssessment:
       type: object
       description: |-
@@ -7821,46 +9035,6 @@ components:
       - hourly_payout_rate
       - is_lead
       - max_weekly_hours
-    TeacherReport:
-      type: object
-      description: |-
-        One teacher's row in the lead's quality report.
-
-        Deliberately not sortable by score and deliberately without a rank field. The
-        rows arrive ordered by username; a client that wants a league table has to
-        build one itself, and the phase spec says not to.
-      properties:
-        teacher:
-          allOf:
-          - $ref: '#/components/schemas/AssessmentParty'
-          readOnly: true
-        assessed_sessions:
-          type: integer
-          readOnly: true
-        overall_average:
-          type: string
-          format: decimal
-          pattern: ^-?\d{0,1}(?:\.\d{0,2})?$
-          readOnly: true
-          nullable: true
-        by_track:
-          type: array
-          items:
-            $ref: '#/components/schemas/TeacherTrackReport'
-          readOnly: true
-        flagged:
-          type: integer
-          readOnly: true
-        awaiting_lead_review:
-          type: integer
-          readOnly: true
-      required:
-      - assessed_sessions
-      - awaiting_lead_review
-      - by_track
-      - flagged
-      - overall_average
-      - teacher
     TeacherTrack:
       type: object
       description: |-
@@ -7945,26 +9119,6 @@ components:
       required:
       - track
       - user
-    TeacherTrackReport:
-      type: object
-      properties:
-        track:
-          allOf:
-          - $ref: '#/components/schemas/TrackBrief'
-          readOnly: true
-        assessed_sessions:
-          type: integer
-          readOnly: true
-        overall_average:
-          type: string
-          format: decimal
-          pattern: ^-?\d{0,1}(?:\.\d{0,2})?$
-          readOnly: true
-          nullable: true
-      required:
-      - assessed_sessions
-      - overall_average
-      - track
     TimeWindow:
       type: object
       description: |-
@@ -8031,24 +9185,6 @@ components:
       - levels
       - name
       - organization
-      - slug
-    TrackBrief:
-      type: object
-      properties:
-        id:
-          type: integer
-          readOnly: true
-        name:
-          type: string
-          readOnly: true
-        slug:
-          type: string
-          readOnly: true
-          description: Unique within the owning academy, not across the platform.
-          pattern: ^[-a-zA-Z0-9_]+$
-      required:
-      - id
-      - name
       - slug
     TrackWrite:
       type: object
@@ -8299,6 +9435,8 @@ components:
         duration_minutes:
           type: integer
           minimum: 1
+        teacher_id:
+          type: integer
     WeekdayEnum:
       enum:
       - 0
@@ -8322,6 +9460,10 @@ components:
       type: apiKey
       in: cookie
       name: sessionid
+    queryParamTokenAuth:
+      type: apiKey
+      in: query
+      name: token
     tokenAuth:
       type: apiKey
       in: header

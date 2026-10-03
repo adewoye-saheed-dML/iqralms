@@ -18,7 +18,12 @@ it is always the same tenant-scoped filter: ``services.payouts_for(organization=
 from rest_framework.permissions import BasePermission
 
 from accounts.models import Role
-from organizations.permissions import is_owner_admin_or_lead_teacher, is_teacher
+from organizations.permissions import (
+    is_lead_teacher,
+    is_owner_admin_or_lead_teacher,
+    is_owner_or_admin,
+    is_teacher,
+)
 
 
 class IsLeadTeacher(BasePermission):

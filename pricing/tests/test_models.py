@@ -354,7 +354,9 @@ class ThisPhaseChargesNobodyTests(TestCase):
             rel.get_accessor_name()
             for rel in PricingAgreement._meta.related_objects
         }
-        self.assertEqual(related, set(), "nothing should point at an agreement yet")
+        # Phase 9 adds FamilyPayment.pricing_agreement (Phase 9 tuition collection);
+        # no booking or session points at an agreement.
+        self.assertEqual(related - {"payments"}, set(), "no session should point at an agreement")
 
 
 class PricingAgreementTenancyTests(TestCase):
