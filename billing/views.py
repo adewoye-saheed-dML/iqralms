@@ -13,11 +13,30 @@ from rest_framework.views import APIView
 from organizations.models import Organization, OrganizationRole, active_membership
 from payments.paystack import verify_paystack_signature
 from payments.serializers import PaystackWebhookPayloadSerializer
+from .constants import get_tiers_display
 from .models import PlatformSubscription
-from .serializers import PlatformSubscriptionSerializer, SubscribeRequestSerializer
+from .serializers import (
+    PlatformSubscriptionSerializer,
+    SubscribeRequestSerializer,
+    TierDisplaySerializer,
+)
 from .services import process_billing_webhook, subscribe_organization
 
 logger = logging.getLogger(__name__)
+
+
+@extend_schema(
+    summary="List all platform subscription tiers with pricing and student caps",
+    responses={200: TierDisplaySerializer(many=True)},
+)
+class BillingTiersListView(APIView):
+    """Public, unauthenticated endpoint listing subscription tiers with NGN and USD display pricing."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        return Response(get_tiers_display(), status=status.HTTP_200_OK)
 
 
 @extend_schema(
@@ -37,6 +56,7 @@ class SubscribeView(APIView):
         serializer = SubscribeRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         org_id = serializer.validated_data["organization_id"]
+        tier = serializer.validated_data.get("tier", "starter")
         plan_code = serializer.validated_data.get("plan_code")
 
         organization = get_object_or_404(Organization, pk=org_id)
@@ -47,12 +67,14 @@ class SubscribeView(APIView):
         subscription = subscribe_organization(
             organization=organization,
             user=request.user,
+            tier=tier,
             plan_code=plan_code,
         )
         return Response(
             PlatformSubscriptionSerializer(subscription).data,
             status=status.HTTP_200_OK,
         )
+
 
 
 @extend_schema(

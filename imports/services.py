@@ -81,8 +81,10 @@ class ImportValidator:
         self.errors = []
         self.valid_rows = []
         self.seen_emails = set()
+        self.new_students_validated = 0
         
         self.allowed_fields = {"email", "first_name", "last_name", "timezone"}
+
         if self.job.kind == ImportKind.STUDENTS:
             self.allowed_fields.update({"date_of_birth", "parent_email"})
         elif self.job.kind == ImportKind.PARENTS:
@@ -294,7 +296,28 @@ class ImportValidator:
                     self._add_error(idx, "date_of_birth", "invalid_date", "Date of birth must be YYYY-MM-DD.")
                     return
 
+            # Student cap check (Decision D-013)
+            user = existing_users.get(email)
+            membership = existing_memberships.get(user.id) if user else None
+            is_already_active_student = (
+                membership is not None
+                and membership.role == OrganizationRole.STUDENT
+                and membership.status == MembershipStatus.ACTIVE
+            )
+            if not is_already_active_student:
+                from billing.services import can_add_student, get_student_cap_error_message
+                if not can_add_student(self.job.organization, additional_count=self.new_students_validated + 1):
+                    self._add_error(
+                        idx,
+                        "student_cap",
+                        "limit_reached",
+                        get_student_cap_error_message(self.job.organization),
+                    )
+                    return
+                self.new_students_validated += 1
+
         self.valid_rows.append(row)
+
 
     def _get_expected_global_role(self) -> str:
         if self.job.kind == ImportKind.TEACHERS:
@@ -408,6 +431,19 @@ def commit_import(job: ImportJob):
                     reused_users += 1
 
                 # Create or get membership
+                if job.kind == ImportKind.STUDENTS:
+                    already_active = OrganizationMembership.objects.filter(
+                        organization_id=job.organization_id,
+                        user=user,
+                        role=OrganizationRole.STUDENT,
+                        status=MembershipStatus.ACTIVE,
+                    ).exists()
+                    if not already_active:
+                        from billing.services import can_add_student, get_student_cap_error_message
+                        if not can_add_student(job.organization):
+                            from django.core.exceptions import ValidationError
+                            raise ValidationError(get_student_cap_error_message(job.organization))
+
                 membership, m_created = OrganizationMembership.objects.get_or_create(
                     organization_id=job.organization_id,
                     user=user,
@@ -419,6 +455,7 @@ def commit_import(job: ImportJob):
 
                 if m_created:
                     created_memberships += 1
+
                 else:
                     reused_memberships += 1
 

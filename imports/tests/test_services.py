@@ -116,3 +116,50 @@ class ImportServicesTests(TestCase):
         self.assertEqual(self.job.valid_row_count, 0)
         self.assertEqual(len(self.job.error_report), 1)
         self.assertEqual(self.job.error_report[0]["code"], "invalid_reference")
+
+    def test_csv_import_student_cap_enforcement(self):
+        from billing.models import PlatformSubscription, SubscriptionStatus
+
+        # Organization is on Starter tier (cap 25)
+        PlatformSubscription.objects.create(
+            organization=self.org,
+            tier="starter",
+            paystack_plan_code="PLN_starter",
+            status=SubscriptionStatus.ACTIVE,
+        )
+
+        # Pre-populate 24 active students
+        for i in range(24):
+            u = UserFactory(role=Role.STUDENT)
+            OrganizationMembership.objects.create(
+                organization=self.org,
+                user=u,
+                role=OrganizationRole.STUDENT,
+                status=MembershipStatus.ACTIVE,
+            )
+
+        # Import 3 students: 1st should pass (25th), 2nd and 3rd should fail
+        rows = [
+            {"email": "stud_batch_1@example.com", "first_name": "One", "last_name": "S", "timezone": "UTC"},
+            {"email": "stud_batch_2@example.com", "first_name": "Two", "last_name": "S", "timezone": "UTC"},
+            {"email": "stud_batch_3@example.com", "first_name": "Three", "last_name": "S", "timezone": "UTC"},
+        ]
+
+        validator = ImportValidator(self.job, rows)
+        validator.validate()
+
+        self.assertEqual(self.job.valid_row_count, 1)
+        self.assertEqual(self.job.invalid_row_count, 2)
+        self.assertEqual(len(self.job.error_report), 2)
+        for err in self.job.error_report:
+            self.assertEqual(err["code"], "limit_reached")
+            self.assertIn("This academy has reached its student limit for the Starter plan.", err["message"])
+
+        commit_import(self.job)
+        self.assertEqual(
+            OrganizationMembership.objects.filter(
+                organization=self.org, role=OrganizationRole.STUDENT, status=MembershipStatus.ACTIVE
+            ).count(),
+            25,
+        )
+

@@ -26,9 +26,11 @@ spec asked to keep this module simple.
 Every variable this file reads is documented in ``.env.example``.
 """
 
+from decimal import Decimal
 from pathlib import Path
 
 import dj_database_url
+
 from django.core.exceptions import ImproperlyConfigured
 
 # The one application import this module makes, and the reason it is safe:
@@ -567,4 +569,11 @@ DEFAULT_FROM_EMAIL = env_str(
 PAYSTACK_SECRET_KEY = env_str("PAYSTACK_SECRET_KEY", default="sk_test_placeholder")
 PAYSTACK_PUBLIC_KEY = env_str("PAYSTACK_PUBLIC_KEY", default="pk_test_placeholder")
 PAYSTACK_PLAN_CODE = env_str("PAYSTACK_PLAN_CODE", default="PLN_monthly_sub")
+
+# --- Billing & Subscriptions (Phase 9) ---------------------------------------
+USD_DISPLAY_RATE = Decimal(env_str("USD_DISPLAY_RATE", default="750.00"))
+PAYSTACK_STARTER_PLAN_CODE = env_str("PAYSTACK_STARTER_PLAN_CODE", default="PLN_starter_tier")
+PAYSTACK_GROWTH_PLAN_CODE = env_str("PAYSTACK_GROWTH_PLAN_CODE", default="PLN_growth_tier")
+PAYSTACK_PROFESSIONAL_PLAN_CODE = env_str("PAYSTACK_PROFESSIONAL_PLAN_CODE", default="PLN_professional_tier")
+
 

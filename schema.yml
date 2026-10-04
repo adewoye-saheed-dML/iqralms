@@ -1506,6 +1506,25 @@ paths:
           description: ''
         '403':
           description: Only organization owner can subscribe.
+  /api/billing/tiers/:
+    get:
+      operationId: billing_tiers_list
+      description: Public, unauthenticated endpoint listing subscription tiers with
+        NGN and USD display pricing.
+      summary: List all platform subscription tiers with pricing and student caps
+      tags:
+      - billing
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TierDisplay'
+          description: ''
   /api/billing/webhook/paystack/:
     post:
       operationId: billing_webhook_paystack_create
@@ -8046,7 +8065,7 @@ components:
       - event
     PlatformSubscription:
       type: object
-      description: Current subscription status for an academy.
+      description: Current subscription status and capacity usage for an academy.
       properties:
         id:
           type: integer
@@ -8060,10 +8079,22 @@ components:
         organization_slug:
           type: string
           readOnly: true
+        tier:
+          allOf:
+          - $ref: '#/components/schemas/PlatformSubscriptionTierEnum'
+          readOnly: true
+          description: |-
+            Subscription tier: starter, growth, professional, institutional.
+
+            * `starter` - Starter
+            * `growth` - Growth
+            * `professional` - Professional
+            * `institutional` - Institutional
         paystack_plan_code:
           type: string
           readOnly: true
-          description: Paystack Plan code for IqraLMS platform access.
+          nullable: true
+          description: Paystack Plan code for IqraLMS platform access (null for institutional).
         status:
           allOf:
           - $ref: '#/components/schemas/PlatformSubscriptionStatusEnum'
@@ -8081,6 +8112,23 @@ components:
           readOnly: true
           nullable: true
           description: End of the current paid billing period.
+        student_cap:
+          type: integer
+          nullable: true
+          readOnly: true
+        active_students:
+          type: integer
+          readOnly: true
+        remaining_capacity:
+          type: integer
+          nullable: true
+          readOnly: true
+        capacity_warning:
+          type: boolean
+          readOnly: true
+        can_add_student:
+          type: boolean
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -8090,6 +8138,9 @@ components:
           format: date-time
           readOnly: true
       required:
+      - active_students
+      - can_add_student
+      - capacity_warning
       - created_at
       - current_period_end
       - id
@@ -8097,7 +8148,10 @@ components:
       - organization_name
       - organization_slug
       - paystack_plan_code
+      - remaining_capacity
       - status
+      - student_cap
+      - tier
       - updated_at
     PlatformSubscriptionStatusEnum:
       enum:
@@ -8111,6 +8165,18 @@ components:
         * `past_due` - Past Due
         * `not_renewing` - Not Renewing
         * `disabled` - Disabled
+    PlatformSubscriptionTierEnum:
+      enum:
+      - starter
+      - growth
+      - professional
+      - institutional
+      type: string
+      description: |-
+        * `starter` - Starter
+        * `growth` - Growth
+        * `professional` - Professional
+        * `institutional` - Institutional
     PricingAgreement:
       type: object
       description: |-
@@ -9050,10 +9116,24 @@ components:
       properties:
         organization_id:
           type: integer
+        tier:
+          allOf:
+          - $ref: '#/components/schemas/SubscribeRequestTierEnum'
+          default: starter
         plan_code:
           type: string
       required:
       - organization_id
+    SubscribeRequestTierEnum:
+      enum:
+      - starter
+      - growth
+      - professional
+      type: string
+      description: |-
+        * `starter` - starter
+        * `growth` - growth
+        * `professional` - professional
     TeacherAssessment:
       type: object
       description: |-
@@ -9339,6 +9419,29 @@ components:
       required:
       - track
       - user
+    TierDisplay:
+      type: object
+      description: Public display representation of a platform subscription tier.
+      properties:
+        tier:
+          type: string
+        student_cap:
+          type: integer
+          nullable: true
+        price_ngn:
+          type: integer
+          nullable: true
+        price_usd_display:
+          type: integer
+          nullable: true
+        self_serve:
+          type: boolean
+      required:
+      - price_ngn
+      - price_usd_display
+      - self_serve
+      - student_cap
+      - tier
     TimeWindow:
       type: object
       description: |-

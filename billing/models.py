@@ -20,6 +20,13 @@ class SubscriptionStatus(models.TextChoices):
     DISABLED = "disabled", "Disabled"
 
 
+class SubscriptionTier(models.TextChoices):
+    STARTER = "starter", "Starter"
+    GROWTH = "growth", "Growth"
+    PROFESSIONAL = "professional", "Professional"
+    INSTITUTIONAL = "institutional", "Institutional"
+
+
 class PlatformSubscription(models.Model):
     """Recurring monthly subscription paid by an Academy Owner to IqraLMS."""
 
@@ -29,12 +36,21 @@ class PlatformSubscription(models.Model):
         related_name="platform_subscription",
         help_text="The academy holding this platform subscription.",
     )
+    tier = models.CharField(
+        max_length=30,
+        choices=SubscriptionTier.choices,
+        default=SubscriptionTier.STARTER,
+        help_text="Subscription tier: starter, growth, professional, institutional.",
+    )
     paystack_plan_code = models.CharField(
         max_length=100,
-        help_text="Paystack Plan code for IqraLMS platform access.",
+        null=True,
+        blank=True,
+        help_text="Paystack Plan code for IqraLMS platform access (null for institutional).",
     )
     paystack_customer_code = models.CharField(
         max_length=100,
+        blank=True,
         help_text="Paystack Customer code for the academy owner.",
     )
     paystack_subscription_code = models.CharField(
@@ -64,8 +80,15 @@ class PlatformSubscription(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+    @property
+    def student_cap(self):
+        from .constants import SUBSCRIPTION_TIERS
+        tier_info = SUBSCRIPTION_TIERS.get(self.tier, {})
+        return tier_info.get("student_cap")
+
     def __str__(self):
-        return f"{self.organization.name}: {self.status} (plan: {self.paystack_plan_code})"
+        return f"{self.organization.name}: {self.tier} ({self.status})"
+
 
 
 class BillingWebhookEvent(models.Model):

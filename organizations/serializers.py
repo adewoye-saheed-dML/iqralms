@@ -498,6 +498,12 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
             )
 
         attrs["invitation"] = invitation
+        if invitation.role == OrganizationRole.STUDENT or getattr(self.context.get("request", None), "user", None) and getattr(self.context["request"].user, "role", None) == Role.STUDENT:
+            from billing.services import can_add_student, get_student_cap_error_message
+            if not can_add_student(invitation.organization):
+                raise serializers.ValidationError(
+                    {"detail": get_student_cap_error_message(invitation.organization)}
+                )
         return attrs
 
     def save(self):
@@ -506,10 +512,14 @@ class OrganizationInvitationAcceptSerializer(serializers.Serializer):
         from django.db import transaction
         from .services import consume_invitation
 
-        with transaction.atomic():
-            membership = consume_invitation(invitation=invitation, user=user)
+        try:
+            with transaction.atomic():
+                membership = consume_invitation(invitation=invitation, user=user)
+        except DjangoValidationError as exc:
+            raise as_drf_error(exc) from exc
 
         return membership
+
 
 
 class OrganizationInvitationRegisterSerializer(serializers.Serializer):
@@ -614,6 +624,13 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
                         {"parent_email": "Parent email cannot be the same as the student's email."}
                     )
 
+        if account_role == Role.STUDENT or invitation.role == OrganizationRole.STUDENT:
+            from billing.services import can_add_student, get_student_cap_error_message
+            if not can_add_student(invitation.organization):
+                raise serializers.ValidationError(
+                    {"detail": get_student_cap_error_message(invitation.organization)}
+                )
+
         return attrs
 
     def save(self):
@@ -676,8 +693,12 @@ class OrganizationInvitationRegisterSerializer(serializers.Serializer):
                 raise as_drf_error(exc) from exc
             user.save()
 
-            membership = consume_invitation(invitation=invitation, user=user)
+            try:
+                membership = consume_invitation(invitation=invitation, user=user)
+            except DjangoValidationError as exc:
+                raise as_drf_error(exc) from exc
             token, _ = Token.objects.get_or_create(user=user)
+
 
             if user.role == Role.STUDENT and user.is_minor and parent_email:
                 from accounts.services import process_minor_student_parent_email

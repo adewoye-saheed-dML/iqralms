@@ -9,21 +9,87 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from rest_framework.exceptions import ValidationError as DRFValidationError
+
 from payments.paystack import PaystackClient
-from .models import BillingWebhookEvent, PlatformSubscription, SubscriptionStatus
+from .constants import SUBSCRIPTION_TIERS, get_tier_plan_code
+from .models import (
+    BillingWebhookEvent,
+    PlatformSubscription,
+    SubscriptionStatus,
+    SubscriptionTier,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def get_student_cap(organization) -> Optional[int]:
+    """Return the student cap for the organization's subscription tier, or None if unlimited."""
+    subscription = getattr(organization, "platform_subscription", None)
+    if not subscription:
+        # Default to starter tier cap if none exists yet
+        return SUBSCRIPTION_TIERS["starter"]["student_cap"]
+    tier = subscription.tier
+    tier_info = SUBSCRIPTION_TIERS.get(tier, {})
+    return tier_info.get("student_cap")
+
+
+def get_active_student_count(organization) -> int:
+    """Return the count of active students in the organization."""
+    from organizations.models import MembershipStatus, OrganizationMembership, OrganizationRole
+    return OrganizationMembership.objects.filter(
+        organization=organization,
+        role=OrganizationRole.STUDENT,
+        status=MembershipStatus.ACTIVE,
+    ).count()
+
+
+def can_add_student(organization, additional_count: int = 1) -> bool:
+    """Check if an organization can add additional_count student(s) under its tier cap.
+    
+    Returns True if unlimited (institutional tier) or if within student cap limit.
+    """
+    cap = get_student_cap(organization)
+    if cap is None:
+        return True
+    current = get_active_student_count(organization)
+    return (current + additional_count) <= cap
+
+
+def get_student_cap_error_message(organization) -> str:
+    """Generate the specific limit message required by the Phase 9 spec."""
+    subscription = getattr(organization, "platform_subscription", None)
+    tier = subscription.tier if subscription else "starter"
+    tier_name = SUBSCRIPTION_TIERS.get(tier, {}).get("name", "Starter")
+    return f"This academy has reached its student limit for the {tier_name} plan."
+
+
+def check_can_add_student(organization, additional_count: int = 1) -> None:
+    """Raise ValidationError if the organization has reached its student limit."""
+    from django.core.exceptions import ValidationError
+    if not can_add_student(organization, additional_count):
+        raise ValidationError(
+            {"organization": get_student_cap_error_message(organization)},
+            code="student_cap_reached",
+        )
 
 
 def subscribe_organization(
     organization,
     user,
+    tier: str = "starter",
     plan_code: Optional[str] = None,
     client: Optional[PaystackClient] = None,
 ) -> PlatformSubscription:
-    """Subscribe an academy to the IqraLMS platform plan."""
+    """Subscribe an academy to a self-serve IqraLMS platform plan (starter, growth, professional)."""
+    if tier == SubscriptionTier.INSTITUTIONAL or tier == "institutional":
+        raise DRFValidationError("Institutional tier is sales-assisted and cannot be subscribed self-serve.")
+
+    if tier not in SUBSCRIPTION_TIERS:
+        raise DRFValidationError(f"Invalid tier: {tier}. Must be one of {list(SUBSCRIPTION_TIERS.keys())}.")
+
     client = client or PaystackClient()
-    plan_code = plan_code or getattr(settings, "PAYSTACK_PLAN_CODE", "PLN_monthly_sub")
+    plan_code = plan_code or get_tier_plan_code(tier) or getattr(settings, "PAYSTACK_PLAN_CODE", "PLN_monthly_sub")
 
     subscription = PlatformSubscription.objects.filter(organization=organization).first()
     customer_code = subscription.paystack_customer_code if subscription else None
@@ -45,6 +111,7 @@ def subscribe_organization(
 
     with transaction.atomic():
         if subscription:
+            subscription.tier = tier
             subscription.paystack_plan_code = plan_code
             subscription.paystack_customer_code = customer_code
             subscription.paystack_subscription_code = subscription_code
@@ -54,6 +121,7 @@ def subscribe_organization(
         else:
             subscription = PlatformSubscription.objects.create(
                 organization=organization,
+                tier=tier,
                 paystack_plan_code=plan_code,
                 paystack_customer_code=customer_code,
                 paystack_subscription_code=subscription_code,
@@ -66,6 +134,29 @@ def subscribe_organization(
             organization.save(update_fields=["is_active", "updated_at"])
 
     return subscription
+
+
+def create_institutional_subscription(
+    organization,
+    user=None,
+) -> PlatformSubscription:
+    """Manually provision an institutional platform subscription for an academy (sales-assisted)."""
+    with transaction.atomic():
+        subscription, _ = PlatformSubscription.objects.update_or_create(
+            organization=organization,
+            defaults={
+                "tier": SubscriptionTier.INSTITUTIONAL,
+                "paystack_plan_code": None,
+                "paystack_customer_code": getattr(user, "email", "") if user else "",
+                "status": SubscriptionStatus.ACTIVE,
+            },
+        )
+        if not organization.is_active:
+            organization.is_active = True
+            organization.save(update_fields=["is_active", "updated_at"])
+
+    return subscription
+
 
 
 def _find_subscription_for_event(data: Dict[str, Any]) -> Optional[PlatformSubscription]:
