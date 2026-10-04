@@ -10,13 +10,22 @@ tenant boundary bypass.
 
 from django.urls import path
 
-from .views import MyPricingAgreementListView, PricingAgreementView
+from .views import (
+    ChildActivePricingAgreementView,
+    MyPricingAgreementListView,
+    PricingAgreementView,
+)
 
 app_name = "pricing"
 
 ACADEMY = "organizations/<int:organization_pk>/"
 
 urlpatterns = [
+    path(
+        "children/<int:student_id>/active/",
+        ChildActivePricingAgreementView.as_view(),
+        name="child-active-agreement",
+    ),
     path(
         f"{ACADEMY}agreements/mine/",
         MyPricingAgreementListView.as_view(),

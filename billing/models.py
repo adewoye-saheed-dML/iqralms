@@ -14,6 +14,7 @@ from django.db import models
 
 
 class SubscriptionStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
     ACTIVE = "active", "Active"
     PAST_DUE = "past_due", "Past Due"
     NOT_RENEWING = "not_renewing", "Not Renewing"
@@ -42,11 +43,25 @@ class PlatformSubscription(models.Model):
         default=SubscriptionTier.STARTER,
         help_text="Subscription tier: starter, growth, professional, institutional.",
     )
+    pending_tier = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+        help_text="Pending tier upgrade/switch awaiting webhook confirmation.",
+    )
     paystack_plan_code = models.CharField(
         max_length=100,
         null=True,
         blank=True,
         help_text="Paystack Plan code for IqraLMS platform access (null for institutional).",
+    )
+    paystack_initialization_reference = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        unique=True,
+        db_index=True,
+        help_text="Paystack transaction reference for pending first-time checkout.",
     )
     paystack_customer_code = models.CharField(
         max_length=100,

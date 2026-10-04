@@ -74,6 +74,75 @@ def check_can_add_student(organization, additional_count: int = 1) -> None:
         )
 
 
+import uuid
+from organizations.models import OrganizationRole
+
+
+def initialize_platform_subscription(
+    organization,
+    user,
+    tier: str = "starter",
+    plan_code: Optional[str] = None,
+    callback_url: Optional[str] = None,
+    client: Optional[PaystackClient] = None,
+) -> Tuple[PlatformSubscription, Dict[str, Any]]:
+    """Initialize first platform subscription payment via Paystack transaction/initialize with plan."""
+    if tier == SubscriptionTier.INSTITUTIONAL or tier == "institutional":
+        raise DRFValidationError("Institutional tier is sales-assisted and cannot be subscribed self-serve.")
+
+    if tier not in SUBSCRIPTION_TIERS:
+        raise DRFValidationError(f"Invalid tier: {tier}. Must be one of {list(SUBSCRIPTION_TIERS.keys())}.")
+
+    tier_info = SUBSCRIPTION_TIERS[tier]
+    price_ngn = tier_info.get("price_ngn")
+    if not price_ngn:
+        raise DRFValidationError("Selected tier has no payable rate configured.")
+
+    amount_kobo = int(price_ngn * 100)
+    resolved_plan_code = plan_code or get_tier_plan_code(tier)
+    if not resolved_plan_code:
+        resolved_plan_code = getattr(settings, "PAYSTACK_PLAN_CODE", "PLN_monthly_sub")
+
+    client = client or PaystackClient()
+    reference = f"sub_{uuid.uuid4().hex[:16]}"
+
+    metadata = {
+        "organization_id": organization.pk,
+        "tier": tier,
+        "type": "platform_subscription",
+    }
+
+    init_data = client.initialize_transaction(
+        email=user.email,
+        amount_kobo=amount_kobo,
+        reference=reference,
+        plan_code=resolved_plan_code,
+        callback_url=callback_url,
+        metadata=metadata,
+    )
+
+    with transaction.atomic():
+        subscription = PlatformSubscription.objects.filter(organization=organization).first()
+        if subscription:
+            subscription.paystack_initialization_reference = reference
+            subscription.paystack_plan_code = resolved_plan_code
+            if subscription.status == SubscriptionStatus.PENDING:
+                subscription.tier = tier
+            else:
+                subscription.pending_tier = tier
+            subscription.save()
+        else:
+            subscription = PlatformSubscription.objects.create(
+                organization=organization,
+                tier=tier,
+                paystack_plan_code=resolved_plan_code,
+                paystack_initialization_reference=reference,
+                status=SubscriptionStatus.PENDING,
+            )
+
+    return subscription, init_data
+
+
 def subscribe_organization(
     organization,
     user,
@@ -82,58 +151,14 @@ def subscribe_organization(
     client: Optional[PaystackClient] = None,
 ) -> PlatformSubscription:
     """Subscribe an academy to a self-serve IqraLMS platform plan (starter, growth, professional)."""
-    if tier == SubscriptionTier.INSTITUTIONAL or tier == "institutional":
-        raise DRFValidationError("Institutional tier is sales-assisted and cannot be subscribed self-serve.")
-
-    if tier not in SUBSCRIPTION_TIERS:
-        raise DRFValidationError(f"Invalid tier: {tier}. Must be one of {list(SUBSCRIPTION_TIERS.keys())}.")
-
-    client = client or PaystackClient()
-    plan_code = plan_code or get_tier_plan_code(tier) or getattr(settings, "PAYSTACK_PLAN_CODE", "PLN_monthly_sub")
-
-    subscription = PlatformSubscription.objects.filter(organization=organization).first()
-    customer_code = subscription.paystack_customer_code if subscription else None
-
-    if not customer_code:
-        customer_res = client.create_customer(
-            email=user.email,
-            first_name=user.first_name,
-            last_name=user.last_name,
-        )
-        customer_code = customer_res.get("customer_code") or customer_res.get("id")
-
-    sub_res = client.create_subscription(
-        customer_code_or_email=customer_code,
+    sub, _ = initialize_platform_subscription(
+        organization=organization,
+        user=user,
+        tier=tier,
         plan_code=plan_code,
+        client=client,
     )
-    subscription_code = sub_res.get("subscription_code", "")
-    email_token = sub_res.get("email_token", "")
-
-    with transaction.atomic():
-        if subscription:
-            subscription.tier = tier
-            subscription.paystack_plan_code = plan_code
-            subscription.paystack_customer_code = customer_code
-            subscription.paystack_subscription_code = subscription_code
-            subscription.paystack_email_token = email_token
-            subscription.status = SubscriptionStatus.ACTIVE
-            subscription.save()
-        else:
-            subscription = PlatformSubscription.objects.create(
-                organization=organization,
-                tier=tier,
-                paystack_plan_code=plan_code,
-                paystack_customer_code=customer_code,
-                paystack_subscription_code=subscription_code,
-                paystack_email_token=email_token,
-                status=SubscriptionStatus.ACTIVE,
-            )
-
-        if not organization.is_active:
-            organization.is_active = True
-            organization.save(update_fields=["is_active", "updated_at"])
-
-    return subscription
+    return sub
 
 
 def create_institutional_subscription(
@@ -161,6 +186,12 @@ def create_institutional_subscription(
 
 def _find_subscription_for_event(data: Dict[str, Any]) -> Optional[PlatformSubscription]:
     """Resolve a PlatformSubscription from a webhook event data object."""
+    ref = data.get("reference")
+    if ref:
+        sub = PlatformSubscription.objects.filter(paystack_initialization_reference=ref).first()
+        if sub:
+            return sub
+
     subscription_code = data.get("subscription_code") or data.get("code")
     if subscription_code:
         sub = PlatformSubscription.objects.filter(paystack_subscription_code=subscription_code).first()
@@ -173,9 +204,18 @@ def _find_subscription_for_event(data: Dict[str, Any]) -> Optional[PlatformSubsc
         if sub:
             return sub
 
+    org_id = data.get("metadata", {}).get("organization_id")
+    if org_id:
+        sub = PlatformSubscription.objects.filter(organization_id=org_id).first()
+        if sub:
+            return sub
+
     customer_email = data.get("customer", {}).get("email")
     if customer_email:
-        sub = PlatformSubscription.objects.filter(organization__memberships__user__email=customer_email).first()
+        sub = PlatformSubscription.objects.filter(
+            organization__memberships__user__email=customer_email,
+            organization__memberships__role=OrganizationRole.OWNER,
+        ).first()
         if sub:
             return sub
 
@@ -207,10 +247,15 @@ def process_billing_webhook(payload: Dict[str, Any]) -> Tuple[bool, str]:
 
         if subscription:
             subscription.status = SubscriptionStatus.ACTIVE
+            if subscription.pending_tier:
+                subscription.tier = subscription.pending_tier
+                subscription.pending_tier = None
             if subscription_code:
                 subscription.paystack_subscription_code = subscription_code
             if email_token:
                 subscription.paystack_email_token = email_token
+            if customer_code:
+                subscription.paystack_customer_code = customer_code
             subscription.save()
             if not subscription.organization.is_active:
                 subscription.organization.is_active = True

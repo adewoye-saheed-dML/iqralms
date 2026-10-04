@@ -88,4 +88,13 @@ class SubscribeRequestSerializer(serializers.Serializer):
         default=SubscriptionTier.STARTER,
     )
     plan_code = serializers.CharField(required=False, allow_blank=True, default=None)
+    callback_url = serializers.CharField(required=False, allow_blank=True, default=None)
+
+
+class SubscriptionInitializeResponseSerializer(serializers.Serializer):
+    """Response payload returned upon initializing platform subscription checkout."""
+
+    authorization_url = serializers.CharField()
+    access_code = serializers.CharField()
+    reference = serializers.CharField()
 

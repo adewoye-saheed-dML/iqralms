@@ -1478,8 +1478,9 @@ paths:
   /api/billing/subscribe/:
     post:
       operationId: billing_subscribe_create
-      description: Subscribe an academy to IqraLMS platform plan (Owner only).
-      summary: Subscribe organization to IqraLMS platform plan
+      description: Initialize platform subscription checkout for an academy (Owner
+        only).
+      summary: Initialize platform subscription payment for an academy
       tags:
       - billing
       requestBody:
@@ -1502,7 +1503,39 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PlatformSubscription'
+                $ref: '#/components/schemas/SubscriptionInitializeResponse'
+          description: ''
+        '403':
+          description: Only organization owner can subscribe.
+  /api/billing/subscribe/initialize/:
+    post:
+      operationId: billing_subscribe_initialize_create
+      description: Initialize platform subscription checkout for an academy (Owner
+        only).
+      summary: Initialize platform subscription payment for an academy
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SubscribeRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubscribeRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionInitializeResponse'
           description: ''
         '403':
           description: Only organization owner can subscribe.
@@ -1528,10 +1561,8 @@ paths:
   /api/billing/webhook/paystack/:
     post:
       operationId: billing_webhook_paystack_create
-      description: |-
-        Webhook endpoint for Paystack platform subscription events.
-
-        Verifies HMAC-SHA512 signature on raw payload.
+      description: Webhook endpoint for Paystack platform subscription events (delegates
+        to UnifiedPaystackWebhookView).
       summary: Paystack platform subscription webhook endpoint
       tags:
       - billing
@@ -3438,7 +3469,6 @@ paths:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/PaymentInitialize'
-        required: true
       security:
       - tokenAuth: []
       - cookieAuth: []
@@ -3500,10 +3530,73 @@ paths:
           description: ''
         '403':
           description: Unauthorized to view academy payments.
+  /api/payments/subaccount/confirm/:
+    post:
+      operationId: payments_subaccount_confirm_create
+      description: Owner/Admin confirm and create settlement subaccount.
+      summary: Confirm bank account details and create Paystack settlement subaccount
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubaccountConfirm'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SubaccountConfirm'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubaccountConfirm'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubaccountSetupResponse'
+          description: ''
+        '403':
+          description: Only academy owner or admin can confirm bank details.
+  /api/payments/subaccount/resolve/:
+    post:
+      operationId: payments_subaccount_resolve_create
+      description: Owner/Admin resolve bank details for tuition routing.
+      summary: Resolve bank account details for tuition settlement
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubaccountResolve'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SubaccountResolve'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubaccountResolve'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubaccountResolveResponse'
+          description: ''
+        '403':
+          description: Only academy owner or admin can resolve bank details.
   /api/payments/subaccount/setup/:
     post:
       operationId: payments_subaccount_setup_create
-      description: Owner onboard bank details for tuition routing to their academy.
+      description: Owner onboard bank details for tuition routing to their academy
+        (legacy single step).
       summary: Setup academy Paystack subaccount for tuition routing
       tags:
       - payments
@@ -3556,8 +3649,8 @@ paths:
   /api/payments/webhook/paystack/:
     post:
       operationId: payments_webhook_paystack_create
-      description: Webhook endpoint for Paystack tuition payments.
-      summary: Paystack tuition webhook endpoint
+      description: Webhook endpoint for Paystack tuition payments (delegates to UnifiedPaystackWebhookView).
+      summary: Unified Paystack webhook endpoint
       tags:
       - payments
       requestBody:
@@ -3853,6 +3946,58 @@ paths:
           description: Missing, unparseable or inverted period.
         '403':
           description: Not an active teacher account in this academy.
+  /api/paystack/webhook/:
+    post:
+      operationId: paystack_webhook_create
+      description: Unified webhook endpoint for all Paystack events.
+      summary: Unified Paystack webhook endpoint
+      tags:
+      - paystack
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          description: Webhook event processed or acknowledged.
+  /api/pricing/children/{student_id}/active/:
+    get:
+      operationId: pricing_children_active_retrieve
+      description: GET /api/pricing/children/<student_id>/active/ — active agreement
+        for a linked child.
+      summary: Get active pricing agreement for a linked child (Parent only)
+      parameters:
+      - in: path
+        name: student_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - pricing
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyPricingAgreement'
+          description: ''
+        '403':
+          description: Only linked parent can view child's active agreement.
+        '404':
+          description: No active agreement found for this child.
   /api/pricing/organizations/{organization_pk}/agreements/:
     get:
       operationId: pricing_organizations_agreements_list
@@ -4815,6 +4960,30 @@ paths:
                 items:
                   $ref: '#/components/schemas/WaitlistEntry'
           description: ''
+  /api/webhooks/paystack/:
+    post:
+      operationId: webhooks_paystack_create
+      description: Unified webhook endpoint for all Paystack events.
+      summary: Unified Paystack webhook endpoint
+      tags:
+      - webhooks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          description: Webhook event processed or acknowledged.
 components:
   schemas:
     ActionEnum:
@@ -7935,8 +8104,6 @@ components:
             format: uri
           - type: string
             maxLength: 0
-      required:
-      - pricing_agreement_id
     PaymentInitializeResponse:
       type: object
       description: Response returned upon successful payment initialization.
@@ -8102,6 +8269,7 @@ components:
           description: |-
             Current subscription lifecycle status.
 
+            * `pending` - Pending
             * `active` - Active
             * `past_due` - Past Due
             * `not_renewing` - Not Renewing
@@ -8155,12 +8323,14 @@ components:
       - updated_at
     PlatformSubscriptionStatusEnum:
       enum:
+      - pending
       - active
       - past_due
       - not_renewing
       - disabled
       type: string
       description: |-
+        * `pending` - Pending
         * `active` - Active
         * `past_due` - Past Due
         * `not_renewing` - Not Renewing
@@ -9062,6 +9232,55 @@ components:
       - submissions_count
       - track_id
       - track_name
+    SubaccountConfirm:
+      type: object
+      description: Payload to confirm and create an academy's settlement subaccount.
+      properties:
+        organization_id:
+          type: integer
+        bank_code:
+          type: string
+          maxLength: 10
+        account_number:
+          type: string
+          maxLength: 20
+        business_name:
+          type: string
+          default: ''
+      required:
+      - account_number
+      - bank_code
+      - organization_id
+    SubaccountResolve:
+      type: object
+      description: Payload to resolve an academy's settlement bank details.
+      properties:
+        organization_id:
+          type: integer
+        bank_code:
+          type: string
+          maxLength: 10
+        account_number:
+          type: string
+          maxLength: 20
+      required:
+      - account_number
+      - bank_code
+      - organization_id
+    SubaccountResolveResponse:
+      type: object
+      description: Response returned upon resolving bank account name.
+      properties:
+        account_name:
+          type: string
+        bank_code:
+          type: string
+        account_number:
+          type: string
+      required:
+      - account_name
+      - account_number
+      - bank_code
     SubaccountSetup:
       type: object
       description: Payload to configure an academy's settlement bank details.
@@ -9122,6 +9341,8 @@ components:
           default: starter
         plan_code:
           type: string
+        callback_url:
+          type: string
       required:
       - organization_id
     SubscribeRequestTierEnum:
@@ -9134,6 +9355,21 @@ components:
         * `starter` - starter
         * `growth` - growth
         * `professional` - professional
+    SubscriptionInitializeResponse:
+      type: object
+      description: Response payload returned upon initializing platform subscription
+        checkout.
+      properties:
+        authorization_url:
+          type: string
+        access_code:
+          type: string
+        reference:
+          type: string
+      required:
+      - access_code
+      - authorization_url
+      - reference
     TeacherAssessment:
       type: object
       description: |-

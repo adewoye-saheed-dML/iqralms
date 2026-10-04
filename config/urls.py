@@ -28,6 +28,7 @@ from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from accounts.views import RegisterView
+from payments.views import UnifiedPaystackWebhookView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -63,6 +64,17 @@ urlpatterns = [
     path("api/imports/", include("imports.urls")),
     path("api/billing/", include("billing.urls")),
     path("api/payments/", include("payments.urls")),
+    # Unified Paystack Webhook
+    path(
+        "api/webhooks/paystack/",
+        UnifiedPaystackWebhookView.as_view(),
+        name="paystack_unified_webhook",
+    ),
+    path(
+        "api/paystack/webhook/",
+        UnifiedPaystackWebhookView.as_view(),
+        name="paystack_webhook_alt",
+    ),
     # Schema / docs
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

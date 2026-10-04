@@ -10,7 +10,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from organizations.models import Organization, OrganizationRole, active_membership
+from organizations.models import MembershipStatus, Organization, OrganizationRole
 from payments.paystack import verify_paystack_signature
 from payments.serializers import PaystackWebhookPayloadSerializer
 from .constants import get_tiers_display
@@ -18,9 +18,14 @@ from .models import PlatformSubscription
 from .serializers import (
     PlatformSubscriptionSerializer,
     SubscribeRequestSerializer,
+    SubscriptionInitializeResponseSerializer,
     TierDisplaySerializer,
 )
-from .services import process_billing_webhook, subscribe_organization
+from .services import (
+    initialize_platform_subscription,
+    process_billing_webhook,
+    subscribe_organization,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +45,15 @@ class BillingTiersListView(APIView):
 
 
 @extend_schema(
-    summary="Subscribe organization to IqraLMS platform plan",
+    summary="Initialize platform subscription payment for an academy",
     request=SubscribeRequestSerializer,
     responses={
-        200: PlatformSubscriptionSerializer,
+        200: SubscriptionInitializeResponseSerializer,
         403: OpenApiResponse(description="Only organization owner can subscribe."),
     },
 )
 class SubscribeView(APIView):
-    """Subscribe an academy to IqraLMS platform plan (Owner only)."""
+    """Initialize platform subscription checkout for an academy (Owner only)."""
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -58,20 +63,29 @@ class SubscribeView(APIView):
         org_id = serializer.validated_data["organization_id"]
         tier = serializer.validated_data.get("tier", "starter")
         plan_code = serializer.validated_data.get("plan_code")
+        callback_url = serializer.validated_data.get("callback_url")
 
         organization = get_object_or_404(Organization, pk=org_id)
-        membership = active_membership(user=request.user, organization=organization)
+        membership = organization.memberships.filter(
+            user=request.user,
+            status=MembershipStatus.ACTIVE,
+        ).first()
         if not membership or membership.role != OrganizationRole.OWNER:
             raise PermissionDenied("Only the academy owner can manage platform subscriptions.")
 
-        subscription = subscribe_organization(
+        subscription, init_data = initialize_platform_subscription(
             organization=organization,
             user=request.user,
             tier=tier,
             plan_code=plan_code,
+            callback_url=callback_url,
         )
         return Response(
-            PlatformSubscriptionSerializer(subscription).data,
+            {
+                "authorization_url": init_data.get("authorization_url", ""),
+                "access_code": init_data.get("access_code", ""),
+                "reference": subscription.paystack_initialization_reference,
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -104,14 +118,17 @@ class SubscriptionStatusView(APIView):
             # Fall back to the first organization where user is owner
             membership = request.user.organization_memberships.filter(
                 role=OrganizationRole.OWNER,
-                status="active",
+                status=MembershipStatus.ACTIVE,
             ).first()
             if not membership:
                 raise ValidationError({"organization_id": "Organization ID is required."})
             organization = membership.organization
         else:
             organization = get_object_or_404(Organization, pk=org_id)
-            membership = active_membership(user=request.user, organization=organization)
+            membership = organization.memberships.filter(
+                user=request.user,
+                status=MembershipStatus.ACTIVE,
+            ).first()
             if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
                 raise PermissionDenied("Only academy owners or administrators can view subscription status.")
 
@@ -125,32 +142,14 @@ class SubscriptionStatusView(APIView):
         return Response(PlatformSubscriptionSerializer(subscription).data)
 
 
+from payments.views import UnifiedPaystackWebhookView
+
+
 @extend_schema(
     summary="Paystack platform subscription webhook endpoint",
     request=PaystackWebhookPayloadSerializer,
     responses={200: OpenApiResponse(description="Webhook event processed or acknowledged.")},
 )
-class PaystackBillingWebhookView(APIView):
-    """Webhook endpoint for Paystack platform subscription events.
-
-    Verifies HMAC-SHA512 signature on raw payload.
-    """
-
-    permission_classes = [permissions.AllowAny]
-    authentication_classes = []
-
-    def post(self, request, *args, **kwargs):
-        raw_body = request.body
-        signature = request.META.get("HTTP_X_PAYSTACK_SIGNATURE")
-
-        if not verify_paystack_signature(raw_body, signature):
-            logger.warning("Invalid Paystack signature on billing webhook.")
-            return Response({"error": "Invalid signature."}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            payload = json.loads(raw_body.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return Response({"error": "Invalid JSON payload."}, status=status.HTTP_400_BAD_REQUEST)
-
-        success, msg = process_billing_webhook(payload)
-        return Response({"status": "success", "message": msg}, status=status.HTTP_200_OK)
+class PaystackBillingWebhookView(UnifiedPaystackWebhookView):
+    """Webhook endpoint for Paystack platform subscription events (delegates to UnifiedPaystackWebhookView)."""
+    pass

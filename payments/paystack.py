@@ -149,18 +149,21 @@ class PaystackClient:
         email: str,
         amount_kobo: int,
         reference: str,
+        plan_code: Optional[str] = None,
         subaccount: Optional[str] = None,
         bearer: str = "subaccount",
         callback_url: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Initialize a tuition payment transaction."""
+        """Initialize a transaction (tuition or platform subscription)."""
         body: Dict[str, Any] = {
             "email": email,
             "amount": amount_kobo,
             "reference": reference,
             "currency": "NGN",
         }
+        if plan_code:
+            body["plan"] = plan_code
         if subaccount:
             body["subaccount"] = subaccount
             body["bearer"] = bearer

@@ -5,6 +5,31 @@ from rest_framework import serializers
 from .models import FamilyPayment
 
 
+class SubaccountResolveSerializer(serializers.Serializer):
+    """Payload to resolve an academy's settlement bank details."""
+
+    organization_id = serializers.IntegerField(required=True)
+    bank_code = serializers.CharField(required=True, max_length=10)
+    account_number = serializers.CharField(required=True, max_length=20)
+
+
+class SubaccountResolveResponseSerializer(serializers.Serializer):
+    """Response returned upon resolving bank account name."""
+
+    account_name = serializers.CharField()
+    bank_code = serializers.CharField()
+    account_number = serializers.CharField()
+
+
+class SubaccountConfirmSerializer(serializers.Serializer):
+    """Payload to confirm and create an academy's settlement subaccount."""
+
+    organization_id = serializers.IntegerField(required=True)
+    bank_code = serializers.CharField(required=True, max_length=10)
+    account_number = serializers.CharField(required=True, max_length=20)
+    business_name = serializers.CharField(required=False, allow_blank=True, default="")
+
+
 class SubaccountSetupSerializer(serializers.Serializer):
     """Payload to configure an academy's settlement bank details."""
 
@@ -26,7 +51,7 @@ class SubaccountSetupResponseSerializer(serializers.Serializer):
 class PaymentInitializeSerializer(serializers.Serializer):
     """Payload to initiate a tuition payment."""
 
-    pricing_agreement_id = serializers.IntegerField(required=True)
+    pricing_agreement_id = serializers.IntegerField(required=False, default=None)
     student_id = serializers.IntegerField(required=False, default=None)
     callback_url = serializers.URLField(required=False, allow_blank=True, default=None)
 

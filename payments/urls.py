@@ -9,12 +9,16 @@ from .views import (
     PaymentVerifyView,
     PaystackTuitionWebhookView,
     StudentPaymentListView,
+    SubaccountConfirmView,
+    SubaccountResolveView,
     SubaccountSetupView,
 )
 
 app_name = "payments"
 
 urlpatterns = [
+    path("subaccount/resolve/", SubaccountResolveView.as_view(), name="subaccount_resolve"),
+    path("subaccount/confirm/", SubaccountConfirmView.as_view(), name="subaccount_confirm"),
     path("subaccount/setup/", SubaccountSetupView.as_view(), name="subaccount_setup"),
     path("initialize/", PaymentInitializeView.as_view(), name="initialize"),
     path("verify/<str:reference>/", PaymentVerifyView.as_view(), name="verify"),

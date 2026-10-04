@@ -20,17 +20,85 @@ from .serializers import (
     PaymentInitializeResponseSerializer,
     PaymentInitializeSerializer,
     PaystackWebhookPayloadSerializer,
+    SubaccountConfirmSerializer,
+    SubaccountResolveResponseSerializer,
+    SubaccountResolveSerializer,
     SubaccountSetupResponseSerializer,
     SubaccountSetupSerializer,
 )
 from .services import (
+    confirm_academy_subaccount,
     initialize_family_payment,
     process_tuition_webhook,
+    resolve_academy_subaccount,
     setup_academy_subaccount,
     verify_family_payment,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@extend_schema(
+    summary="Resolve bank account details for tuition settlement",
+    request=SubaccountResolveSerializer,
+    responses={
+        200: SubaccountResolveResponseSerializer,
+        403: OpenApiResponse(description="Only academy owner or admin can resolve bank details."),
+    },
+)
+class SubaccountResolveView(APIView):
+    """Owner/Admin resolve bank details for tuition routing."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = SubaccountResolveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        organization = get_object_or_404(Organization, pk=data["organization_id"])
+        membership = active_membership(user=request.user, organization=organization)
+        if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
+            raise PermissionDenied("Only academy owners or administrators can resolve bank details.")
+
+        result = resolve_academy_subaccount(
+            organization=organization,
+            bank_code=data["bank_code"],
+            account_number=data["account_number"],
+        )
+        return Response(SubaccountResolveResponseSerializer(result).data, status=status.HTTP_200_OK)
+
+
+@extend_schema(
+    summary="Confirm bank account details and create Paystack settlement subaccount",
+    request=SubaccountConfirmSerializer,
+    responses={
+        200: SubaccountSetupResponseSerializer,
+        403: OpenApiResponse(description="Only academy owner or admin can confirm bank details."),
+    },
+)
+class SubaccountConfirmView(APIView):
+    """Owner/Admin confirm and create settlement subaccount."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = SubaccountConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        organization = get_object_or_404(Organization, pk=data["organization_id"])
+        membership = active_membership(user=request.user, organization=organization)
+        if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
+            raise PermissionDenied("Only academy owners or administrators can configure settlement bank details.")
+
+        result = confirm_academy_subaccount(
+            organization=organization,
+            bank_code=data["bank_code"],
+            account_number=data["account_number"],
+            business_name=data.get("business_name"),
+        )
+        return Response(SubaccountSetupResponseSerializer(result).data, status=status.HTTP_200_OK)
 
 
 @extend_schema(
@@ -42,7 +110,7 @@ logger = logging.getLogger(__name__)
     },
 )
 class SubaccountSetupView(APIView):
-    """Owner onboard bank details for tuition routing to their academy."""
+    """Owner onboard bank details for tuition routing to their academy (legacy single step)."""
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -53,7 +121,7 @@ class SubaccountSetupView(APIView):
 
         organization = get_object_or_404(Organization, pk=data["organization_id"])
         membership = active_membership(user=request.user, organization=organization)
-        if not membership or membership.role != OrganizationRole.OWNER:
+        if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
             raise PermissionDenied("Only the academy owner can configure settlement bank details.")
 
         result = setup_academy_subaccount(
@@ -85,7 +153,7 @@ class PaymentInitializeView(APIView):
 
         serializer = PaymentInitializeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        pricing_agreement_id = serializer.validated_data["pricing_agreement_id"]
+        pricing_agreement_id = serializer.validated_data.get("pricing_agreement_id")
         target_student_id = serializer.validated_data.get("student_id")
         callback_url = serializer.validated_data.get("callback_url")
 
@@ -101,12 +169,20 @@ class PaymentInitializeView(APIView):
         else:
             raise PermissionDenied("Only students or parents can initiate tuition payments.")
 
-        pricing_agreement = get_object_or_404(
-            PricingAgreement,
-            pk=pricing_agreement_id,
-            student=student,
-            active=True,
-        )
+        if pricing_agreement_id:
+            pricing_agreement = get_object_or_404(
+                PricingAgreement,
+                pk=pricing_agreement_id,
+                student=student,
+                active=True,
+            )
+        else:
+            pricing_agreement = PricingAgreement.objects.filter(
+                student=student,
+                active=True,
+            ).first()
+            if not pricing_agreement:
+                raise ValidationError({"pricing_agreement_id": "No active pricing agreement found for this student."})
 
         payment, init_data = initialize_family_payment(
             payer=user,
@@ -175,13 +251,24 @@ class PaymentVerifyView(APIView):
         )
 
 
+TUITION_EVENTS = {"charge.success", "charge.failed"}
+BILLING_EVENTS = {
+    "subscription.create",
+    "subscription.not_renew",
+    "subscription.disable",
+    "invoice.create",
+    "invoice.update",
+    "invoice.payment_failed",
+}
+
+
 @extend_schema(
-    summary="Paystack tuition webhook endpoint",
+    summary="Unified Paystack webhook endpoint",
     request=PaystackWebhookPayloadSerializer,
     responses={200: OpenApiResponse(description="Webhook event processed or acknowledged.")},
 )
-class PaystackTuitionWebhookView(APIView):
-    """Webhook endpoint for Paystack tuition payments."""
+class UnifiedPaystackWebhookView(APIView):
+    """Unified webhook endpoint for all Paystack events."""
 
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
@@ -191,7 +278,7 @@ class PaystackTuitionWebhookView(APIView):
         signature = request.META.get("HTTP_X_PAYSTACK_SIGNATURE")
 
         if not verify_paystack_signature(raw_body, signature):
-            logger.warning("Invalid Paystack signature on tuition webhook.")
+            logger.warning("Invalid Paystack signature on webhook.")
             return Response({"error": "Invalid signature."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
@@ -199,8 +286,29 @@ class PaystackTuitionWebhookView(APIView):
         except (ValueError, UnicodeDecodeError):
             return Response({"error": "Invalid JSON payload."}, status=status.HTTP_400_BAD_REQUEST)
 
-        success, msg = process_tuition_webhook(payload)
-        return Response({"status": "success", "message": msg}, status=status.HTTP_200_OK)
+        event = payload.get("event")
+        data = payload.get("data", {})
+
+        if event in TUITION_EVENTS:
+            # Check if this charge event is actually a platform subscription first payment
+            if data.get("metadata", {}).get("type") == "platform_subscription":
+                return Response({"status": "success", "message": "acknowledged"}, status=status.HTTP_200_OK)
+            success, msg = process_tuition_webhook(payload)
+            return Response({"status": "success", "message": msg}, status=status.HTTP_200_OK)
+
+        elif event in BILLING_EVENTS:
+            from billing.services import process_billing_webhook
+            success, msg = process_billing_webhook(payload)
+            return Response({"status": "success", "message": msg}, status=status.HTTP_200_OK)
+
+        else:
+            logger.info("Acknowledged unknown or unhandled Paystack event: %s", event)
+            return Response({"status": "success", "message": "acknowledged"}, status=status.HTTP_200_OK)
+
+
+class PaystackTuitionWebhookView(UnifiedPaystackWebhookView):
+    """Webhook endpoint for Paystack tuition payments (delegates to UnifiedPaystackWebhookView)."""
+    pass
 
 
 @extend_schema(

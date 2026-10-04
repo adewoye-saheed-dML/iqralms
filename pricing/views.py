@@ -9,10 +9,11 @@ phase is what reads it.
 
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from accounts.models import Role
 from organizations.permissions import IsOrganizationMember
 from organizations.views import OrganizationScopedMixin
 
@@ -194,4 +195,43 @@ class MyPricingAgreementListView(AcademyScopedView, generics.ListAPIView):
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
+
+
+@extend_schema(
+    summary="Get active pricing agreement for a linked child (Parent only)",
+    responses={
+        200: OpenApiResponse(response=MyPricingAgreementSerializer),
+        403: OpenApiResponse(description="Only linked parent can view child's active agreement."),
+        404: OpenApiResponse(description="No active agreement found for this child."),
+    },
+)
+class ChildActivePricingAgreementView(generics.GenericAPIView):
+    """GET /api/pricing/children/<student_id>/active/ — active agreement for a linked child."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = MyPricingAgreementSerializer
+
+    def get(self, request, student_id, *args, **kwargs):
+        user = request.user
+        if user.role != Role.PARENT:
+            raise PermissionDenied("Only parents can access child pricing agreements.")
+
+        from accounts.models import ParentLink
+        is_linked = ParentLink.objects.filter(parent=user, student_id=student_id).exists()
+        if not is_linked:
+            raise PermissionDenied("You are not linked to this student.")
+
+        agreement = (
+            PricingAgreement.objects.filter(student_id=student_id, active=True)
+            .select_related("student", "level", "level__track", "approved_by")
+            .first()
+        )
+        if not agreement:
+            return Response(
+                {"detail": "No active pricing agreement found for this child."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = self.get_serializer(agreement)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 

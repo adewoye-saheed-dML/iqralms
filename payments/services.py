@@ -17,14 +17,36 @@ from .paystack import PaystackClient
 logger = logging.getLogger(__name__)
 
 
-def setup_academy_subaccount(
+def resolve_academy_subaccount(
+    organization,
+    bank_code: str,
+    account_number: str,
+    client: Optional[PaystackClient] = None,
+) -> Dict[str, Any]:
+    """Resolve bank details with Paystack without creating a subaccount."""
+    client = client or PaystackClient()
+    resolved = client.resolve_account_number(
+        account_number=account_number,
+        bank_code=bank_code,
+    )
+    account_name = resolved.get("account_name", "")
+    if not account_name:
+        raise ValidationError("Could not resolve account name with Paystack.")
+    return {
+        "account_name": account_name,
+        "bank_code": bank_code,
+        "account_number": account_number,
+    }
+
+
+def confirm_academy_subaccount(
     organization,
     bank_code: str,
     account_number: str,
     business_name: Optional[str] = None,
     client: Optional[PaystackClient] = None,
 ) -> Dict[str, Any]:
-    """Resolve bank details and create a Paystack subaccount for an academy."""
+    """Re-resolve bank details and create a Paystack subaccount for an academy."""
     client = client or PaystackClient()
     business_name = business_name or organization.name
 
@@ -33,6 +55,8 @@ def setup_academy_subaccount(
         bank_code=bank_code,
     )
     account_name = resolved.get("account_name", "")
+    if not account_name:
+        raise ValidationError("Could not resolve account name with Paystack upon confirmation.")
 
     subaccount_data = client.create_subaccount(
         business_name=business_name,
@@ -54,6 +78,23 @@ def setup_academy_subaccount(
         "bank_code": bank_code,
         "account_number": account_number,
     }
+
+
+def setup_academy_subaccount(
+    organization,
+    bank_code: str,
+    account_number: str,
+    business_name: Optional[str] = None,
+    client: Optional[PaystackClient] = None,
+) -> Dict[str, Any]:
+    """Resolve bank details and create a Paystack subaccount for an academy (legacy single step)."""
+    return confirm_academy_subaccount(
+        organization=organization,
+        bank_code=bank_code,
+        account_number=account_number,
+        business_name=business_name,
+        client=client,
+    )
 
 
 def initialize_family_payment(

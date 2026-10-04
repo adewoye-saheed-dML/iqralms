@@ -288,6 +288,10 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
         if StudentEnrollment.objects.filter(organization=organization, user=user).exists():
             raise serializers.ValidationError("This student is already enrolled in this organization.")
 
+        from billing.services import can_add_student, get_student_cap_error_message
+        if not can_add_student(organization):
+            raise serializers.ValidationError(get_student_cap_error_message(organization))
+
         return user
 
     def create(self, validated_data):

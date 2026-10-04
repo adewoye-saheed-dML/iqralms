@@ -56,25 +56,67 @@ class PlatformSubscriptionTests(TestCase):
         sig = hmac.new(self.secret_key.encode("utf-8"), body, hashlib.sha512).hexdigest()
         return body, sig
 
-    @patch("payments.paystack.PaystackClient.create_customer")
-    @patch("payments.paystack.PaystackClient.create_subscription")
-    def test_owner_can_subscribe_organization(self, mock_sub, mock_cust):
-        mock_cust.return_value = {"customer_code": "CUS_123"}
-        mock_sub.return_value = {"subscription_code": "SUB_999", "email_token": "TOK_abc"}
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_owner_can_request_subscription_initialization(self, mock_init):
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/sub_checkout_123",
+            "access_code": "acc_sub_123",
+        }
+        self.org.is_active = False
+        self.org.save()
 
         self.client.force_authenticate(user=self.owner)
         response = self.client.post(
-            "/api/billing/subscribe/",
-            {"organization_id": self.org.pk, "plan_code": "PLN_gold"},
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "growth"},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["status"], "active")
-        self.assertEqual(response.data["paystack_plan_code"], "PLN_gold")
+        self.assertEqual(response.data["authorization_url"], "https://checkout.paystack.com/sub_checkout_123")
+        self.assertEqual(response.data["access_code"], "acc_sub_123")
+        self.assertTrue(response.data["reference"].startswith("sub_"))
 
+        # Invariants: subscription is pending, organization is NOT activated yet
         sub = PlatformSubscription.objects.get(organization=self.org)
-        self.assertEqual(sub.paystack_customer_code, "CUS_123")
-        self.assertEqual(sub.paystack_subscription_code, "SUB_999")
+        self.assertEqual(sub.status, SubscriptionStatus.PENDING)
+        self.assertEqual(sub.tier, "growth")
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.is_active)
+
+    @patch.object(settings, "PAYSTACK_SECRET_KEY", "test_paystack_secret")
+    def test_subscription_create_webhook_activates_subscription_and_organization(self):
+        sub = PlatformSubscription.objects.create(
+            organization=self.org,
+            tier="starter",
+            paystack_initialization_reference="sub_pending_ref_123",
+            status=SubscriptionStatus.PENDING,
+        )
+        self.org.is_active = False
+        self.org.save()
+
+        payload = {
+            "id": "evt_sub_create_1",
+            "event": "subscription.create",
+            "data": {
+                "reference": "sub_pending_ref_123",
+                "subscription_code": "SUB_active_456",
+                "email_token": "TOK_email_456",
+                "customer": {"customer_code": "CUS_active_456"},
+            },
+        }
+        body, sig = self._sign_payload(payload)
+        res = self.client.post(
+            "/api/webhooks/paystack/",
+            data=body,
+            content_type="application/json",
+            HTTP_X_PAYSTACK_SIGNATURE=sig,
+        )
+        self.assertEqual(res.status_code, 200)
+
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, SubscriptionStatus.ACTIVE)
+        self.assertEqual(sub.paystack_subscription_code, "SUB_active_456")
+        self.org.refresh_from_db()
         self.assertTrue(self.org.is_active)
 
     def test_non_owner_cannot_subscribe_organization(self):
@@ -237,21 +279,22 @@ class PlatformSubscriptionTests(TestCase):
         self.assertIsNone(inst["price_usd_display"])
         self.assertFalse(inst["self_serve"])
 
-    @patch("payments.paystack.PaystackClient.create_customer")
-    @patch("payments.paystack.PaystackClient.create_subscription")
-    def test_owner_can_subscribe_to_growth_tier(self, mock_sub, mock_cust):
-        mock_cust.return_value = {"customer_code": "CUS_growth"}
-        mock_sub.return_value = {"subscription_code": "SUB_growth", "email_token": "TOK_growth"}
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_owner_can_initialize_growth_tier(self, mock_init):
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/growth_123",
+            "access_code": "acc_growth",
+        }
 
         self.client.force_authenticate(user=self.owner)
         res = self.client.post(
-            "/api/billing/subscribe/",
+            "/api/billing/subscribe/initialize/",
             {"organization_id": self.org.pk, "tier": "growth"},
             format="json",
         )
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.data["tier"], "growth")
-        self.assertEqual(res.data["student_cap"], 100)
+        self.assertEqual(res.data["authorization_url"], "https://checkout.paystack.com/growth_123")
+        self.assertEqual(res.data["access_code"], "acc_growth")
 
         sub = PlatformSubscription.objects.get(organization=self.org)
         self.assertEqual(sub.tier, "growth")
