@@ -125,8 +125,6 @@ class AssignmentAndSubmissionTests(APITestCase):
             "rubric_scores": [{"criterion_name": "Makhraj", "score": 5, "comment": "Clear letters"}],
         }
         grade_res = self.client.post(grade_url, grade_payload, format="json")
-        if grade_res.status_code != 200:
-            print("GRADE RES DATA:", grade_res.data)
         self.assertEqual(grade_res.status_code, status.HTTP_200_OK)
         self.assertEqual(grade_res.data["status"], SubmissionStatus.GRADED)
         self.assertEqual(grade_res.data["score"], "95.00")
@@ -154,8 +152,6 @@ class AssignmentAndSubmissionTests(APITestCase):
         self.client.force_authenticate(user=self.parent)
         url = f"/api/assessment/organizations/{self.org.id}/ward-progress/?student_id={self.student.id}"
         res = self.client.get(url)
-        if res.status_code != 200:
-            print("WARD PROGRESS DATA:", res.data)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data["total_assigned"], 1)
         self.assertEqual(res.data["total_graded"], 1)

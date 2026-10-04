@@ -37,10 +37,13 @@ reactivating one would be this migration silently granting access an academy had
 taken away.
 """
 
+import logging
 import os
 
 from accounts.models import TEACHER_ROLES
 from organizations.models import MembershipStatus, OrganizationRole
+
+logger = logging.getLogger(__name__)
 
 #: Names the academy that owns pre-SaaS curriculum, by primary key or by slug.
 #: Only consulted when the answer is not already unique.
@@ -297,10 +300,11 @@ def migrate_curriculum_to_organization(apps, schema_editor):
         # scheduling, so nothing is lost — but an unmapped specialty is exactly
         # what the spec asks to be told about rather than have papered over.
         listed = ", ".join(f"{username}/{slug}" for username, slug in sorted(skipped))
-        print(
-            "\n  curriculum: could not map these legacy teacher specialties to "
-            f"{organization.slug} because the teacher is not an active member "
-            f"there: {listed}. TeacherProfile.specialties still holds them; "
-            "assign the tracks through the academy's teacher-tracks endpoint "
-            "once the membership exists."
+        logger.warning(
+            "curriculum: could not map these legacy teacher specialties to "
+            "%s because the teacher is not an active member there: %s. "
+            "TeacherProfile.specialties still holds them; assign the tracks "
+            "through the academy's teacher-tracks endpoint once the membership exists.",
+            organization.slug,
+            listed,
         )
