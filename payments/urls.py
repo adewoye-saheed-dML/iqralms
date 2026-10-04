@@ -22,7 +22,6 @@ urlpatterns = [
     path("subaccount/setup/", SubaccountSetupView.as_view(), name="subaccount_setup"),
     path("initialize/", PaymentInitializeView.as_view(), name="initialize"),
     path("verify/<str:reference>/", PaymentVerifyView.as_view(), name="verify"),
-    path("webhook/paystack/", PaystackTuitionWebhookView.as_view(), name="webhook_paystack"),
     path("mine/", StudentPaymentListView.as_view(), name="mine"),
     path("children/", ParentChildPaymentListView.as_view(), name="children"),
     path("organization/", OrganizationPaymentListView.as_view(), name="organization"),

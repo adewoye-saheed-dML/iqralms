@@ -143,7 +143,7 @@ class PlatformSubscriptionTests(TestCase):
 
     def test_webhook_invalid_signature_rejected(self):
         response = self.client.post(
-            "/api/billing/webhook/paystack/",
+            "/api/webhooks/paystack/",
             data=json.dumps({"event": "subscription.create"}),
             content_type="application/json",
             HTTP_X_PAYSTACK_SIGNATURE="bad_signature",
@@ -167,7 +167,7 @@ class PlatformSubscriptionTests(TestCase):
             "data": {"subscription_code": "SUB_lifecycle", "customer": {"customer_code": "CUS_lifecycle"}},
         }
         body, sig = self._sign_payload(payload)
-        res = self.client.post("/api/billing/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res.status_code, 200)
         self.org.refresh_from_db()
         self.assertTrue(self.org.is_active)
@@ -182,7 +182,7 @@ class PlatformSubscriptionTests(TestCase):
             },
         }
         body, sig = self._sign_payload(payload)
-        res = self.client.post("/api/billing/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res.status_code, 200)
         sub.refresh_from_db()
         self.assertIsNotNone(sub.current_period_end)
@@ -194,7 +194,7 @@ class PlatformSubscriptionTests(TestCase):
             "data": {"subscription_code": "SUB_lifecycle"},
         }
         body, sig = self._sign_payload(payload)
-        res = self.client.post("/api/billing/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res.status_code, 200)
         sub.refresh_from_db()
         self.org.refresh_from_db()
@@ -208,7 +208,7 @@ class PlatformSubscriptionTests(TestCase):
             "data": {"subscription_code": "SUB_lifecycle"},
         }
         body, sig = self._sign_payload(payload)
-        res = self.client.post("/api/billing/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res.status_code, 200)
         sub.refresh_from_db()
         self.org.refresh_from_db()
@@ -222,7 +222,7 @@ class PlatformSubscriptionTests(TestCase):
             "data": {"subscription_code": "SUB_lifecycle"},
         }
         body, sig = self._sign_payload(payload)
-        res = self.client.post("/api/billing/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res.status_code, 200)
         sub.refresh_from_db()
         self.org.refresh_from_db()
@@ -246,12 +246,12 @@ class PlatformSubscriptionTests(TestCase):
         body, sig = self._sign_payload(payload)
 
         # First delivery
-        res1 = self.client.post("/api/billing/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res1 = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res1.status_code, 200)
         self.assertEqual(res1.data["message"], "processed")
 
         # Second delivery (replay)
-        res2 = self.client.post("/api/billing/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res2 = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res2.status_code, 200)
         self.assertEqual(res2.data["message"], "already_processed")
         self.assertEqual(BillingWebhookEvent.objects.filter(event_id="99999").count(), 1)

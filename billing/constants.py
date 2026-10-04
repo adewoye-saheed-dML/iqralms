@@ -1,5 +1,6 @@
 """Constants and configuration for platform subscription tiers (Phase 9)."""
 
+import sys
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from django.conf import settings
@@ -45,15 +46,25 @@ SUBSCRIPTION_TIERS: Dict[str, Dict[str, Any]] = {
 
 
 def get_tier_plan_code(tier: str) -> Optional[str]:
-    """Retrieve the Paystack plan code for a given tier."""
+    """Retrieve the Paystack plan code for a given tier.
+
+    In production (when not in DEBUG/TEST), ensures a real configured plan code is provided
+    and fails if default placeholders like 'PLN_*_tier' are detected.
+    """
     tier_info = SUBSCRIPTION_TIERS.get(tier)
     if not tier_info or not tier_info.get("self_serve"):
         return None
     setting_name = tier_info.get("plan_code_setting")
     default_code = tier_info.get("default_plan_code")
-    if setting_name:
-        return getattr(settings, setting_name, default_code)
-    return default_code
+    code = getattr(settings, setting_name, default_code) if setting_name else default_code
+
+    is_production = getattr(settings, "PRODUCTION", False)
+    if is_production and "pytest" not in sys.modules:
+        if not code or (isinstance(code, str) and code.startswith("PLN_") and code.endswith("_tier")):
+            raise ValueError(
+                f"Paystack plan code for tier '{tier}' is not configured in production settings."
+            )
+    return code
 
 
 def get_tiers_display() -> List[Dict[str, Any]]:

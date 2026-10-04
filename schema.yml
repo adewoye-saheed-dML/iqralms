@@ -1558,31 +1558,6 @@ paths:
                 items:
                   $ref: '#/components/schemas/TierDisplay'
           description: ''
-  /api/billing/webhook/paystack/:
-    post:
-      operationId: billing_webhook_paystack_create
-      description: Webhook endpoint for Paystack platform subscription events (delegates
-        to UnifiedPaystackWebhookView).
-      summary: Paystack platform subscription webhook endpoint
-      tags:
-      - billing
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-        required: true
-      security:
-      - {}
-      responses:
-        '200':
-          description: Webhook event processed or acknowledged.
   /api/curriculum/organizations/{organization_pk}/levels/:
     get:
       operationId: curriculum_organizations_levels_list
@@ -3646,30 +3621,6 @@ paths:
           description: Payment verification details and Paystack transaction status.
         '403':
           description: Unauthorized to view this payment.
-  /api/payments/webhook/paystack/:
-    post:
-      operationId: payments_webhook_paystack_create
-      description: Webhook endpoint for Paystack tuition payments (delegates to UnifiedPaystackWebhookView).
-      summary: Unified Paystack webhook endpoint
-      tags:
-      - payments
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-        required: true
-      security:
-      - {}
-      responses:
-        '200':
-          description: Webhook event processed or acknowledged.
   /api/payouts/organizations/{organization_pk}/{id}/finalize/:
     post:
       operationId: payouts_organizations_finalize_create
@@ -3946,41 +3897,29 @@ paths:
           description: Missing, unparseable or inverted period.
         '403':
           description: Not an active teacher account in this academy.
-  /api/paystack/webhook/:
-    post:
-      operationId: paystack_webhook_create
-      description: Unified webhook endpoint for all Paystack events.
-      summary: Unified Paystack webhook endpoint
-      tags:
-      - paystack
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/PaystackWebhookPayload'
-        required: true
-      security:
-      - {}
-      responses:
-        '200':
-          description: Webhook event processed or acknowledged.
   /api/pricing/children/{student_id}/active/:
     get:
       operationId: pricing_children_active_retrieve
-      description: GET /api/pricing/children/<student_id>/active/ — active agreement
-        for a linked child.
-      summary: Get active pricing agreement for a linked child (Parent only)
+      description: GET active agreement for a linked child strictly scoped to an academy.
+      summary: Get active pricing agreement for a linked child in an academy (Parent
+        only)
       parameters:
+      - in: query
+        name: organization_id
+        schema:
+          type: integer
+        description: The academy ID (required if organization_pk is not in path).
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        description: The academy to read child agreement for.
+        required: true
       - in: path
         name: student_id
         schema:
           type: integer
+        description: The student ID.
         required: true
       tags:
       - pricing
@@ -3994,10 +3933,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/MyPricingAgreement'
           description: ''
+        '400':
+          description: organization_id is required.
         '403':
-          description: Only linked parent can view child's active agreement.
+          description: Only linked parent can view child's active agreement, or student
+            is not in this academy.
         '404':
-          description: No active agreement found for this child.
+          description: No active agreement found for this child in this academy.
   /api/pricing/organizations/{organization_pk}/agreements/:
     get:
       operationId: pricing_organizations_agreements_list
@@ -4126,6 +4068,49 @@ paths:
           description: ''
         '403':
           description: Not an active member or not a student.
+  /api/pricing/organizations/{organization_pk}/children/{student_id}/active/:
+    get:
+      operationId: pricing_organizations_children_active_retrieve
+      description: GET active agreement for a linked child strictly scoped to an academy.
+      summary: Get active pricing agreement for a linked child in an academy (Parent
+        only)
+      parameters:
+      - in: query
+        name: organization_id
+        schema:
+          type: integer
+        description: The academy ID (required if organization_pk is not in path).
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        description: The academy to read child agreement for.
+        required: true
+      - in: path
+        name: student_id
+        schema:
+          type: integer
+        description: The student ID.
+        required: true
+      tags:
+      - pricing
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyPricingAgreement'
+          description: ''
+        '400':
+          description: organization_id is required.
+        '403':
+          description: Only linked parent can view child's active agreement, or student
+            is not in this academy.
+        '404':
+          description: No active agreement found for this child in this academy.
   /api/scheduling/organizations/{organization_pk}/availability/:
     get:
       operationId: scheduling_organizations_availability_list
@@ -8095,6 +8080,8 @@ components:
       description: Payload to initiate a tuition payment.
       properties:
         pricing_agreement_id:
+          type: integer
+        organization_id:
           type: integer
         student_id:
           type: integer

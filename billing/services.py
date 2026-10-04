@@ -99,9 +99,10 @@ def initialize_platform_subscription(
         raise DRFValidationError("Selected tier has no payable rate configured.")
 
     amount_kobo = int(price_ngn * 100)
-    resolved_plan_code = plan_code or get_tier_plan_code(tier)
+    # Server-authoritative plan code resolution: client cannot spoof plan code
+    resolved_plan_code = get_tier_plan_code(tier)
     if not resolved_plan_code:
-        resolved_plan_code = getattr(settings, "PAYSTACK_PLAN_CODE", "PLN_monthly_sub")
+        raise DRFValidationError(f"No Paystack plan code is configured for tier '{tier}'.")
 
     client = client or PaystackClient()
     reference = f"sub_{uuid.uuid4().hex[:16]}"

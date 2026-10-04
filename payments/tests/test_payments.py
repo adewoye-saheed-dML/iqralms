@@ -15,6 +15,7 @@ from rest_framework.test import APIClient
 from accounts.models import ParentLink, Role, User
 from accounts.tests.factories import ParentFactory, StudentFactory
 from organizations.models import MembershipStatus, Organization, OrganizationMembership, OrganizationRole
+from curriculum.tests.factories import LevelFactory
 from payments.models import FamilyPayment, FamilyPaymentStatus, PaymentWebhookEvent
 from payments.tests.factories import FamilyPaymentFactory
 from pricing.tests.factories import PricingAgreementFactory
@@ -231,23 +232,59 @@ class PaymentInitializationAndVerificationTests(TestCase):
         self.assertEqual(payment.status, FamilyPaymentStatus.PENDING)
         self.assertIsNone(payment.paid_at)
 
-    def test_linked_parent_can_discover_child_active_pricing_agreement(self):
+    def test_linked_parent_can_discover_child_active_pricing_agreement_scoped_to_org(self):
         self.client.force_authenticate(user=self.parent)
-        response = self.client.get(f"/api/pricing/children/{self.student.pk}/active/")
+        # Test organization path
+        response = self.client.get(f"/api/pricing/organizations/{self.org.pk}/children/{self.student.pk}/active/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["id"], self.agreement.pk)
         self.assertEqual(Decimal(str(response.data["agreed_rate"])), self.agreement.agreed_rate)
-        # Invariant: notes must NEVER be exposed to parents/students
         self.assertNotIn("notes", response.data)
+
+        # Test query param path
+        res_query = self.client.get(f"/api/pricing/children/{self.student.pk}/active/?organization_id={self.org.pk}")
+        self.assertEqual(res_query.status_code, 200)
+        self.assertEqual(res_query.data["id"], self.agreement.pk)
+
+    def test_parent_discovery_requires_organization_id(self):
+        self.client.force_authenticate(user=self.parent)
+        response = self.client.get(f"/api/pricing/children/{self.student.pk}/active/")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("organization_id", response.data)
+
+    def test_parent_discovery_cross_tenant_isolation(self):
+        # Student enrolled in Org A and Org B
+        level_b = LevelFactory()
+        org_b = level_b.track.organization
+        org_b.name = "Academy B"
+        org_b.slug = "academy-b"
+        org_b.save()
+        agreement_b = PricingAgreementFactory(level=level_b, student=self.student, active=True, agreed_rate=Decimal("50000.00"))
+
+        self.client.force_authenticate(user=self.parent)
+        # Org A returns agreement A
+        res_a = self.client.get(f"/api/pricing/organizations/{self.org.pk}/children/{self.student.pk}/active/")
+        self.assertEqual(res_a.status_code, 200)
+        self.assertEqual(res_a.data["id"], self.agreement.pk)
+
+        # Org B returns agreement B
+        res_b = self.client.get(f"/api/pricing/organizations/{org_b.pk}/children/{self.student.pk}/active/")
+        self.assertEqual(res_b.status_code, 200)
+        self.assertEqual(res_b.data["id"], agreement_b.pk)
+
+        # Org C (student not member) -> 403 Forbidden
+        org_c = Organization.objects.create(name="Academy C", slug="academy-c", timezone="Africa/Lagos", is_active=True)
+        res_c = self.client.get(f"/api/pricing/organizations/{org_c.pk}/children/{self.student.pk}/active/")
+        self.assertEqual(res_c.status_code, 403)
 
     def test_unlinked_parent_cannot_discover_child_pricing_agreement(self):
         other_parent = ParentFactory()
         self.client.force_authenticate(user=other_parent)
-        response = self.client.get(f"/api/pricing/children/{self.student.pk}/active/")
+        response = self.client.get(f"/api/pricing/organizations/{self.org.pk}/children/{self.student.pk}/active/")
         self.assertEqual(response.status_code, 403)
 
     @patch("payments.paystack.PaystackClient.initialize_transaction")
-    def test_parent_can_initialize_tuition_without_pricing_agreement_id(self, mock_init):
+    def test_parent_can_initialize_tuition_with_organization_id(self, mock_init):
         mock_init.return_value = {
             "authorization_url": "https://checkout.paystack.com/auto123",
             "access_code": "acc_auto",
@@ -255,12 +292,34 @@ class PaymentInitializationAndVerificationTests(TestCase):
         self.client.force_authenticate(user=self.parent)
         response = self.client.post(
             "/api/payments/initialize/",
-            {"student_id": self.student.pk},
+            {"student_id": self.student.pk, "organization_id": self.org.pk},
             format="json",
         )
         self.assertEqual(response.status_code, 201)
         payment = FamilyPayment.objects.get(pk=response.data["payment_id"])
         self.assertEqual(payment.pricing_agreement, self.agreement)
+        self.assertEqual(payment.organization, self.org)
+
+    def test_parent_cannot_initialize_tuition_with_mismatched_organization_agreement(self):
+        level_b = LevelFactory()
+        org_b = level_b.track.organization
+        org_b.name = "Academy B Mismatched"
+        org_b.slug = "academy-b-mismatched"
+        org_b.save()
+        agreement_b = PricingAgreementFactory(level=level_b, student=self.student, active=True)
+        self.client.force_authenticate(user=self.parent)
+        # Attempt to pay against Org A using Agreement B
+        response = self.client.post(
+            "/api/payments/initialize/",
+            {
+                "student_id": self.student.pk,
+                "organization_id": self.org.pk,
+                "pricing_agreement_id": agreement_b.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("pricing_agreement_id", response.data)
 
 
 class TuitionWebhookTests(TestCase):
@@ -286,7 +345,7 @@ class TuitionWebhookTests(TestCase):
             },
         }
         body, sig = self._sign(payload)
-        res = self.client.post("/api/payments/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res.status_code, 200)
 
         self.payment.refresh_from_db()
@@ -303,7 +362,7 @@ class TuitionWebhookTests(TestCase):
             "data": {"reference": "non_existent_ref_999"},
         }
         body, sig = self._sign(payload)
-        res = self.client.post("/api/payments/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res.status_code, 200)
         self.assertEqual(FamilyPayment.objects.count(), initial_count)
 
@@ -316,11 +375,11 @@ class TuitionWebhookTests(TestCase):
         }
         body, sig = self._sign(payload)
 
-        res1 = self.client.post("/api/payments/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res1 = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res1.status_code, 200)
 
         # Replay
-        res2 = self.client.post("/api/payments/webhook/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
+        res2 = self.client.post("/api/webhooks/paystack/", data=body, content_type="application/json", HTTP_X_PAYSTACK_SIGNATURE=sig)
         self.assertEqual(res2.status_code, 200)
         self.assertEqual(res2.data["message"], "already_processed")
 

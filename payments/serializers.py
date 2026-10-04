@@ -52,6 +52,7 @@ class PaymentInitializeSerializer(serializers.Serializer):
     """Payload to initiate a tuition payment."""
 
     pricing_agreement_id = serializers.IntegerField(required=False, default=None)
+    organization_id = serializers.IntegerField(required=False, default=None)
     student_id = serializers.IntegerField(required=False, default=None)
     callback_url = serializers.URLField(required=False, allow_blank=True, default=None)
 

@@ -11,7 +11,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import ParentLink, Role, User
-from organizations.models import Organization, OrganizationRole, active_membership
+from organizations.models import (
+    MembershipStatus,
+    Organization,
+    OrganizationRole,
+    active_membership,
+)
 from pricing.models import PricingAgreement
 from .models import FamilyPayment
 from .paystack import verify_paystack_signature
@@ -154,6 +159,7 @@ class PaymentInitializeView(APIView):
         serializer = PaymentInitializeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         pricing_agreement_id = serializer.validated_data.get("pricing_agreement_id")
+        organization_id = serializer.validated_data.get("organization_id")
         target_student_id = serializer.validated_data.get("student_id")
         callback_url = serializer.validated_data.get("callback_url")
 
@@ -169,20 +175,56 @@ class PaymentInitializeView(APIView):
         else:
             raise PermissionDenied("Only students or parents can initiate tuition payments.")
 
-        if pricing_agreement_id:
-            pricing_agreement = get_object_or_404(
-                PricingAgreement,
-                pk=pricing_agreement_id,
-                student=student,
-                active=True,
-            )
+        # Cross-tenant boundary enforcement:
+        from accounts.tenancy import is_active_student_participant
+
+        if organization_id:
+            organization = get_object_or_404(Organization, pk=organization_id)
+            if not is_active_student_participant(user=student, organization=organization):
+                raise PermissionDenied("Student is not an active participant of the specified academy.")
+
+            if pricing_agreement_id:
+                pricing_agreement = get_object_or_404(
+                    PricingAgreement,
+                    pk=pricing_agreement_id,
+                    student=student,
+                    active=True,
+                )
+                if not pricing_agreement.organization or pricing_agreement.organization.pk != organization.pk:
+                    raise ValidationError(
+                        {"pricing_agreement_id": "Pricing agreement does not belong to the specified academy."}
+                    )
+            else:
+                pricing_agreement = (
+                    PricingAgreement.objects.in_organization(organization)
+                    .filter(
+                        student=student,
+                        active=True,
+                    )
+                    .first()
+                )
+                if not pricing_agreement:
+                    raise ValidationError(
+                        {"pricing_agreement_id": "No active pricing agreement found for this student in this academy."}
+                    )
         else:
-            pricing_agreement = PricingAgreement.objects.filter(
-                student=student,
-                active=True,
-            ).first()
-            if not pricing_agreement:
-                raise ValidationError({"pricing_agreement_id": "No active pricing agreement found for this student."})
+            if pricing_agreement_id:
+                pricing_agreement = get_object_or_404(
+                    PricingAgreement,
+                    pk=pricing_agreement_id,
+                    student=student,
+                    active=True,
+                )
+            else:
+                pricing_agreement = PricingAgreement.objects.filter(
+                    student=student,
+                    active=True,
+                ).first()
+                if not pricing_agreement:
+                    raise ValidationError({"pricing_agreement_id": "No active pricing agreement found for this student."})
+
+            if not is_active_student_participant(user=student, organization=pricing_agreement.organization):
+                raise PermissionDenied("Student is not an active participant of this academy.")
 
         payment, init_data = initialize_family_payment(
             payer=user,

@@ -13,7 +13,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from accounts.models import Role
+from accounts.models import Role, User
 from organizations.permissions import IsOrganizationMember
 from organizations.views import OrganizationScopedMixin
 
@@ -197,21 +197,49 @@ class MyPricingAgreementListView(AcademyScopedView, generics.ListAPIView):
         return super().get(request, *args, **kwargs)
 
 
+from django.shortcuts import get_object_or_404
+from organizations.models import MembershipStatus, Organization, OrganizationRole
+
+
 @extend_schema(
-    summary="Get active pricing agreement for a linked child (Parent only)",
+    summary="Get active pricing agreement for a linked child in an academy (Parent only)",
+    parameters=[
+        OpenApiParameter(
+            name="organization_pk",
+            type=int,
+            location=OpenApiParameter.PATH,
+            required=False,
+            description="The academy to read child agreement for.",
+        ),
+        OpenApiParameter(
+            name="student_id",
+            type=int,
+            location=OpenApiParameter.PATH,
+            required=True,
+            description="The student ID.",
+        ),
+        OpenApiParameter(
+            name="organization_id",
+            type=int,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="The academy ID (required if organization_pk is not in path).",
+        ),
+    ],
     responses={
         200: OpenApiResponse(response=MyPricingAgreementSerializer),
-        403: OpenApiResponse(description="Only linked parent can view child's active agreement."),
-        404: OpenApiResponse(description="No active agreement found for this child."),
+        400: OpenApiResponse(description="organization_id is required."),
+        403: OpenApiResponse(description="Only linked parent can view child's active agreement, or student is not in this academy."),
+        404: OpenApiResponse(description="No active agreement found for this child in this academy."),
     },
 )
 class ChildActivePricingAgreementView(generics.GenericAPIView):
-    """GET /api/pricing/children/<student_id>/active/ — active agreement for a linked child."""
+    """GET active agreement for a linked child strictly scoped to an academy."""
 
     permission_classes = [IsAuthenticated]
     serializer_class = MyPricingAgreementSerializer
 
-    def get(self, request, student_id, *args, **kwargs):
+    def get(self, request, student_id, organization_pk=None, *args, **kwargs):
         user = request.user
         if user.role != Role.PARENT:
             raise PermissionDenied("Only parents can access child pricing agreements.")
@@ -221,14 +249,29 @@ class ChildActivePricingAgreementView(generics.GenericAPIView):
         if not is_linked:
             raise PermissionDenied("You are not linked to this student.")
 
+        org_id = organization_pk or request.query_params.get("organization_id") or request.query_params.get("organization")
+        if not org_id:
+            raise ValidationError({"organization_id": "Organization ID is required to fetch active child agreement."})
+
+        organization = get_object_or_404(Organization, pk=org_id)
+        student = get_object_or_404(User, pk=student_id, role=Role.STUDENT)
+
+        from accounts.tenancy import is_active_student_participant
+        if not is_active_student_participant(user=student, organization=organization):
+            raise PermissionDenied("Student is not an active participant of this academy.")
+
         agreement = (
-            PricingAgreement.objects.filter(student_id=student_id, active=True)
+            PricingAgreement.objects.in_organization(organization)
+            .filter(
+                student_id=student_id,
+                active=True,
+            )
             .select_related("student", "level", "level__track", "approved_by")
             .first()
         )
         if not agreement:
             return Response(
-                {"detail": "No active pricing agreement found for this child."},
+                {"detail": "No active pricing agreement found for this child in this academy."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 

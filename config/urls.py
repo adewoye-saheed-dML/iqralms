@@ -64,16 +64,11 @@ urlpatterns = [
     path("api/imports/", include("imports.urls")),
     path("api/billing/", include("billing.urls")),
     path("api/payments/", include("payments.urls")),
-    # Unified Paystack Webhook
+    # Unified Paystack Webhook (Single canonical endpoint for all Paystack events)
     path(
         "api/webhooks/paystack/",
         UnifiedPaystackWebhookView.as_view(),
         name="paystack_unified_webhook",
-    ),
-    path(
-        "api/paystack/webhook/",
-        UnifiedPaystackWebhookView.as_view(),
-        name="paystack_webhook_alt",
     ),
     # Schema / docs
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),

@@ -22,6 +22,11 @@ ACADEMY = "organizations/<int:organization_pk>/"
 
 urlpatterns = [
     path(
+        f"{ACADEMY}children/<int:student_id>/active/",
+        ChildActivePricingAgreementView.as_view(),
+        name="org-child-active-agreement",
+    ),
+    path(
         "children/<int:student_id>/active/",
         ChildActivePricingAgreementView.as_view(),
         name="child-active-agreement",
