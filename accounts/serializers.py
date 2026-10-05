@@ -19,7 +19,10 @@ another academy's rows.
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone as dj_timezone
-from dj_rest_auth.serializers import PasswordResetSerializer as DefaultPasswordResetSerializer
+from dj_rest_auth.serializers import (
+    LoginSerializer as DefaultLoginSerializer,
+    PasswordResetSerializer as DefaultPasswordResetSerializer,
+)
 from rest_framework import serializers
 
 from organizations.models import OrganizationMembership
@@ -35,10 +38,33 @@ from .models import (
 )
 from .utils import normalize_signup_code, to_user_timezone
 
-#: Roles a member of the public may sign themselves up as. 'lead' is excluded
-#: deliberately: it is the single academy-owner account and is created through
-#: createsuperuser / the admin, not a public endpoint.
-SELF_REGISTERABLE_ROLES = (Role.SUB.value, Role.STUDENT.value, Role.PARENT.value)
+#: Roles a member of the public may sign themselves up as.
+SELF_REGISTERABLE_ROLES = (
+    Role.TEACHER.value,
+    Role.SUB.value,
+    Role.STUDENT.value,
+    Role.PARENT.value,
+    Role.OWNER.value,
+)
+
+
+class CustomLoginSerializer(DefaultLoginSerializer):
+    """Custom login serializer that safely handles multiple users with the same email."""
+
+    def get_auth_user_using_orm(self, username, email, password):
+        from django.contrib.auth import get_user_model
+        UserModel = get_user_model()
+        if email:
+            try:
+                user = UserModel.objects.get(email__iexact=email)
+                username = user.get_username()
+            except UserModel.MultipleObjectsReturned:
+                user = UserModel.objects.filter(email__iexact=email).order_by("-date_joined").first()
+                if user:
+                    username = user.get_username()
+            except UserModel.DoesNotExist:
+                pass
+        return super().get_auth_user_using_orm(username, email, password)
 
 
 def as_drf_error(exc):
@@ -103,6 +129,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        # Unify teacher roles: teacher is teacher
+        if data.get("role") in {Role.LEAD.value, Role.SUB.value, Role.TEACHER.value}:
+            data["role"] = Role.TEACHER.value
         # Only teachers carry a profile; drop the null for everyone else.
         if not instance.is_teacher:
             data.pop("teacher_profile", None)

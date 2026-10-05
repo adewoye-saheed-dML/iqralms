@@ -34,14 +34,16 @@ MINOR_AGE = 18
 
 
 class Role(models.TextChoices):
-    LEAD = "lead", "Lead teacher"
-    SUB = "sub", "Sub teacher"
+    TEACHER = "teacher", "Teacher"
+    LEAD = "lead", "Teacher"
+    SUB = "sub", "Teacher"
     STUDENT = "student", "Student"
     PARENT = "parent", "Parent"
+    OWNER = "owner", "Academy owner"
 
 
 #: Roles that may hold a TeacherProfile.
-TEACHER_ROLES = frozenset({Role.LEAD.value, Role.SUB.value, "teacher"})
+TEACHER_ROLES = frozenset({Role.TEACHER.value, Role.LEAD.value, Role.SUB.value, "teacher"})
 
 
 class User(AbstractUser):

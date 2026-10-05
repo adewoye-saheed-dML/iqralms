@@ -172,6 +172,19 @@ class PaystackClient:
         if metadata:
             body["metadata"] = metadata
 
+        if getattr(settings, "DEBUG", False) and (
+            not self.secret_key or self.secret_key.startswith("sk_test_placeholder")
+        ):
+            cb = callback_url or "http://localhost:3000/app/billing/callback"
+            delim = "&" if "?" in cb else "?"
+            simulated_url = f"{cb}{delim}reference={reference}&status=success"
+            logger.info("DEBUG Paystack simulation: generated checkout URL %s", simulated_url)
+            return {
+                "authorization_url": simulated_url,
+                "access_code": f"mock_code_{reference}",
+                "reference": reference,
+            }
+
         res = self._request("POST", "transaction/initialize", json_data=body)
         return res.get("data", {})
 

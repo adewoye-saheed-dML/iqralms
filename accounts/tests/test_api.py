@@ -270,7 +270,7 @@ class MeAPITests(APITestCase):
         self.client.force_authenticate(user=profile.user)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["role"], Role.LEAD.value)
+        self.assertEqual(response.data["role"], "teacher")
         self.assertEqual(
             response.data["teacher_profile"]["max_weekly_hours"],
             profile.max_weekly_hours,

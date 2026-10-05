@@ -465,6 +465,7 @@ REST_AUTH = {
     "TOKEN_MODEL": "rest_framework.authtoken.models.Token",
     "SESSION_LOGIN": False,
     "PASSWORD_RESET_SERIALIZER": "accounts.serializers.CustomPasswordResetSerializer",
+    "LOGIN_SERIALIZER": "accounts.serializers.CustomLoginSerializer",
 }
 
 SPECTACULAR_SETTINGS = {
