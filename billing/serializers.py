@@ -87,8 +87,14 @@ class SubscribeRequestSerializer(serializers.Serializer):
         required=False,
         default=SubscriptionTier.STARTER,
     )
-    plan_code = serializers.CharField(required=False, allow_blank=True, default=None)
     callback_url = serializers.CharField(required=False, allow_blank=True, default=None)
+
+    def to_internal_value(self, data):
+        if "plan_code" in data:
+            raise serializers.ValidationError(
+                {"plan_code": "Client-supplied plan_code is not supported. Plan code is determined solely by the requested tier."}
+            )
+        return super().to_internal_value(data)
 
 
 class SubscriptionInitializeResponseSerializer(serializers.Serializer):

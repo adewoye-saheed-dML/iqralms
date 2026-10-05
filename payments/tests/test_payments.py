@@ -87,34 +87,48 @@ class SubaccountSetupTests(TestCase):
         self.assertEqual(response.data["subaccount_code"], "SUB_noor_confirmed")
         self.assertEqual(response.data["account_name"], "Noor Academy Ltd")
 
+        # Assert 0% platform commission passed to Paystack
+        _, kwargs = mock_sub.call_args
+        self.assertEqual(kwargs["percentage_charge"], 0.0)
+
         self.org.refresh_from_db()
         self.assertEqual(self.org.paystack_subaccount_code, "SUB_noor_confirmed")
 
     @patch("payments.paystack.PaystackClient.resolve_account_number")
     @patch("payments.paystack.PaystackClient.create_subaccount")
-    def test_owner_can_setup_subaccount_once(self, mock_sub, mock_resolve):
-        mock_resolve.return_value = {"account_name": "Noor Academy Ltd"}
-        mock_sub.return_value = {"subaccount_code": "SUB_noor_123"}
+    def test_failed_bank_resolution_does_not_create_subaccount(self, mock_sub, mock_resolve):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        mock_resolve.side_effect = DRFValidationError("Could not resolve account name.")
 
         self.client.force_authenticate(user=self.owner)
         response = self.client.post(
-            "/api/payments/subaccount/setup/",
+            "/api/payments/subaccount/confirm/",
             {
                 "organization_id": self.org.pk,
                 "bank_code": "058",
                 "account_number": "0123456789",
-                "business_name": "Noor Academy",
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["subaccount_code"], "SUB_noor_123")
-        self.assertEqual(response.data["account_name"], "Noor Academy Ltd")
-
+        self.assertEqual(response.status_code, 400)
+        mock_sub.assert_not_called()
         self.org.refresh_from_db()
-        self.assertEqual(self.org.paystack_subaccount_code, "SUB_noor_123")
+        self.assertFalse(bool(self.org.paystack_subaccount_code))
 
-    def test_non_owner_cannot_setup_subaccount(self):
+    def test_non_owner_cannot_resolve_subaccount(self):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            "/api/payments/subaccount/resolve/",
+            {
+                "organization_id": self.org.pk,
+                "bank_code": "058",
+                "account_number": "0123456789",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_non_owner_cannot_confirm_subaccount(self):
         self.client.force_authenticate(user=self.student)
         response = self.client.post(
             "/api/payments/subaccount/confirm/",
@@ -126,6 +140,19 @@ class SubaccountSetupTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_legacy_subaccount_setup_endpoint_returns_404(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/payments/subaccount/setup/",
+            {
+                "organization_id": self.org.pk,
+                "bank_code": "058",
+                "account_number": "0123456789",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
 
 
 class PaymentInitializationAndVerificationTests(TestCase):
@@ -141,6 +168,12 @@ class PaymentInitializationAndVerificationTests(TestCase):
 
         self.parent = ParentFactory()
         ParentLink.objects.create(parent=self.parent, student=self.student)
+        self.parent_membership = OrganizationMembership.objects.create(
+            organization=self.org,
+            user=self.parent,
+            role=OrganizationRole.PARENT,
+            status=MembershipStatus.ACTIVE,
+        )
 
         self.minor_student = StudentFactory(is_minor=True)
         self.minor_agreement = PricingAgreementFactory(student=self.minor_student, agreed_rate=Decimal("12000.00"))
@@ -262,23 +295,62 @@ class PaymentInitializationAndVerificationTests(TestCase):
         agreement_b = PricingAgreementFactory(level=level_b, student=self.student, active=True, agreed_rate=Decimal("50000.00"))
 
         self.client.force_authenticate(user=self.parent)
-        # Org A returns agreement A
+        # Org A returns agreement A (parent has active membership)
         res_a = self.client.get(f"/api/pricing/organizations/{self.org.pk}/children/{self.student.pk}/active/")
         self.assertEqual(res_a.status_code, 200)
         self.assertEqual(res_a.data["id"], self.agreement.pk)
 
-        # Org B returns agreement B
+        # Org B returns 403 Forbidden because parent has no active membership in Org B
+        res_b_unauthorized = self.client.get(f"/api/pricing/organizations/{org_b.pk}/children/{self.student.pk}/active/")
+        self.assertEqual(res_b_unauthorized.status_code, 403)
+
+        # Legacy query param route also returns 403 Forbidden for Org B
+        res_b_query_unauth = self.client.get(f"/api/pricing/children/{self.student.pk}/active/?organization_id={org_b.pk}")
+        self.assertEqual(res_b_query_unauth.status_code, 403)
+
+        # Add parent active membership in Org B -> now 200 OK
+        mem_b = OrganizationMembership.objects.create(
+            organization=org_b,
+            user=self.parent,
+            role=OrganizationRole.PARENT,
+            status=MembershipStatus.ACTIVE,
+        )
         res_b = self.client.get(f"/api/pricing/organizations/{org_b.pk}/children/{self.student.pk}/active/")
         self.assertEqual(res_b.status_code, 200)
         self.assertEqual(res_b.data["id"], agreement_b.pk)
 
+        # Suspend parent membership in Org B -> 403 Forbidden
+        mem_b.status = MembershipStatus.SUSPENDED
+        mem_b.save()
+        res_b_suspended = self.client.get(f"/api/pricing/organizations/{org_b.pk}/children/{self.student.pk}/active/")
+        self.assertEqual(res_b_suspended.status_code, 403)
+
         # Org C (student not member) -> 403 Forbidden
         org_c = Organization.objects.create(name="Academy C", slug="academy-c", timezone="Africa/Lagos", is_active=True)
+        OrganizationMembership.objects.create(
+            organization=org_c,
+            user=self.parent,
+            role=OrganizationRole.PARENT,
+            status=MembershipStatus.ACTIVE,
+        )
         res_c = self.client.get(f"/api/pricing/organizations/{org_c.pk}/children/{self.student.pk}/active/")
         self.assertEqual(res_c.status_code, 403)
 
+    def test_parent_cannot_discover_child_agreement_when_academy_is_inactive(self):
+        self.org.is_active = False
+        self.org.save()
+        self.client.force_authenticate(user=self.parent)
+        res = self.client.get(f"/api/pricing/organizations/{self.org.pk}/children/{self.student.pk}/active/")
+        self.assertEqual(res.status_code, 403)
+
     def test_unlinked_parent_cannot_discover_child_pricing_agreement(self):
         other_parent = ParentFactory()
+        OrganizationMembership.objects.create(
+            organization=self.org,
+            user=other_parent,
+            role=OrganizationRole.PARENT,
+            status=MembershipStatus.ACTIVE,
+        )
         self.client.force_authenticate(user=other_parent)
         response = self.client.get(f"/api/pricing/organizations/{self.org.pk}/children/{self.student.pk}/active/")
         self.assertEqual(response.status_code, 403)
@@ -299,6 +371,88 @@ class PaymentInitializationAndVerificationTests(TestCase):
         payment = FamilyPayment.objects.get(pk=response.data["payment_id"])
         self.assertEqual(payment.pricing_agreement, self.agreement)
         self.assertEqual(payment.organization, self.org)
+
+    def test_parent_cannot_initialize_tuition_without_active_academy_membership(self):
+        level_b = LevelFactory()
+        org_b = level_b.track.organization
+        org_b.name = "Academy B Without Membership"
+        org_b.slug = "academy-b-no-mem"
+        org_b.save()
+        agreement_b = PricingAgreementFactory(level=level_b, student=self.student, active=True)
+
+        self.client.force_authenticate(user=self.parent)
+        # Parent has NO membership in Org B
+        response = self.client.post(
+            "/api/payments/initialize/",
+            {
+                "student_id": self.student.pk,
+                "organization_id": org_b.pk,
+                "pricing_agreement_id": agreement_b.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("You do not have active access to this academy", response.data.get("detail", ""))
+
+    def test_parent_cannot_initialize_tuition_when_membership_is_suspended(self):
+        self.parent_membership.status = MembershipStatus.SUSPENDED
+        self.parent_membership.save()
+
+        self.client.force_authenticate(user=self.parent)
+        response = self.client.post(
+            "/api/payments/initialize/",
+            {
+                "student_id": self.student.pk,
+                "organization_id": self.org.pk,
+                "pricing_agreement_id": self.agreement.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("You do not have active access to this academy", response.data.get("detail", ""))
+
+    def test_parent_cannot_initialize_tuition_when_organization_is_inactive(self):
+        self.org.is_active = False
+        self.org.save()
+
+        self.client.force_authenticate(user=self.parent)
+        response = self.client.post(
+            "/api/payments/initialize/",
+            {
+                "student_id": self.student.pk,
+                "organization_id": self.org.pk,
+                "pricing_agreement_id": self.agreement.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_parent_can_pay_for_minor_child_with_active_membership(self, mock_init):
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/minor_auth",
+            "access_code": "acc_minor",
+        }
+        minor_org = self.minor_agreement.organization
+        ParentLink.objects.create(parent=self.parent, student=self.minor_student)
+        OrganizationMembership.objects.create(
+            organization=minor_org,
+            user=self.parent,
+            role=OrganizationRole.PARENT,
+            status=MembershipStatus.ACTIVE,
+        )
+
+        self.client.force_authenticate(user=self.parent)
+        response = self.client.post(
+            "/api/payments/initialize/",
+            {
+                "student_id": self.minor_student.pk,
+                "organization_id": minor_org.pk,
+                "pricing_agreement_id": self.minor_agreement.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
 
     def test_parent_cannot_initialize_tuition_with_mismatched_organization_agreement(self):
         level_b = LevelFactory()

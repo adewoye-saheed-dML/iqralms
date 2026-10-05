@@ -427,3 +427,213 @@ class PlatformSubscriptionTests(TestCase):
         res = self.client.get(f"/api/billing/status/?organization_id={self.org.pk}")
         self.assertEqual(res.status_code, 403)
 
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_no_subscription_starter_checkout_allowed(self, mock_init):
+        from billing.constants import get_tier_plan_code
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/starter_123",
+            "access_code": "acc_starter",
+        }
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "starter"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["authorization_url"], "https://checkout.paystack.com/starter_123")
+        _, kwargs = mock_init.call_args
+        self.assertEqual(kwargs["plan_code"], get_tier_plan_code("starter"))
+        sub = PlatformSubscription.objects.get(organization=self.org)
+        self.assertEqual(sub.status, SubscriptionStatus.PENDING)
+        self.assertEqual(sub.tier, "starter")
+        self.assertEqual(sub.paystack_plan_code, get_tier_plan_code("starter"))
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_no_subscription_growth_checkout_allowed(self, mock_init):
+        from billing.constants import get_tier_plan_code
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/growth_123",
+            "access_code": "acc_growth",
+        }
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "growth"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        _, kwargs = mock_init.call_args
+        self.assertEqual(kwargs["plan_code"], get_tier_plan_code("growth"))
+        sub = PlatformSubscription.objects.get(organization=self.org)
+        self.assertEqual(sub.status, SubscriptionStatus.PENDING)
+        self.assertEqual(sub.tier, "growth")
+        self.assertEqual(sub.paystack_plan_code, get_tier_plan_code("growth"))
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_no_subscription_professional_checkout_allowed(self, mock_init):
+        from billing.constants import get_tier_plan_code
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/pro_123",
+            "access_code": "acc_pro",
+        }
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "professional"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        _, kwargs = mock_init.call_args
+        self.assertEqual(kwargs["plan_code"], get_tier_plan_code("professional"))
+        sub = PlatformSubscription.objects.get(organization=self.org)
+        self.assertEqual(sub.status, SubscriptionStatus.PENDING)
+        self.assertEqual(sub.tier, "professional")
+        self.assertEqual(sub.paystack_plan_code, get_tier_plan_code("professional"))
+
+    def test_existing_pending_subscription_second_checkout_rejected(self):
+        PlatformSubscription.objects.create(
+            organization=self.org,
+            tier="starter",
+            paystack_plan_code="PLN_starter",
+            status=SubscriptionStatus.PENDING,
+        )
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "growth"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("already has a subscription", str(res.data))
+
+    def test_existing_active_subscription_second_checkout_rejected(self):
+        PlatformSubscription.objects.create(
+            organization=self.org,
+            tier="starter",
+            paystack_plan_code="PLN_starter",
+            status=SubscriptionStatus.ACTIVE,
+        )
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "growth"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("already has a subscription", str(res.data))
+
+    def test_existing_past_due_subscription_second_checkout_rejected(self):
+        PlatformSubscription.objects.create(
+            organization=self.org,
+            tier="starter",
+            paystack_plan_code="PLN_starter",
+            status=SubscriptionStatus.PAST_DUE,
+        )
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "growth"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("already has a subscription", str(res.data))
+
+    def test_existing_not_renewing_subscription_second_checkout_rejected(self):
+        PlatformSubscription.objects.create(
+            organization=self.org,
+            tier="starter",
+            paystack_plan_code="PLN_starter",
+            status=SubscriptionStatus.NOT_RENEWING,
+        )
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "growth"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("already has a subscription", str(res.data))
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_existing_disabled_subscription_new_checkout_allowed(self, mock_init):
+        from billing.constants import get_tier_plan_code
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/pro_reactivate",
+            "access_code": "acc_pro_reactivate",
+        }
+        sub = PlatformSubscription.objects.create(
+            organization=self.org,
+            tier="starter",
+            paystack_plan_code="PLN_starter",
+            status=SubscriptionStatus.DISABLED,
+        )
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "professional"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, SubscriptionStatus.PENDING)
+        self.assertEqual(sub.tier, "professional")
+        self.assertEqual(sub.paystack_plan_code, get_tier_plan_code("professional"))
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_client_supplied_plan_code_is_rejected(self, mock_init):
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {
+                "organization_id": self.org.pk,
+                "tier": "starter",
+                "plan_code": "PLN_MALICIOUS_CHEAT_FREE",
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("plan_code", res.data)
+        # Ensure Paystack initialize_transaction was never called with malicious plan_code
+        mock_init.assert_not_called()
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_organization_remains_inactive_during_initialization(self, mock_init):
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/inactive_init",
+            "access_code": "acc_inactive",
+        }
+        self.org.is_active = False
+        self.org.save()
+
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "starter"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.is_active)
+
+    def test_institutional_tier_remains_rejected(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        from billing.services import initialize_platform_subscription
+
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "institutional"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+
+        # Also verify service layer directly blocks institutional self-serve
+        with self.assertRaises(DRFValidationError) as ctx:
+            initialize_platform_subscription(
+                organization=self.org,
+                user=self.owner,
+                tier="institutional",
+            )
+        self.assertIn("Institutional tier is sales-assisted", str(ctx.exception))
+

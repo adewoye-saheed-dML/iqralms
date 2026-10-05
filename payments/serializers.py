@@ -30,15 +30,6 @@ class SubaccountConfirmSerializer(serializers.Serializer):
     business_name = serializers.CharField(required=False, allow_blank=True, default="")
 
 
-class SubaccountSetupSerializer(serializers.Serializer):
-    """Payload to configure an academy's settlement bank details."""
-
-    organization_id = serializers.IntegerField(required=True)
-    bank_code = serializers.CharField(required=True, max_length=10)
-    account_number = serializers.CharField(required=True, max_length=20)
-    business_name = serializers.CharField(required=False, allow_blank=True, default="")
-
-
 class SubaccountSetupResponseSerializer(serializers.Serializer):
     """Response after resolving and creating subaccount."""
 

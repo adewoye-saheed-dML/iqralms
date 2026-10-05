@@ -29,14 +29,12 @@ from .serializers import (
     SubaccountResolveResponseSerializer,
     SubaccountResolveSerializer,
     SubaccountSetupResponseSerializer,
-    SubaccountSetupSerializer,
 )
 from .services import (
     confirm_academy_subaccount,
     initialize_family_payment,
     process_tuition_webhook,
     resolve_academy_subaccount,
-    setup_academy_subaccount,
     verify_family_payment,
 )
 
@@ -107,38 +105,6 @@ class SubaccountConfirmView(APIView):
 
 
 @extend_schema(
-    summary="Setup academy Paystack subaccount for tuition routing",
-    request=SubaccountSetupSerializer,
-    responses={
-        200: SubaccountSetupResponseSerializer,
-        403: OpenApiResponse(description="Only academy owner can configure bank details."),
-    },
-)
-class SubaccountSetupView(APIView):
-    """Owner onboard bank details for tuition routing to their academy (legacy single step)."""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, *args, **kwargs):
-        serializer = SubaccountSetupSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
-
-        organization = get_object_or_404(Organization, pk=data["organization_id"])
-        membership = active_membership(user=request.user, organization=organization)
-        if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
-            raise PermissionDenied("Only the academy owner can configure settlement bank details.")
-
-        result = setup_academy_subaccount(
-            organization=organization,
-            bank_code=data["bank_code"],
-            account_number=data["account_number"],
-            business_name=data.get("business_name"),
-        )
-        return Response(SubaccountSetupResponseSerializer(result).data, status=status.HTTP_200_OK)
-
-
-@extend_schema(
     summary="Initialize tuition payment for an adult student or by a parent",
     request=PaymentInitializeSerializer,
     responses={
@@ -176,10 +142,18 @@ class PaymentInitializeView(APIView):
             raise PermissionDenied("Only students or parents can initiate tuition payments.")
 
         # Cross-tenant boundary enforcement:
-        from accounts.tenancy import is_active_student_participant
+        from accounts.tenancy import active_parent_membership, is_active_student_participant
 
         if organization_id:
             organization = get_object_or_404(Organization, pk=organization_id)
+            if not organization.is_active:
+                raise PermissionDenied("This academy is not active.")
+
+            if user.role == Role.PARENT:
+                parent_membership = active_parent_membership(user=user, organization=organization)
+                if not parent_membership:
+                    raise PermissionDenied("You do not have active access to this academy.")
+
             if not is_active_student_participant(user=student, organization=organization):
                 raise PermissionDenied("Student is not an active participant of the specified academy.")
 
@@ -223,7 +197,16 @@ class PaymentInitializeView(APIView):
                 if not pricing_agreement:
                     raise ValidationError({"pricing_agreement_id": "No active pricing agreement found for this student."})
 
-            if not is_active_student_participant(user=student, organization=pricing_agreement.organization):
+            organization = pricing_agreement.organization
+            if not organization or not organization.is_active:
+                raise PermissionDenied("This academy is not active.")
+
+            if user.role == Role.PARENT:
+                parent_membership = active_parent_membership(user=user, organization=organization)
+                if not parent_membership:
+                    raise PermissionDenied("You do not have active access to this academy.")
+
+            if not is_active_student_participant(user=student, organization=organization):
                 raise PermissionDenied("Student is not an active participant of this academy.")
 
         payment, init_data = initialize_family_payment(

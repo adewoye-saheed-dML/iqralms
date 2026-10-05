@@ -82,7 +82,6 @@ def initialize_platform_subscription(
     organization,
     user,
     tier: str = "starter",
-    plan_code: Optional[str] = None,
     callback_url: Optional[str] = None,
     client: Optional[PaystackClient] = None,
 ) -> Tuple[PlatformSubscription, Dict[str, Any]]:
@@ -92,6 +91,18 @@ def initialize_platform_subscription(
 
     if tier not in SUBSCRIPTION_TIERS:
         raise DRFValidationError(f"Invalid tier: {tier}. Must be one of {list(SUBSCRIPTION_TIERS.keys())}.")
+
+    # Guard against creating second subscriptions while one is active/pending/past_due/not_renewing
+    existing_sub = PlatformSubscription.objects.filter(organization=organization).first()
+    if existing_sub and existing_sub.status in {
+        SubscriptionStatus.ACTIVE,
+        SubscriptionStatus.PENDING,
+        SubscriptionStatus.PAST_DUE,
+        SubscriptionStatus.NOT_RENEWING,
+    }:
+        raise DRFValidationError(
+            "This academy already has a subscription. Plan switching is not currently supported automatically."
+        )
 
     tier_info = SUBSCRIPTION_TIERS[tier]
     price_ngn = tier_info.get("price_ngn")
@@ -127,10 +138,9 @@ def initialize_platform_subscription(
         if subscription:
             subscription.paystack_initialization_reference = reference
             subscription.paystack_plan_code = resolved_plan_code
-            if subscription.status == SubscriptionStatus.PENDING:
-                subscription.tier = tier
-            else:
-                subscription.pending_tier = tier
+            subscription.tier = tier
+            subscription.pending_tier = None
+            subscription.status = SubscriptionStatus.PENDING
             subscription.save()
         else:
             subscription = PlatformSubscription.objects.create(
@@ -148,7 +158,6 @@ def subscribe_organization(
     organization,
     user,
     tier: str = "starter",
-    plan_code: Optional[str] = None,
     client: Optional[PaystackClient] = None,
 ) -> PlatformSubscription:
     """Subscribe an academy to a self-serve IqraLMS platform plan (starter, growth, professional)."""
@@ -156,7 +165,6 @@ def subscribe_organization(
         organization=organization,
         user=user,
         tier=tier,
-        plan_code=plan_code,
         client=client,
     )
     return sub

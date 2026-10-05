@@ -80,23 +80,6 @@ def confirm_academy_subaccount(
     }
 
 
-def setup_academy_subaccount(
-    organization,
-    bank_code: str,
-    account_number: str,
-    business_name: Optional[str] = None,
-    client: Optional[PaystackClient] = None,
-) -> Dict[str, Any]:
-    """Resolve bank details and create a Paystack subaccount for an academy (legacy single step)."""
-    return confirm_academy_subaccount(
-        organization=organization,
-        bank_code=bank_code,
-        account_number=account_number,
-        business_name=business_name,
-        client=client,
-    )
-
-
 def initialize_family_payment(
     payer: User,
     student: User,

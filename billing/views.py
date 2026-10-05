@@ -62,7 +62,6 @@ class SubscribeView(APIView):
         serializer.is_valid(raise_exception=True)
         org_id = serializer.validated_data["organization_id"]
         tier = serializer.validated_data.get("tier", "starter")
-        plan_code = serializer.validated_data.get("plan_code")
         callback_url = serializer.validated_data.get("callback_url")
 
         organization = get_object_or_404(Organization, pk=org_id)
@@ -77,7 +76,6 @@ class SubscribeView(APIView):
             organization=organization,
             user=request.user,
             tier=tier,
-            plan_code=plan_code,
             callback_url=callback_url,
         )
         return Response(

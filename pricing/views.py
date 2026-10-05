@@ -254,9 +254,17 @@ class ChildActivePricingAgreementView(generics.GenericAPIView):
             raise ValidationError({"organization_id": "Organization ID is required to fetch active child agreement."})
 
         organization = get_object_or_404(Organization, pk=org_id)
+        if not organization.is_active:
+            raise PermissionDenied("This academy is not active.")
+
+        from accounts.tenancy import active_parent_membership, is_active_student_participant
+
+        parent_membership = active_parent_membership(user=user, organization=organization)
+        if not parent_membership:
+            raise PermissionDenied("You do not have active access to this academy.")
+
         student = get_object_or_404(User, pk=student_id, role=Role.STUDENT)
 
-        from accounts.tenancy import is_active_student_participant
         if not is_active_student_participant(user=student, organization=organization):
             raise PermissionDenied("Student is not an active participant of this academy.")
 

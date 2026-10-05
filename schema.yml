@@ -3567,38 +3567,6 @@ paths:
           description: ''
         '403':
           description: Only academy owner or admin can resolve bank details.
-  /api/payments/subaccount/setup/:
-    post:
-      operationId: payments_subaccount_setup_create
-      description: Owner onboard bank details for tuition routing to their academy
-        (legacy single step).
-      summary: Setup academy Paystack subaccount for tuition routing
-      tags:
-      - payments
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SubaccountSetup'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/SubaccountSetup'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/SubaccountSetup'
-        required: true
-      security:
-      - tokenAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SubaccountSetupResponse'
-          description: ''
-        '403':
-          description: Only academy owner can configure bank details.
   /api/payments/verify/{reference}/:
     get:
       operationId: payments_verify_retrieve
@@ -9268,25 +9236,6 @@ components:
       - account_name
       - account_number
       - bank_code
-    SubaccountSetup:
-      type: object
-      description: Payload to configure an academy's settlement bank details.
-      properties:
-        organization_id:
-          type: integer
-        bank_code:
-          type: string
-          maxLength: 10
-        account_number:
-          type: string
-          maxLength: 20
-        business_name:
-          type: string
-          default: ''
-      required:
-      - account_number
-      - bank_code
-      - organization_id
     SubaccountSetupResponse:
       type: object
       description: Response after resolving and creating subaccount.
@@ -9326,8 +9275,6 @@ components:
           allOf:
           - $ref: '#/components/schemas/SubscribeRequestTierEnum'
           default: starter
-        plan_code:
-          type: string
         callback_url:
           type: string
       required:
