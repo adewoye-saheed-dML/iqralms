@@ -102,9 +102,17 @@ elif not SECRET_KEY:
 
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
-    ".ngrok-free.app",
-    # Development only. Production supplies its own or does not start.
-    default=[] if PRODUCTION else ["localhost", "127.0.0.1", "[::1]", "testserver"],
+    default=(
+        []
+        if PRODUCTION
+        else [
+            "localhost",
+            "127.0.0.1",
+            "[::1]",
+            "testserver",
+            ".ngrok-free.app",
+        ]
+    ),
 )
 
 if PRODUCTION and not ALLOWED_HOSTS:
@@ -568,8 +576,12 @@ DEFAULT_FROM_EMAIL = env_str(
 )
 
 # --- Paystack (Phase 9) -----------------------------------------------------
-PAYSTACK_SECRET_KEY = env_str("PAYSTACK_SECRET_KEY", default="sk_test_")
-PAYSTACK_PUBLIC_KEY = env_str("PAYSTACK_PUBLIC_KEY", default="pk_test_")
+PAYSTACK_SECRET_KEY = env_str(
+    "PAYSTACK_SECRET_KEY", default="sk_test_e2358dcd31a60d256a958db46a48387381d88fd5"
+)
+PAYSTACK_PUBLIC_KEY = env_str(
+    "PAYSTACK_PUBLIC_KEY", default="pk_test_b9006d0e2f52be58dc0a5464264012d91ce40287"
+)
 PAYSTACK_PLAN_CODE = env_str("PAYSTACK_PLAN_CODE", default="PLN_monthly_sub")
 
 # --- Billing & Subscriptions (Phase 9) ---------------------------------------

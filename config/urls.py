@@ -70,6 +70,12 @@ urlpatterns = [
         UnifiedPaystackWebhookView.as_view(),
         name="paystack_unified_webhook",
     ),
+    # Alias: Paystack dashboard may be configured to send to this URL
+    path(
+        "api/payments/webhook/",
+        UnifiedPaystackWebhookView.as_view(),
+        name="paystack_webhook_alias",
+    ),
     # Schema / docs
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

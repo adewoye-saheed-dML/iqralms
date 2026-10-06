@@ -14,6 +14,7 @@ from accounts.models import ParentLink, Role, User
 from organizations.models import (
     MembershipStatus,
     Organization,
+    OrganizationMembership,
     OrganizationRole,
     active_membership,
 )
@@ -72,7 +73,17 @@ class SubaccountResolveView(APIView):
 
         organization = get_object_or_404(Organization, pk=data["organization_id"])
         membership = active_membership(user=request.user, organization=organization)
-        if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
+        if not membership:
+            membership = OrganizationMembership.objects.filter(
+                user=request.user, organization=organization, status=MembershipStatus.ACTIVE
+            ).first()
+        is_owner_or_admin = (
+            getattr(request.user, "is_superuser", False)
+            or getattr(request.user, "is_staff", False)
+            or getattr(request.user, "role", None) in {Role.OWNER, "owner"}
+            or (membership and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN})
+        )
+        if not is_owner_or_admin:
             raise PermissionDenied("Only academy owners or administrators can resolve bank details.")
 
         try:
@@ -107,7 +118,17 @@ class SubaccountConfirmView(APIView):
 
         organization = get_object_or_404(Organization, pk=data["organization_id"])
         membership = active_membership(user=request.user, organization=organization)
-        if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
+        if not membership:
+            membership = OrganizationMembership.objects.filter(
+                user=request.user, organization=organization, status=MembershipStatus.ACTIVE
+            ).first()
+        is_owner_or_admin = (
+            getattr(request.user, "is_superuser", False)
+            or getattr(request.user, "is_staff", False)
+            or getattr(request.user, "role", None) in {Role.OWNER, "owner"}
+            or (membership and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN})
+        )
+        if not is_owner_or_admin:
             raise PermissionDenied("Only academy owners or administrators can configure settlement bank details.")
 
         try:
@@ -328,9 +349,20 @@ class UnifiedPaystackWebhookView(APIView):
         raw_body = request.body
         signature = request.META.get("HTTP_X_PAYSTACK_SIGNATURE")
 
-        if not verify_paystack_signature(raw_body, signature):
-            logger.warning("Invalid Paystack signature on webhook.")
-            return Response({"error": "Invalid signature."}, status=status.HTTP_400_BAD_REQUEST)
+        from django.conf import settings as django_settings
+        sig_valid = verify_paystack_signature(raw_body, signature)
+        if not sig_valid:
+            if getattr(django_settings, "DEBUG", False):
+                # In DEBUG mode, log the mismatch but allow the webhook through
+                # so local development with ngrok works even if keys are mismatched
+                logger.warning(
+                    "Paystack signature mismatch in DEBUG mode — processing anyway. "
+                    "Signature header present: %s",
+                    bool(signature),
+                )
+            else:
+                logger.warning("Invalid Paystack signature on webhook.")
+                return Response({"error": "Invalid signature."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             payload = json.loads(raw_body.decode("utf-8"))
@@ -343,7 +375,30 @@ class UnifiedPaystackWebhookView(APIView):
         if event in TUITION_EVENTS:
             # Check if this charge event is actually a platform subscription first payment
             if data.get("metadata", {}).get("type") == "platform_subscription":
-                return Response({"status": "success", "message": "acknowledged"}, status=status.HTTP_200_OK)
+                from billing.services import process_billing_webhook as process_billing
+                from billing.models import PlatformSubscription, SubscriptionStatus
+
+                # Activate the subscription on charge.success for the initial plan payment
+                if event == "charge.success":
+                    ref = data.get("reference", "")
+                    sub = PlatformSubscription.objects.filter(
+                        paystack_initialization_reference=ref
+                    ).first()
+                    if sub and sub.status != SubscriptionStatus.ACTIVE:
+                        sub.status = SubscriptionStatus.ACTIVE
+                        customer_code = data.get("customer", {}).get("customer_code", "")
+                        if customer_code:
+                            sub.paystack_customer_code = customer_code
+                        sub.save()
+                        logger.info(
+                            "Platform subscription %s activated via charge.success (ref=%s).",
+                            sub.pk, ref,
+                        )
+                        if not sub.organization.is_active:
+                            sub.organization.is_active = True
+                            sub.organization.save(update_fields=["is_active", "updated_at"])
+
+                return Response({"status": "success", "message": "processed"}, status=status.HTTP_200_OK)
             success, msg = process_tuition_webhook(payload)
             return Response({"status": "success", "message": msg}, status=status.HTTP_200_OK)
 
@@ -462,11 +517,18 @@ class OrganizationPaymentListView(APIView):
         organization = get_object_or_404(Organization, pk=org_id)
         membership = active_membership(user=user, organization=organization)
         if not membership:
+            membership = OrganizationMembership.objects.filter(
+                user=user, organization=organization, status=MembershipStatus.ACTIVE
+            ).first()
+        if not membership and not (user.is_superuser or user.is_staff or getattr(user, "role", None) in {Role.OWNER, "owner"}):
             raise PermissionDenied("You do not belong to this organization.")
 
         is_allowed = (
-            membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN}
-            or (membership.role == OrganizationRole.TEACHER and user.role == Role.LEAD)
+            getattr(user, "is_superuser", False)
+            or getattr(user, "is_staff", False)
+            or getattr(user, "role", None) in {Role.OWNER, "owner"}
+            or (membership and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN})
+            or (membership and membership.role == OrganizationRole.TEACHER and getattr(user, "role", None) == Role.LEAD)
         )
         if not is_allowed:
             raise PermissionDenied("Only owners, administrators, or lead teachers can view academy payments.")

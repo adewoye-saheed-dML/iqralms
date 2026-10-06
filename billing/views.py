@@ -138,6 +138,36 @@ class SubscriptionStatusView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Fallback sync: If subscription is pending and has a reference, check Paystack directly
+        # so user is immediately activated even if the webhook was delayed or dropped.
+        ref = request.query_params.get("reference") or subscription.paystack_initialization_reference
+        if subscription.status == "pending" and ref:
+            from payments.paystack import PaystackClient
+            from .models import SubscriptionStatus
+            try:
+                client = PaystackClient()
+                v_data = client.verify_transaction(ref)
+                if v_data.get("status") == "success":
+                    subscription.status = SubscriptionStatus.ACTIVE
+                    customer_code = v_data.get("customer", {}).get("customer_code", "")
+                    if customer_code:
+                        subscription.paystack_customer_code = customer_code
+                    plan_obj = v_data.get("plan_object") or {}
+                    sub_code = (
+                        v_data.get("subscription_code")
+                        or plan_obj.get("subscription_code")
+                        or plan_obj.get("plan_code")
+                    )
+                    if sub_code:
+                        subscription.paystack_subscription_code = sub_code
+                    subscription.save()
+                    if not organization.is_active:
+                        organization.is_active = True
+                        organization.save(update_fields=["is_active", "updated_at"])
+                    logger.info("Subscription for organization %s auto-activated via Paystack verify.", organization.pk)
+            except Exception as exc:
+                logger.warning("Could not auto-verify subscription reference %s: %s", ref, exc)
+
         return Response(PlatformSubscriptionSerializer(subscription).data)
 
 

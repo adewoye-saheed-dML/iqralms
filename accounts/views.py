@@ -53,6 +53,7 @@ from rest_framework import generics, status
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.authtoken.models import Token
 
 from organizations.permissions import (
     CanManageOrganizationMemberships,
@@ -122,7 +123,10 @@ class RegisterView(generics.CreateAPIView):
         else:
             detail = "Account created."
 
+        token, _ = Token.objects.get_or_create(user=user)
         body = {
+            "key": token.key,
+            "token": token.key,
             "user": UserSerializer(user, context=self.get_serializer_context()).data,
             "status": STATUS_PENDING_PARENT_LINK if pending else STATUS_ACTIVE,
             "detail": detail,
