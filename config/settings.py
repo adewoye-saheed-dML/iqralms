@@ -110,7 +110,8 @@ ALLOWED_HOSTS = env_list(
             "127.0.0.1",
             "[::1]",
             "testserver",
-            ".ngrok-free.app",
+            ".ngrok-free.dev",
+            "evaluator-feeble-unchain.ngrok-free.dev",
         ]
     ),
 )
