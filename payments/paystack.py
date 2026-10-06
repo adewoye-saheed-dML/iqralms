@@ -117,6 +117,13 @@ class PaystackClient:
 
     def resolve_account_number(self, account_number: str, bank_code: str) -> Dict[str, Any]:
         """Resolve account number and bank code to verify account name."""
+        if getattr(settings, "DEBUG", False) and self.secret_key.startswith("sk_test_"):
+            if getattr(settings, "PAYSTACK_MOCK_RESOLVE", True):
+                logger.info("DEBUG Paystack simulation: mock bank resolve")
+                return {
+                "account_number": account_number,
+                "account_name": "TEST ACCOUNT",
+            }
         res = self._request("GET", "bank/resolve", params={"account_number": account_number, "bank_code": bank_code})
         return res.get("data", {})
 

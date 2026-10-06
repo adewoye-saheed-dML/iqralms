@@ -102,6 +102,7 @@ elif not SECRET_KEY:
 
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
+    ".ngrok-free.app",
     # Development only. Production supplies its own or does not start.
     default=[] if PRODUCTION else ["localhost", "127.0.0.1", "[::1]", "testserver"],
 )
@@ -567,14 +568,18 @@ DEFAULT_FROM_EMAIL = env_str(
 )
 
 # --- Paystack (Phase 9) -----------------------------------------------------
-PAYSTACK_SECRET_KEY = env_str("PAYSTACK_SECRET_KEY", default="sk_test_placeholder")
-PAYSTACK_PUBLIC_KEY = env_str("PAYSTACK_PUBLIC_KEY", default="pk_test_placeholder")
+PAYSTACK_SECRET_KEY = env_str("PAYSTACK_SECRET_KEY", default="sk_test_")
+PAYSTACK_PUBLIC_KEY = env_str("PAYSTACK_PUBLIC_KEY", default="pk_test_")
 PAYSTACK_PLAN_CODE = env_str("PAYSTACK_PLAN_CODE", default="PLN_monthly_sub")
 
 # --- Billing & Subscriptions (Phase 9) ---------------------------------------
 USD_DISPLAY_RATE = Decimal(env_str("USD_DISPLAY_RATE", default="750.00"))
-PAYSTACK_STARTER_PLAN_CODE = env_str("PAYSTACK_STARTER_PLAN_CODE", default="PLN_starter_tier")
-PAYSTACK_GROWTH_PLAN_CODE = env_str("PAYSTACK_GROWTH_PLAN_CODE", default="PLN_growth_tier")
-PAYSTACK_PROFESSIONAL_PLAN_CODE = env_str("PAYSTACK_PROFESSIONAL_PLAN_CODE", default="PLN_professional_tier")
-
-
+PAYSTACK_STARTER_PLAN_CODE = env_str(
+    "PAYSTACK_STARTER_PLAN_CODE", default="PLN_starter_tier"
+)
+PAYSTACK_GROWTH_PLAN_CODE = env_str(
+    "PAYSTACK_GROWTH_PLAN_CODE", default="PLN_growth_tier"
+)
+PAYSTACK_PROFESSIONAL_PLAN_CODE = env_str(
+    "PAYSTACK_PROFESSIONAL_PLAN_CODE", default="PLN_professional_tier"
+)

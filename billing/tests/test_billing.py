@@ -491,8 +491,14 @@ class PlatformSubscriptionTests(TestCase):
         self.assertEqual(sub.tier, "professional")
         self.assertEqual(sub.paystack_plan_code, get_tier_plan_code("professional"))
 
-    def test_existing_pending_subscription_second_checkout_rejected(self):
-        PlatformSubscription.objects.create(
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_existing_pending_subscription_new_checkout_allowed(self, mock_init):
+        from billing.constants import get_tier_plan_code
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/growth_retry",
+            "access_code": "acc_growth_retry",
+        }
+        sub = PlatformSubscription.objects.create(
             organization=self.org,
             tier="starter",
             paystack_plan_code="PLN_starter",
@@ -504,8 +510,12 @@ class PlatformSubscriptionTests(TestCase):
             {"organization_id": self.org.pk, "tier": "growth"},
             format="json",
         )
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("already has a subscription", str(res.data))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["authorization_url"], "https://checkout.paystack.com/growth_retry")
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, SubscriptionStatus.PENDING)
+        self.assertEqual(sub.tier, "growth")
+        self.assertEqual(sub.paystack_plan_code, get_tier_plan_code("growth"))
 
     def test_existing_active_subscription_second_checkout_rejected(self):
         PlatformSubscription.objects.create(

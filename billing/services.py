@@ -92,11 +92,10 @@ def initialize_platform_subscription(
     if tier not in SUBSCRIPTION_TIERS:
         raise DRFValidationError(f"Invalid tier: {tier}. Must be one of {list(SUBSCRIPTION_TIERS.keys())}.")
 
-    # Guard against creating second subscriptions while one is active/pending/past_due/not_renewing
+    # Guard against creating second subscriptions while one is active/past_due/not_renewing
     existing_sub = PlatformSubscription.objects.filter(organization=organization).first()
     if existing_sub and existing_sub.status in {
         SubscriptionStatus.ACTIVE,
-        SubscriptionStatus.PENDING,
         SubscriptionStatus.PAST_DUE,
         SubscriptionStatus.NOT_RENEWING,
     }:

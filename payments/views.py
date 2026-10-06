@@ -19,7 +19,7 @@ from organizations.models import (
 )
 from pricing.models import PricingAgreement
 from .models import FamilyPayment
-from .paystack import verify_paystack_signature
+from .paystack import PaystackAPIError, verify_paystack_signature
 from .serializers import (
     FamilyPaymentSerializer,
     PaymentInitializeResponseSerializer,
@@ -39,6 +39,17 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _paystack_error_response(exc: PaystackAPIError) -> Response:
+    """Convert a PaystackAPIError into a clean JSON error response."""
+    if exc.status_code in (429, 502):
+        code = exc.status_code
+    elif exc.status_code < 500:
+        code = 400
+    else:
+        code = 502
+    return Response({"detail": str(exc)}, status=code)
 
 
 @extend_schema(
@@ -64,11 +75,15 @@ class SubaccountResolveView(APIView):
         if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
             raise PermissionDenied("Only academy owners or administrators can resolve bank details.")
 
-        result = resolve_academy_subaccount(
-            organization=organization,
-            bank_code=data["bank_code"],
-            account_number=data["account_number"],
-        )
+        try:
+            result = resolve_academy_subaccount(
+                organization=organization,
+                bank_code=data["bank_code"],
+                account_number=data["account_number"],
+            )
+        except PaystackAPIError as exc:
+            return _paystack_error_response(exc)
+
         return Response(SubaccountResolveResponseSerializer(result).data, status=status.HTTP_200_OK)
 
 
@@ -95,12 +110,16 @@ class SubaccountConfirmView(APIView):
         if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
             raise PermissionDenied("Only academy owners or administrators can configure settlement bank details.")
 
-        result = confirm_academy_subaccount(
-            organization=organization,
-            bank_code=data["bank_code"],
-            account_number=data["account_number"],
-            business_name=data.get("business_name"),
-        )
+        try:
+            result = confirm_academy_subaccount(
+                organization=organization,
+                bank_code=data["bank_code"],
+                account_number=data["account_number"],
+                business_name=data.get("business_name"),
+            )
+        except PaystackAPIError as exc:
+            return _paystack_error_response(exc)
+
         return Response(SubaccountSetupResponseSerializer(result).data, status=status.HTTP_200_OK)
 
 
@@ -209,12 +228,15 @@ class PaymentInitializeView(APIView):
             if not is_active_student_participant(user=student, organization=organization):
                 raise PermissionDenied("Student is not an active participant of this academy.")
 
-        payment, init_data = initialize_family_payment(
-            payer=user,
-            student=student,
-            pricing_agreement=pricing_agreement,
-            callback_url=callback_url,
-        )
+        try:
+            payment, init_data = initialize_family_payment(
+                payer=user,
+                student=student,
+                pricing_agreement=pricing_agreement,
+                callback_url=callback_url,
+            )
+        except PaystackAPIError as exc:
+            return _paystack_error_response(exc)
 
         response_data = {
             "payment_id": payment.pk,
@@ -265,7 +287,11 @@ class PaymentVerifyView(APIView):
         if not can_view:
             raise PermissionDenied("You are not authorized to view this payment.")
 
-        verify_data = verify_family_payment(reference)
+        try:
+            verify_data = verify_family_payment(reference)
+        except PaystackAPIError as exc:
+            return _paystack_error_response(exc)
+
         return Response(
             {
                 "reference": reference,
@@ -394,11 +420,11 @@ class ParentChildPaymentListView(APIView):
         if filter_student_id:
             try:
                 sid = int(filter_student_id)
-                if sid not in student_ids:
-                    raise PermissionDenied("You are not linked to that student.")
-                student_ids = [sid]
             except ValueError:
                 raise ValidationError({"student_id": "Invalid student ID."})
+            if sid not in student_ids:
+                raise PermissionDenied("You are not linked to that student.")
+            student_ids = [sid]
 
         payments = FamilyPayment.objects.filter(student_id__in=student_ids).select_related(
             "student", "organization", "initiated_by", "pricing_agreement"
