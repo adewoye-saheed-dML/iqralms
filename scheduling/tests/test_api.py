@@ -251,6 +251,14 @@ class AvailabilityListAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertTrue(Availability.objects.filter(pk=self.window.pk).exists())
 
+    def test_owner_can_list_all_availabilities_without_teacher_id(self):
+        owner_membership = OwnerMembershipFactory(organization=self.organization)
+        self.client.force_authenticate(user=owner_membership.user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], self.window.pk)
+
 
 class BookingCreateAPITests(APITestCase):
     def setUp(self):

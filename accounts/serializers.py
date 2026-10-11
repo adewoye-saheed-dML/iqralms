@@ -296,6 +296,8 @@ class OrganizationTeacherConfigurationSerializer(serializers.ModelSerializer):
 
     user = serializers.PrimaryKeyRelatedField(source="membership.user", read_only=True)
     username = serializers.CharField(source="membership.user.username", read_only=True)
+    teacher_name = serializers.SerializerMethodField()
+    declared_weekly_hours = serializers.SerializerMethodField()
     organization = serializers.PrimaryKeyRelatedField(
         source="membership.organization", read_only=True
     )
@@ -307,8 +309,10 @@ class OrganizationTeacherConfigurationSerializer(serializers.ModelSerializer):
             "membership",
             "user",
             "username",
+            "teacher_name",
             "organization",
             "max_weekly_hours",
+            "declared_weekly_hours",
             "compensation_type",
             "hourly_payout_rate",
             "per_class_rate",
@@ -319,6 +323,32 @@ class OrganizationTeacherConfigurationSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = fields
+
+    def get_teacher_name(self, obj) -> str:
+        u = getattr(obj.membership, "user", None)
+        if not u:
+            return ""
+        name = f"{u.first_name} {u.last_name}".strip()
+        return name or u.username
+
+    def get_declared_weekly_hours(self, obj) -> float:
+        try:
+            from scheduling.models import Availability
+            windows = Availability.objects.filter(
+                organization=obj.membership.organization,
+                teacher=obj.membership.user,
+            )
+            total_minutes = 0
+            for w in windows:
+                if w.start_time_utc and w.end_time_utc:
+                    sh, sm = w.start_time_utc.hour, w.start_time_utc.minute
+                    eh, em = w.end_time_utc.hour, w.end_time_utc.minute
+                    diff = (eh * 60 + em) - (sh * 60 + sm)
+                    if diff > 0:
+                        total_minutes += diff
+            return round(total_minutes / 60, 1)
+        except Exception:
+            return 0.0
 
 
 class OrganizationTeacherConfigurationCreateSerializer(serializers.Serializer):

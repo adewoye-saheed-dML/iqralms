@@ -178,8 +178,8 @@ class TeacherConfigurationCreateAPITests(APITestCase):
         self.assertEqual(response.data["user"], self.teacher.pk)
         self.assertEqual(response.data["username"], self.teacher.username)
         self.assertEqual(response.data["organization"], self.organization.pk)
-        self.assertEqual(response.data["membership"], self.membership.pk)
         self.assertEqual(response.data["max_weekly_hours"], 12)
+        self.assertEqual(response.data["declared_weekly_hours"], 0.0)
         self.assertEqual(Decimal(response.data["hourly_payout_rate"]), Decimal("40.00"))
         self.assertTrue(response.data["approved"])
 

@@ -142,11 +142,23 @@ class AvailabilityListView(AcademyScopedView, generics.ListCreateAPIView):
         raw_id = self.request.query_params.get("teacher_id")
         if raw_id:
             teacher_id = required_int_param(self.request, "teacher_id")
-        elif getattr(self.request.user, "is_teacher", False):
-            teacher_id = self.request.user.id
-        else:
-            teacher_id = required_int_param(self.request, "teacher_id")
+            return Availability.objects.filter(
+                organization=self.organization, teacher_id=teacher_id
+            ).select_related("teacher")
 
+        if getattr(self.request.user, "is_teacher", False):
+            teacher_id = self.request.user.id
+            return Availability.objects.filter(
+                organization=self.organization, teacher_id=teacher_id
+            ).select_related("teacher")
+
+        from organizations.permissions import is_owner_admin_or_lead_teacher
+        if is_owner_admin_or_lead_teacher(self, self.request.user):
+            return Availability.objects.filter(
+                organization=self.organization
+            ).select_related("teacher")
+
+        teacher_id = required_int_param(self.request, "teacher_id")
         return Availability.objects.filter(
             organization=self.organization, teacher_id=teacher_id
         ).select_related("teacher")
