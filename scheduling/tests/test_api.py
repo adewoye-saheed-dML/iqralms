@@ -30,7 +30,7 @@ from accounts.tests.factories import (
     SubTeacherFactory,
 )
 from curriculum.tests.factories import LevelFactory, admit
-from organizations.tests.factories import OrganizationFactory
+from organizations.tests.factories import OrganizationFactory, OwnerMembershipFactory
 from scheduling.models import Availability, Booking, BookingStatus, Weekday
 
 from .factories import (
@@ -221,6 +221,35 @@ class AvailabilityListAPITests(APITestCase):
         response = self.client.delete(detail_url)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Availability.objects.filter(pk=self.window.pk).exists())
+
+    def test_owner_cannot_declare_availability_for_teacher(self):
+        owner_membership = OwnerMembershipFactory(organization=self.organization)
+        self.client.force_authenticate(user=owner_membership.user)
+        response = self.client.post(
+            self.url,
+            {
+                "teacher_id": self.teacher.pk,
+                "weekday": Weekday.WEDNESDAY,
+                "start_time": "10:00",
+                "end_time": "14:00",
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(
+            Availability.objects.filter(
+                organization=self.organization,
+                teacher=self.teacher,
+                weekday=Weekday.WEDNESDAY,
+            ).exists()
+        )
+
+    def test_owner_cannot_delete_teacher_availability(self):
+        owner_membership = OwnerMembershipFactory(organization=self.organization)
+        self.client.force_authenticate(user=owner_membership.user)
+        detail_url = f"/api/scheduling/organizations/{self.organization.pk}/availability/{self.window.pk}/"
+        response = self.client.delete(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(Availability.objects.filter(pk=self.window.pk).exists())
 
 
 class BookingCreateAPITests(APITestCase):

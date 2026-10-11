@@ -76,7 +76,7 @@ class CanBookSession(BasePermission):
 
 
 class CanManageAvailability(BasePermission):
-    message = "Only the teacher or organization management can declare availability."
+    message = "Only the teacher can declare or manage their own availability hours."
 
     def has_permission(self, request, view):
         user = request.user
@@ -84,8 +84,8 @@ class CanManageAvailability(BasePermission):
             return False
         if getattr(user, "is_teacher", False):
             return True
-        from organizations.permissions import is_owner_admin_or_lead_teacher, is_teacher
+        from organizations.permissions import is_teacher
 
-        return is_teacher(view, user) or is_owner_admin_or_lead_teacher(view, user)
+        return is_teacher(view, user)
 
 

@@ -157,22 +157,17 @@ class AvailabilityListView(AcademyScopedView, generics.ListCreateAPIView):
     )
     def post(self, request, *args, **kwargs):
         user = request.user
-        from accounts.models import User
-        from organizations.permissions import is_owner_admin_or_lead_teacher
+        from organizations.permissions import is_teacher
+
+        is_org_teacher = is_teacher(self, user)
+        if not (getattr(user, "is_teacher", False) or is_org_teacher):
+            raise PermissionDenied("Only teachers can declare their own availability hours.")
 
         teacher_id = request.data.get("teacher_id")
-        is_mgmt = is_owner_admin_or_lead_teacher(self, user)
+        if teacher_id and int(teacher_id) != user.id:
+            raise PermissionDenied("You cannot declare availability hours for another teacher.")
 
-        if teacher_id and is_mgmt:
-            teacher = User.objects.filter(pk=teacher_id).first()
-            if not teacher:
-                raise ValidationError({"teacher_id": ["Teacher not found."]})
-        else:
-            from organizations.permissions import is_teacher
-            is_org_teacher = is_teacher(self, user)
-            if not (getattr(user, "is_teacher", False) or is_org_teacher or is_mgmt):
-                raise PermissionDenied("Only a teacher account or academy management can declare hours.")
-            teacher = user
+        teacher = user
 
         # Auto-ensure teacher has an approved configuration in this academy and fallback teacher profile
         from accounts.models import OrganizationTeacherConfiguration, Role, TeacherProfile
@@ -250,9 +245,7 @@ class AvailabilityDetailView(AcademyScopedView, generics.DestroyAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        from organizations.permissions import is_owner_admin_or_lead_teacher
-        if is_owner_admin_or_lead_teacher(self, user):
-            return Availability.objects.filter(organization=self.organization)
+        # Availability hours can only be managed/deleted by the teacher themselves
         return Availability.objects.filter(organization=self.organization, teacher=user)
 
 
