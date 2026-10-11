@@ -11,11 +11,13 @@ from .views import (
     StudentPaymentListView,
     SubaccountConfirmView,
     SubaccountResolveView,
+    SubaccountStatusView,
 )
 
 app_name = "payments"
 
 urlpatterns = [
+    path("subaccount/status/", SubaccountStatusView.as_view(), name="subaccount_status"),
     path("subaccount/resolve/", SubaccountResolveView.as_view(), name="subaccount_resolve"),
     path("subaccount/confirm/", SubaccountConfirmView.as_view(), name="subaccount_confirm"),
     path("initialize/", PaymentInitializeView.as_view(), name="initialize"),

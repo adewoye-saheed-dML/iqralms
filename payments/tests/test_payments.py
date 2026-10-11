@@ -154,6 +154,44 @@ class SubaccountSetupTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_subaccount_status_unconfigured(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.get(
+            f"/api/payments/subaccount/status/?organization_id={self.org.pk}",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["is_configured"])
+        self.assertIsNone(response.data["subaccount_code"])
+
+    @patch("payments.paystack.PaystackClient.fetch_subaccount")
+    def test_subaccount_status_configured(self, mock_fetch):
+        mock_fetch.return_value = {
+            "subaccount_code": "SUB_test123",
+            "account_name": "Noor Academy Settlement",
+            "settlement_bank": "058",
+            "account_number": "0123456789",
+        }
+        self.org.paystack_subaccount_code = "SUB_test123"
+        self.org.save()
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.get(
+            f"/api/payments/subaccount/status/?organization_id={self.org.pk}",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["is_configured"])
+        self.assertEqual(response.data["subaccount_code"], "SUB_test123")
+        self.assertEqual(response.data["account_name"], "Noor Academy Settlement")
+        self.assertEqual(response.data["bank_code"], "058")
+        self.assertEqual(response.data["account_number"], "0123456789")
+
+    def test_subaccount_status_forbidden_for_non_member(self):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(
+            f"/api/payments/subaccount/status/?organization_id={self.org.pk}",
+        )
+        self.assertEqual(response.status_code, 403)
+
 
 class PaymentInitializationAndVerificationTests(TestCase):
     def setUp(self):
@@ -202,6 +240,30 @@ class PaymentInitializationAndVerificationTests(TestCase):
         self.assertEqual(payment.status, FamilyPaymentStatus.PENDING)
         self.assertEqual(payment.initiated_by, self.student)
         self.assertEqual(payment.organization, self.org)
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_adult_student_can_initialize_tuition_payment_in_usd(self, mock_init):
+        self.org.currency = "USD"
+        self.org.save()
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/auth_usd_123",
+            "access_code": "acc_usd_123",
+            "reference": "ref_usd_123",
+        }
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            "/api/payments/initialize/",
+            {"pricing_agreement_id": self.agreement.pk},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["currency"], "USD")
+        self.assertEqual(response.data["amount"], "15000.00")
+        payment = FamilyPayment.objects.get(pk=response.data["payment_id"])
+        self.assertEqual(payment.currency, "USD")
+        # Ensure Paystack client received USD
+        _, kwargs = mock_init.call_args
+        self.assertEqual(kwargs["currency"], "USD")
 
     @patch("payments.paystack.PaystackClient.initialize_transaction")
     def test_linked_parent_can_initialize_tuition_payment_for_child(self, mock_init):

@@ -39,6 +39,16 @@ class SubaccountSetupResponseSerializer(serializers.Serializer):
     account_number = serializers.CharField()
 
 
+class SubaccountStatusResponseSerializer(serializers.Serializer):
+    """Status of an academy's settlement subaccount configuration."""
+
+    is_configured = serializers.BooleanField()
+    subaccount_code = serializers.CharField(allow_null=True, required=False)
+    account_name = serializers.CharField(allow_null=True, required=False)
+    bank_code = serializers.CharField(allow_null=True, required=False)
+    account_number = serializers.CharField(allow_null=True, required=False)
+
+
 class PaymentInitializeSerializer(serializers.Serializer):
     """Payload to initiate a tuition payment."""
 

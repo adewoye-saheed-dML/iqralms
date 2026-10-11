@@ -30,9 +30,11 @@ from .serializers import (
     SubaccountResolveResponseSerializer,
     SubaccountResolveSerializer,
     SubaccountSetupResponseSerializer,
+    SubaccountStatusResponseSerializer,
 )
 from .services import (
     confirm_academy_subaccount,
+    get_academy_subaccount_status,
     initialize_family_payment,
     process_tuition_webhook,
     resolve_academy_subaccount,
@@ -142,6 +144,46 @@ class SubaccountConfirmView(APIView):
             return _paystack_error_response(exc)
 
         return Response(SubaccountSetupResponseSerializer(result).data, status=status.HTTP_200_OK)
+
+
+@extend_schema(
+    summary="Get current tuition settlement subaccount status for an academy",
+    parameters=[
+        OpenApiParameter(name="organization_id", description="Organization ID", required=True, type=int),
+    ],
+    responses={
+        200: SubaccountStatusResponseSerializer,
+        400: OpenApiResponse(description="Missing organization_id parameter."),
+        403: OpenApiResponse(description="Only academy members or admins can view settlement details."),
+    },
+)
+class SubaccountStatusView(APIView):
+    """Retrieve settlement subaccount configuration status."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        org_id = request.query_params.get("organization_id")
+        if not org_id:
+            raise ValidationError({"organization_id": ["organization_id is required."]})
+
+        organization = get_object_or_404(Organization, pk=org_id)
+        membership = active_membership(user=request.user, organization=organization)
+        if not membership:
+            membership = OrganizationMembership.objects.filter(
+                user=request.user, organization=organization, status=MembershipStatus.ACTIVE
+            ).first()
+        is_owner_or_admin = (
+            getattr(request.user, "is_superuser", False)
+            or getattr(request.user, "is_staff", False)
+            or getattr(request.user, "role", None) in {Role.OWNER, "owner"}
+            or (membership and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN})
+        )
+        if not is_owner_or_admin:
+            raise PermissionDenied("Only academy owners or administrators can view settlement bank details.")
+
+        status_data = get_academy_subaccount_status(organization)
+        return Response(SubaccountStatusResponseSerializer(status_data).data, status=status.HTTP_200_OK)
 
 
 @extend_schema(

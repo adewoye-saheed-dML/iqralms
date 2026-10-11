@@ -40,6 +40,7 @@ from organizations.models import (
     EnrollmentStatus,
     MembershipStatus,
     OrganizationMembership,
+    OrganizationRole,
     StudentEnrollment,
     active_enrollment,
     active_membership,
@@ -168,14 +169,20 @@ def children_in_organization(*, parent, organization):
         .filter(organization=membership.organization)
         .values("user_id")
     )
+    student_members_here = (
+        OrganizationMembership.objects.active()
+        .filter(organization=membership.organization, role=OrganizationRole.STUDENT)
+        .values("user_id")
+    )
+    from django.db.models import Q
     return (
         User.objects.filter(
             # ParentLink.clean() already refuses a non-student, but a role edited
             # afterwards would leave the row behind; a child is a student now.
             role=Role.STUDENT,
             parent_links__parent=parent,
-            pk__in=enrolled_here,
         )
+        .filter(Q(pk__in=enrolled_here) | Q(pk__in=student_members_here))
         .distinct()
         .order_by("username")
     )

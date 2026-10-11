@@ -141,6 +141,12 @@ class PlatformSubscriptionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["status"], "active")
 
+        # Teacher / subordinate members must also be able to view status so their dashboards unlock
+        self.client.force_authenticate(user=self.non_owner)
+        response_teacher = self.client.get(f"/api/billing/status/?organization_id={self.org.pk}")
+        self.assertEqual(response_teacher.status_code, 200)
+        self.assertEqual(response_teacher.data["status"], "active")
+
     def test_webhook_invalid_signature_rejected(self):
         response = self.client.post(
             "/api/webhooks/paystack/",

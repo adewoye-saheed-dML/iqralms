@@ -107,18 +107,27 @@ class SubscribeView(APIView):
     },
 )
 class SubscriptionStatusView(APIView):
-    """View subscription status for an academy (Owner/Admin only)."""
+    """View subscription status for an academy.
+
+    Accessible to any active member of the academy (Owner, Admin, Teacher,
+    Student, Parent) as well as parents of enrolled students, so their
+    respective dashboards can verify the academy's platform subscription standing.
+    """
 
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         org_id = request.query_params.get("organization_id")
         if not org_id:
-            # Fall back to the first organization where user is owner
+            # Fall back to the first organization where user is owner, or has active membership
             membership = request.user.organization_memberships.filter(
                 role=OrganizationRole.OWNER,
                 status=MembershipStatus.ACTIVE,
             ).first()
+            if not membership:
+                membership = request.user.organization_memberships.filter(
+                    status=MembershipStatus.ACTIVE,
+                ).first()
             if not membership:
                 raise ValidationError({"organization_id": "Organization ID is required."})
             organization = membership.organization
@@ -128,8 +137,28 @@ class SubscriptionStatusView(APIView):
                 user=request.user,
                 status=MembershipStatus.ACTIVE,
             ).first()
-            if not membership or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
-                raise PermissionDenied("Only academy owners or administrators can view subscription status.")
+            has_child_membership = organization.memberships.filter(
+                user__parent_links__parent=request.user,
+                status=MembershipStatus.ACTIVE,
+            ).exists()
+            has_enrollment = (
+                hasattr(organization, "student_enrollments")
+                and organization.student_enrollments.filter(user=request.user).exists()
+            )
+            has_child_enrollment = (
+                hasattr(organization, "student_enrollments")
+                and organization.student_enrollments.filter(user__parent_links__parent=request.user).exists()
+            )
+
+            if not (
+                request.user.is_superuser
+                or request.user.is_staff
+                or membership
+                or has_child_membership
+                or has_enrollment
+                or has_child_enrollment
+            ):
+                raise PermissionDenied("Only members of this academy can view its subscription status.")
 
         subscription = PlatformSubscription.objects.filter(organization=organization).first()
         if not subscription:

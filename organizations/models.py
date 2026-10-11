@@ -144,6 +144,11 @@ class Organization(models.Model):
         blank=True,
         help_text="Paystack subaccount code for routing tuition directly to the academy bank account.",
     )
+    currency = models.CharField(
+        max_length=3,
+        default="NGN",
+        help_text="Operating currency for tuition and billing (e.g. NGN, USD, GBP, EUR).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

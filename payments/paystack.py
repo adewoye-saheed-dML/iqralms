@@ -149,6 +149,23 @@ class PaystackClient:
         res = self._request("POST", "subaccount", json_data=body)
         return res.get("data", {})
 
+    def fetch_subaccount(self, id_or_code: str) -> Dict[str, Any]:
+        """Fetch details of a Paystack subaccount by its ID or subaccount_code."""
+        if getattr(settings, "DEBUG", False) and (
+            not self.secret_key or self.secret_key.startswith("sk_test_")
+        ):
+            if getattr(settings, "PAYSTACK_MOCK_RESOLVE", True):
+                return {
+                    "subaccount_code": id_or_code,
+                    "business_name": "Academy Tuition",
+                    "settlement_bank": "058",
+                    "account_number": "0123456789",
+                    "account_name": "TEST ACCOUNT",
+                    "active": True,
+                }
+        res = self._request("GET", f"subaccount/{id_or_code}")
+        return res.get("data", {})
+
     # --- Tuition payment endpoints (§9b) ------------------------------------
 
     def initialize_transaction(
@@ -161,13 +178,14 @@ class PaystackClient:
         bearer: str = "subaccount",
         callback_url: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        currency: str = "NGN",
     ) -> Dict[str, Any]:
         """Initialize a transaction (tuition or platform subscription)."""
         body: Dict[str, Any] = {
             "email": email,
             "amount": amount_kobo,
             "reference": reference,
-            "currency": "NGN",
+            "currency": currency.upper() if currency else "NGN",
         }
         if plan_code:
             body["plan"] = plan_code

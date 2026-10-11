@@ -80,6 +80,43 @@ def confirm_academy_subaccount(
     }
 
 
+def get_academy_subaccount_status(
+    organization,
+    client: Optional[PaystackClient] = None,
+) -> Dict[str, Any]:
+    """Retrieve existing subaccount status for an academy."""
+    subaccount_code = organization.paystack_subaccount_code
+    if not subaccount_code:
+        return {
+            "is_configured": False,
+            "subaccount_code": None,
+            "account_name": None,
+            "bank_code": None,
+            "account_number": None,
+        }
+
+    client = client or PaystackClient()
+    account_name = ""
+    bank_code = ""
+    account_number = ""
+
+    try:
+        data = client.fetch_subaccount(subaccount_code)
+        account_name = data.get("account_name", "")
+        bank_code = data.get("settlement_bank", "")
+        account_number = data.get("account_number", "")
+    except Exception as exc:
+        logger.warning("Failed to fetch subaccount details from Paystack for %s: %s", subaccount_code, exc)
+
+    return {
+        "is_configured": True,
+        "subaccount_code": subaccount_code,
+        "account_name": account_name,
+        "bank_code": bank_code,
+        "account_number": account_number,
+    }
+
+
 def initialize_family_payment(
     payer: User,
     student: User,
@@ -104,6 +141,7 @@ def initialize_family_payment(
     if not organization.paystack_subaccount_code:
         raise ValidationError("Academy has not configured bank details for tuition collection yet.")
 
+    currency = getattr(organization, "currency", None) or "NGN"
     amount = pricing_agreement.agreed_rate
     if amount <= Decimal("0"):
         raise ValidationError("Pricing agreement has no payable rate.")
@@ -118,25 +156,29 @@ def initialize_family_payment(
         initiated_by=payer,
         pricing_agreement=pricing_agreement,
         amount=amount,
-        currency="NGN",
+        currency=currency,
         paystack_reference=reference,
         status=FamilyPaymentStatus.PENDING,
     )
 
     try:
-        init_data = client.initialize_transaction(
-            email=payer.email,
-            amount_kobo=amount_kobo,
-            reference=reference,
-            subaccount=organization.paystack_subaccount_code,
-            bearer="subaccount",  # Academy absorbs fees out of settlement (Decision D-009)
-            callback_url=callback_url,
-            metadata={
+        init_kwargs = {
+            "email": payer.email,
+            "amount_kobo": amount_kobo,
+            "reference": reference,
+            "bearer": "subaccount",  # Academy absorbs fees out of settlement (Decision D-009)
+            "callback_url": callback_url,
+            "currency": currency,
+            "metadata": {
                 "payment_id": payment.pk,
                 "student_id": student.pk,
                 "organization_id": organization.pk,
             },
-        )
+        }
+        if organization.paystack_subaccount_code:
+            init_kwargs["subaccount"] = organization.paystack_subaccount_code
+
+        init_data = client.initialize_transaction(**init_kwargs)
     except Exception as exc:
         payment.status = FamilyPaymentStatus.FAILED
         payment.save(update_fields=["status"])
