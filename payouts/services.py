@@ -274,7 +274,7 @@ def generate_payouts(*, organization, period_start, period_end, teacher=None):
             minutes_paid=booking.duration_minutes,
             rate_used=rate,
             amount=amount,
-            currency=PAYOUT_CURRENCY,
+            currency=getattr(organization, "currency", None) or PAYOUT_CURRENCY,
         )
         payout.save()
         result.created.append(payout)
@@ -346,7 +346,7 @@ def statement_for(*, organization, teacher, period_start, period_end):
         session_count=session_count,
         finalized_count=finalized_count,
         total_amount=totals["total_amount"] or MINIMUM_AMOUNT,
-        currency=PAYOUT_CURRENCY,
+        currency=getattr(organization, "currency", None) or PAYOUT_CURRENCY,
         status=_statement_status(session_count, finalized_count),
         payouts=list(rows),
     )
@@ -433,7 +433,7 @@ def generate_fixed_period_payouts(*, organization, period_start, period_end, tea
             period_end=period_end,
             cadence=config.fixed_period_cadence,
             amount=config.fixed_period_amount,
-            currency=PAYOUT_CURRENCY,
+            currency=getattr(org_obj, "currency", None) or PAYOUT_CURRENCY,
         )
         payout.save()
         result.created.append(payout)

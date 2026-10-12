@@ -175,6 +175,12 @@ class PricingAgreement(models.Model):
             return self.level.track.organization
         return None
 
+    @property
+    def currency(self):
+        """Operating currency inherited from the owning academy (e.g. USD, NGN, GBP)."""
+        org = self.organization
+        return getattr(org, "currency", "NGN") if org else "NGN"
+
     def _is_active_here(self, user):
         """Is ``user`` an active member/participant of the academy that owns this level?
 

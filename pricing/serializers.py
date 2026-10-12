@@ -72,6 +72,7 @@ class PricingAgreementSerializer(serializers.ModelSerializer):
     )
     approved_by = serializers.SlugRelatedField(slug_field="username", read_only=True)
     reason_display = serializers.CharField(source="get_reason_display", read_only=True)
+    currency = serializers.CharField(read_only=True)
 
     class Meta:
         model = PricingAgreement
@@ -82,6 +83,7 @@ class PricingAgreementSerializer(serializers.ModelSerializer):
             "track",
             "standard_rate",
             "agreed_rate",
+            "currency",
             "reason",
             "reason_display",
             "approved_by",
@@ -105,6 +107,7 @@ class MyPricingAgreementSerializer(serializers.ModelSerializer):
         source="level.track", slug_field="slug", read_only=True
     )
     reason_display = serializers.CharField(source="get_reason_display", read_only=True)
+    currency = serializers.CharField(read_only=True)
 
     class Meta:
         model = PricingAgreement
@@ -114,6 +117,7 @@ class MyPricingAgreementSerializer(serializers.ModelSerializer):
             "track",
             "standard_rate",
             "agreed_rate",
+            "currency",
             "reason",
             "reason_display",
             "active",

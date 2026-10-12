@@ -173,18 +173,16 @@ class MyOrganizationListView(generics.ListAPIView):
         return super().get(request, *args, **kwargs)
 
 
-class OrganizationDetailView(OrganizationScopedMixin, generics.RetrieveAPIView):
-    """GET /api/organizations/{id}/ — one academy, for its members only.
+class OrganizationDetailView(OrganizationScopedMixin, generics.RetrieveUpdateAPIView):
+    """GET/PATCH /api/organizations/{id}/ — one academy, for its members only.
 
     Knowing the id is not access. A non-member and a suspended member both get
     403, and the object is fetched through the caller's own membership rather than
     from ``Organization.objects``, so there is no queryset here that could return a
     tenant the caller does not belong to.
 
-    Every active role may read the academy — owner, admin, staff and teacher. It is
-    the organization's own name, slug and timezone; the things worth protecting
-    inside a tenant are its members and, in later phases, its students, schedules
-    and money.
+    Every active role may read the academy. Only owner and admin can update
+    academy settings such as currency, name, or timezone.
     """
 
     serializer_class = OrganizationSerializer
@@ -192,6 +190,17 @@ class OrganizationDetailView(OrganizationScopedMixin, generics.RetrieveAPIView):
 
     def get_object(self):
         return self.organization
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            if not self.caller_membership or self.caller_membership.role not in (
+                OrganizationRole.OWNER,
+                OrganizationRole.ADMIN,
+            ):
+                raise PermissionDenied(
+                    "Only an organization owner or administrator can edit organization settings."
+                )
 
     @extend_schema(
         responses={
@@ -202,6 +211,18 @@ class OrganizationDetailView(OrganizationScopedMixin, generics.RetrieveAPIView):
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        request=OrganizationSerializer,
+        responses={
+            200: OpenApiResponse(response=OrganizationSerializer),
+            400: OpenApiResponse(description="Invalid organization data."),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Only owner or admin can edit organization settings."),
+        },
+    )
+    def patch(self, request, *args, **kwargs):
+        return super().patch(request, *args, **kwargs)
 
 
 # --- Memberships -------------------------------------------------------------
