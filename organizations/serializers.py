@@ -88,11 +88,19 @@ class OrganizationSerializer(serializers.ModelSerializer):
             "timezone",
             "currency",
             "paystack_subaccount_code",
+            "paystack_subaccount_usd_code",
             "is_active",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "is_active", "paystack_subaccount_code", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "is_active",
+            "paystack_subaccount_code",
+            "paystack_subaccount_usd_code",
+            "created_at",
+            "updated_at",
+        ]
 
     def create(self, validated_data):
         creator = self.context["request"].user

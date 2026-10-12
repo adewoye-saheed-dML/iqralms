@@ -22,20 +22,37 @@ def resolve_academy_subaccount(
     bank_code: str,
     account_number: str,
     client: Optional[PaystackClient] = None,
+    currency: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve bank details with Paystack without creating a subaccount."""
     client = client or PaystackClient()
-    resolved = client.resolve_account_number(
-        account_number=account_number,
-        bank_code=bank_code,
-    )
-    account_name = resolved.get("account_name", "")
+    currency = (currency or getattr(organization, "currency", "NGN") or "NGN").upper()
+
+    account_name = ""
+    try:
+        resolved = client.resolve_account_number(
+            account_number=account_number,
+            bank_code=bank_code,
+        )
+        account_name = resolved.get("account_name", "")
+    except Exception as exc:
+        if currency != "NGN":
+            logger.info("Non-NGN bank resolution skipped for %s (%s): %s", bank_code, currency, exc)
+            account_name = organization.name
+        else:
+            raise
+
     if not account_name:
-        raise ValidationError("Could not resolve account name with Paystack.")
+        if currency != "NGN":
+            account_name = organization.name
+        else:
+            raise ValidationError("Could not resolve account name with Paystack.")
+
     return {
         "account_name": account_name,
         "bank_code": bank_code,
         "account_number": account_number,
+        "currency": currency,
     }
 
 
@@ -45,54 +62,87 @@ def confirm_academy_subaccount(
     account_number: str,
     business_name: Optional[str] = None,
     client: Optional[PaystackClient] = None,
+    currency: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Re-resolve bank details and create a Paystack subaccount for an academy."""
     client = client or PaystackClient()
     business_name = business_name or organization.name
+    currency = (currency or getattr(organization, "currency", "NGN") or "NGN").upper()
 
-    resolved = client.resolve_account_number(
-        account_number=account_number,
-        bank_code=bank_code,
-    )
-    account_name = resolved.get("account_name", "")
+    account_name = ""
+    try:
+        resolved = client.resolve_account_number(
+            account_number=account_number,
+            bank_code=bank_code,
+        )
+        account_name = resolved.get("account_name", "")
+    except Exception as exc:
+        if currency != "NGN":
+            logger.info("Non-NGN bank resolution skipped during confirmation (%s, %s): %s", bank_code, currency, exc)
+            account_name = business_name
+        else:
+            raise
+
     if not account_name:
-        raise ValidationError("Could not resolve account name with Paystack upon confirmation.")
+        if currency != "NGN":
+            account_name = business_name
+        else:
+            raise ValidationError("Could not resolve account name with Paystack upon confirmation.")
 
     subaccount_data = client.create_subaccount(
         business_name=business_name,
         settlement_bank=bank_code,
         account_number=account_number,
         percentage_charge=0.0,  # 0% platform commission (Decision D-011)
-        description=f"Tuition settlement subaccount for {business_name}",
+        description=f"Tuition settlement subaccount for {business_name} ({currency})",
+        currency=currency,
     )
     subaccount_code = subaccount_data.get("subaccount_code")
     if not subaccount_code:
         raise ValidationError("Paystack did not return a subaccount code.")
 
-    organization.paystack_subaccount_code = subaccount_code
-    organization.save(update_fields=["paystack_subaccount_code", "updated_at"])
+    update_fields = ["updated_at"]
+    if currency == "USD":
+        organization.paystack_subaccount_usd_code = subaccount_code
+        update_fields.append("paystack_subaccount_usd_code")
+        if (organization.currency or "").upper() == "USD" or not organization.paystack_subaccount_code:
+            organization.paystack_subaccount_code = subaccount_code
+            update_fields.append("paystack_subaccount_code")
+    else:
+        organization.paystack_subaccount_code = subaccount_code
+        update_fields.append("paystack_subaccount_code")
+
+    organization.save(update_fields=update_fields)
 
     return {
         "account_name": account_name,
         "subaccount_code": subaccount_code,
         "bank_code": bank_code,
         "account_number": account_number,
+        "currency": currency,
     }
 
 
 def get_academy_subaccount_status(
     organization,
     client: Optional[PaystackClient] = None,
+    currency: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Retrieve existing subaccount status for an academy."""
-    subaccount_code = organization.paystack_subaccount_code
+    currency = (currency or getattr(organization, "currency", "NGN") or "NGN").upper()
+    subaccount_code = organization.get_paystack_subaccount_code(currency)
+    if not subaccount_code and currency != "USD":
+        subaccount_code = organization.paystack_subaccount_code
+
     if not subaccount_code:
         return {
             "is_configured": False,
             "subaccount_code": None,
+            "subaccount_usd_code": organization.paystack_subaccount_usd_code,
             "account_name": None,
             "bank_code": None,
             "account_number": None,
+            "currency": currency,
         }
 
     client = client or PaystackClient()
@@ -111,9 +161,11 @@ def get_academy_subaccount_status(
     return {
         "is_configured": True,
         "subaccount_code": subaccount_code,
+        "subaccount_usd_code": organization.paystack_subaccount_usd_code,
         "account_name": account_name,
         "bank_code": bank_code,
         "account_number": account_number,
+        "currency": currency,
     }
 
 
@@ -138,17 +190,26 @@ def initialize_family_payment(
     if not organization:
         raise ValidationError("Pricing agreement has no associated organization.")
 
-    if not organization.paystack_subaccount_code:
+    currency = getattr(pricing_agreement, "currency", None) or getattr(organization, "currency", None) or "NGN"
+    currency = currency.strip().upper() if currency else "NGN"
+
+    # Match currency to appropriate subaccount code
+    subaccount_code = organization.get_paystack_subaccount_code(currency)
+    if not subaccount_code:
+        if currency == "USD" and organization.paystack_subaccount_code and (organization.currency or "").upper() != "USD":
+            raise ValidationError("Academy has not configured a USD settlement bank account for Dollar tuition payments.")
+        subaccount_code = organization.paystack_subaccount_code
+
+    if not subaccount_code:
         raise ValidationError("Academy has not configured bank details for tuition collection yet.")
 
-    currency = getattr(organization, "currency", None) or "NGN"
     amount = pricing_agreement.agreed_rate
     if amount <= Decimal("0"):
         raise ValidationError("Pricing agreement has no payable rate.")
 
     client = client or PaystackClient()
     reference = f"iqra_{uuid.uuid4().hex[:16]}"
-    amount_kobo = int(amount * 100)
+    amount_subunit = int(amount * 100)
 
     payment = FamilyPayment.objects.create(
         student=student,
@@ -164,7 +225,7 @@ def initialize_family_payment(
     try:
         init_kwargs = {
             "email": payer.email,
-            "amount_kobo": amount_kobo,
+            "amount_kobo": amount_subunit,
             "reference": reference,
             "bearer": "subaccount",  # Academy absorbs fees out of settlement (Decision D-009)
             "callback_url": callback_url,
@@ -175,8 +236,8 @@ def initialize_family_payment(
                 "organization_id": organization.pk,
             },
         }
-        if organization.paystack_subaccount_code:
-            init_kwargs["subaccount"] = organization.paystack_subaccount_code
+        if subaccount_code:
+            init_kwargs["subaccount"] = subaccount_code
 
         init_data = client.initialize_transaction(**init_kwargs)
     except Exception as exc:

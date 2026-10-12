@@ -283,6 +283,80 @@ paths:
           description: Not an owner or administrator here.
         '404':
           description: No such teaching terms in this organization.
+  /api/accounts/organizations/{organization_pk}/teacher-configurations/mine/:
+    get:
+      operationId: accounts_organizations_teacher_configurations_mine_retrieve
+      description: |-
+        GET/PATCH the teacher's own teaching configuration and payout bank details.
+
+        An active teacher in the academy may read their terms and update their settlement bank details
+        (bank_code, bank_name, account_number, account_name). Teachers cannot alter their rates,
+        approved status, or hours.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - accounts
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationTeacherConfiguration'
+          description: ''
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Not a teacher in this organization.
+    patch:
+      operationId: accounts_organizations_teacher_configurations_mine_partial_update
+      description: |-
+        GET/PATCH the teacher's own teaching configuration and payout bank details.
+
+        An active teacher in the academy may read their terms and update their settlement bank details
+        (bank_code, bank_name, account_number, account_name). Teachers cannot alter their rates,
+        approved status, or hours.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - accounts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedTeacherPayoutAccountUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedTeacherPayoutAccountUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedTeacherPayoutAccountUpdate'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationTeacherConfiguration'
+          description: ''
+        '400':
+          description: Invalid account details.
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Not a teacher in this organization.
   /api/accounts/parent-links/:
     post:
       operationId: accounts_parent_links_create
@@ -1266,13 +1340,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/CustomLogin'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/CustomLogin'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/CustomLogin'
         required: true
       security:
       - tokenAuth: []
@@ -1453,7 +1527,12 @@ paths:
   /api/billing/status/:
     get:
       operationId: billing_status_retrieve
-      description: View subscription status for an academy (Owner/Admin only).
+      description: |-
+        View subscription status for an academy.
+
+        Accessible to any active member of the academy (Owner, Admin, Teacher,
+        Student, Parent) as well as parents of enrolled students, so their
+        respective dashboards can verify the academy's platform subscription standing.
       summary: Get platform subscription status for an academy
       parameters:
       - in: query
@@ -3334,17 +3413,15 @@ paths:
     get:
       operationId: organizations_retrieve
       description: |-
-        GET /api/organizations/{id}/ — one academy, for its members only.
+        GET/PATCH /api/organizations/{id}/ — one academy, for its members only.
 
         Knowing the id is not access. A non-member and a suspended member both get
         403, and the object is fetched through the caller's own membership rather than
         from ``Organization.objects``, so there is no queryset here that could return a
         tenant the caller does not belong to.
 
-        Every active role may read the academy — owner, admin, staff and teacher. It is
-        the organization's own name, slug and timezone; the things worth protecting
-        inside a tenant are its members and, in later phases, its students, schedules
-        and money.
+        Every active role may read the academy. Only owner and admin can update
+        academy settings such as currency, name, or timezone.
       parameters:
       - in: path
         name: id
@@ -3367,6 +3444,95 @@ paths:
           description: Not authenticated.
         '403':
           description: Not an active member of this organization.
+    put:
+      operationId: organizations_update
+      description: |-
+        GET/PATCH /api/organizations/{id}/ — one academy, for its members only.
+
+        Knowing the id is not access. A non-member and a suspended member both get
+        403, and the object is fetched through the caller's own membership rather than
+        from ``Organization.objects``, so there is no queryset here that could return a
+        tenant the caller does not belong to.
+
+        Every active role may read the academy. Only owner and admin can update
+        academy settings such as currency, name, or timezone.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Organization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Organization'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+    patch:
+      operationId: organizations_partial_update
+      description: |-
+        GET/PATCH /api/organizations/{id}/ — one academy, for its members only.
+
+        Knowing the id is not access. A non-member and a suspended member both get
+        403, and the object is fetched through the caller's own membership rather than
+        from ``Organization.objects``, so there is no queryset here that could return a
+        tenant the caller does not belong to.
+
+        Every active role may read the academy. Only owner and admin can update
+        academy settings such as currency, name, or timezone.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - organizations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganization'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganization'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedOrganization'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: ''
+        '400':
+          description: Invalid organization data.
+        '401':
+          description: Not authenticated.
+        '403':
+          description: Only owner or admin can edit organization settings.
   /api/organizations/mine/:
     get:
       operationId: organizations_mine_list
@@ -3567,6 +3733,39 @@ paths:
           description: ''
         '403':
           description: Only academy owner or admin can resolve bank details.
+  /api/payments/subaccount/status/:
+    get:
+      operationId: payments_subaccount_status_retrieve
+      description: Retrieve settlement subaccount configuration status.
+      summary: Get current tuition settlement subaccount status for an academy
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: Currency (NGN, USD)
+      - in: query
+        name: organization_id
+        schema:
+          type: integer
+        description: Organization ID
+        required: true
+      tags:
+      - payments
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubaccountStatusResponse'
+          description: ''
+        '400':
+          description: Missing organization_id parameter.
+        '403':
+          description: Only academy members or admins can view settlement details.
   /api/payments/verify/{reference}/:
     get:
       operationId: payments_verify_retrieve
@@ -3589,6 +3788,30 @@ paths:
           description: Payment verification details and Paystack transaction status.
         '403':
           description: Unauthorized to view this payment.
+  /api/payments/webhook/:
+    post:
+      operationId: payments_webhook_create
+      description: Unified webhook endpoint for all Paystack events.
+      summary: Unified Paystack webhook endpoint
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaystackWebhookPayload'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          description: Webhook event processed or acknowledged.
   /api/payouts/organizations/{organization_pk}/{id}/finalize/:
     post:
       operationId: payouts_organizations_finalize_create
@@ -5945,6 +6168,23 @@ components:
         * `hourly` - Hourly
         * `per_class` - Per Class
         * `fixed_period` - Fixed Period
+    CustomLogin:
+      type: object
+      description: Custom login serializer that safely handles multiple users with
+        the same email.
+      properties:
+        username:
+          type: string
+        email:
+          oneOf:
+          - type: string
+            format: email
+          - type: string
+            maxLength: 0
+        password:
+          type: string
+      required:
+      - password
     CustomPasswordReset:
       type: object
       description: Custom password reset serializer providing frontend URL context.
@@ -6732,21 +6972,6 @@ components:
       - start_time
       - timezone
       - weekday
-    Login:
-      type: object
-      properties:
-        username:
-          type: string
-        email:
-          oneOf:
-          - type: string
-            format: email
-          - type: string
-            maxLength: 0
-        password:
-          type: string
-      required:
-      - password
     MaterialTypeEnum:
       enum:
       - pdf
@@ -6865,6 +7090,9 @@ components:
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
           readOnly: true
           description: What was actually negotiated. May equal standard_rate.
+        currency:
+          type: string
+          readOnly: true
         reason:
           allOf:
           - $ref: '#/components/schemas/ReasonEnum'
@@ -6880,6 +7108,7 @@ components:
       required:
       - active
       - agreed_rate
+      - currency
       - id
       - level
       - reason
@@ -7257,6 +7486,23 @@ components:
           description: IANA zone name, e.g. 'Africa/Lagos'. The academy's own zone,
             validated by the same rule as User.timezone.
           maxLength: 64
+        currency:
+          type: string
+          description: Operating currency for tuition and billing (e.g. NGN, USD,
+            GBP, EUR).
+          maxLength: 3
+        paystack_subaccount_code:
+          type: string
+          readOnly: true
+          nullable: true
+          description: Paystack subaccount code for routing tuition directly to the
+            academy bank account.
+        paystack_subaccount_usd_code:
+          type: string
+          readOnly: true
+          nullable: true
+          description: Paystack subaccount code for routing USD tuition to the academy
+            domiciliary bank account.
         is_active:
           type: boolean
           readOnly: true
@@ -7276,6 +7522,8 @@ components:
       - id
       - is_active
       - name
+      - paystack_subaccount_code
+      - paystack_subaccount_usd_code
       - slug
       - timezone
       - updated_at
@@ -7562,6 +7810,9 @@ components:
         username:
           type: string
           readOnly: true
+        teacher_name:
+          type: string
+          readOnly: true
         organization:
           type: integer
           readOnly: true
@@ -7570,6 +7821,10 @@ components:
           readOnly: true
           description: Capacity dial for this academy only. Scheduling still enforces
             TeacherProfile.max_weekly_hours until scheduling tenancy lands.
+        declared_weekly_hours:
+          type: number
+          format: double
+          readOnly: true
         compensation_type:
           allOf:
           - $ref: '#/components/schemas/CompensationTypeEnum'
@@ -7619,6 +7874,18 @@ components:
           readOnly: true
           description: Approved to teach *here*. An academy approves its own teachers,
             so a teacher may be approved by one and not another.
+        bank_code:
+          type: string
+          readOnly: true
+        bank_name:
+          type: string
+          readOnly: true
+        account_number:
+          type: string
+          readOnly: true
+        account_name:
+          type: string
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7628,9 +7895,14 @@ components:
           format: date-time
           readOnly: true
       required:
+      - account_name
+      - account_number
       - approved
+      - bank_code
+      - bank_name
       - compensation_type
       - created_at
+      - declared_weekly_hours
       - fixed_period_amount
       - fixed_period_cadence
       - hourly_payout_rate
@@ -7639,6 +7911,7 @@ components:
       - membership
       - organization
       - per_class_rate
+      - teacher_name
       - updated_at
       - user
       - username
@@ -7851,6 +8124,68 @@ components:
           nullable: true
         group_eligible:
           type: boolean
+    PatchedOrganization:
+      type: object
+      description: |-
+        An academy — the read shape, and the one that creates a tenant.
+
+        ``is_active`` is read-only: disabling an academy is a later phase's workflow
+        with its own consequences for the people inside it, not a field a creation
+        request gets to set. ``timezone`` is validated by the model's own IANA
+        validator, which the ``ModelSerializer`` picks up, so the API and a direct ORM
+        write reject the same strings.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          description: Human-readable institution name, e.g. 'Al-Huda Quran Academy'.
+            Not unique — two academies may legitimately choose similar names.
+          maxLength: 120
+        slug:
+          type: string
+          description: Machine-readable identifier, e.g. 'al-huda-quran-academy'.
+            Globally unique, because the organization is itself the tenant and so
+            has nothing to be scoped within.
+          maxLength: 64
+          pattern: ^[-a-zA-Z0-9_]+$
+        timezone:
+          type: string
+          description: IANA zone name, e.g. 'Africa/Lagos'. The academy's own zone,
+            validated by the same rule as User.timezone.
+          maxLength: 64
+        currency:
+          type: string
+          description: Operating currency for tuition and billing (e.g. NGN, USD,
+            GBP, EUR).
+          maxLength: 3
+        paystack_subaccount_code:
+          type: string
+          readOnly: true
+          nullable: true
+          description: Paystack subaccount code for routing tuition directly to the
+            academy bank account.
+        paystack_subaccount_usd_code:
+          type: string
+          readOnly: true
+          nullable: true
+          description: Paystack subaccount code for routing USD tuition to the academy
+            domiciliary bank account.
+        is_active:
+          type: boolean
+          readOnly: true
+          description: Whether the academy is operating. Disabling an organization
+            is a later phase's workflow, so nothing reads this yet — access is decided
+            by active membership alone (see learnings.md).
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
     PatchedOrganizationMembershipUpdate:
       type: object
       description: |-
@@ -7903,6 +8238,18 @@ components:
           - $ref: '#/components/schemas/NullEnum'
         approved:
           type: boolean
+        bank_code:
+          type: string
+          maxLength: 20
+        bank_name:
+          type: string
+          maxLength: 100
+        account_number:
+          type: string
+          maxLength: 20
+        account_name:
+          type: string
+          maxLength: 150
     PatchedStudentAssignment:
       type: object
       properties:
@@ -8008,6 +8355,22 @@ components:
         teacher_id:
           type: integer
           nullable: true
+    PatchedTeacherPayoutAccountUpdate:
+      type: object
+      description: Teacher updating their settlement bank details on their own configuration.
+      properties:
+        bank_code:
+          type: string
+          maxLength: 20
+        bank_name:
+          type: string
+          maxLength: 100
+        account_number:
+          type: string
+          maxLength: 20
+        account_name:
+          type: string
+          maxLength: 150
     PatchedTeacherTrackUpdate:
       type: object
       description: |-
@@ -8339,6 +8702,9 @@ components:
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
           readOnly: true
           description: What was actually negotiated. May equal standard_rate.
+        currency:
+          type: string
+          readOnly: true
         reason:
           allOf:
           - $ref: '#/components/schemas/ReasonEnum'
@@ -8366,6 +8732,7 @@ components:
       - active
       - agreed_rate
       - approved_by
+      - currency
       - id
       - level
       - notes
@@ -8401,6 +8768,9 @@ components:
           format: decimal
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
           description: What was actually negotiated. May equal standard_rate.
+        currency:
+          type: string
+          maxLength: 3
         reason:
           $ref: '#/components/schemas/ReasonEnum'
         notes:
@@ -8514,16 +8884,20 @@ components:
       - detail
     RoleEnum:
       enum:
+      - teacher
       - lead
       - sub
       - student
       - parent
+      - owner
       type: string
       description: |-
-        * `lead` - Lead teacher
-        * `sub` - Sub teacher
+        * `teacher` - Teacher
+        * `lead` - Teacher
+        * `sub` - Teacher
         * `student` - Student
         * `parent` - Parent
+        * `owner` - Academy owner
     RouteRequest:
       type: object
       description: |-
@@ -8586,14 +8960,18 @@ components:
         * `cohort_assigned` - Assigned a seat in an open cohort
     SelfRegisterableRoleEnum:
       enum:
+      - teacher
       - sub
       - student
       - parent
+      - owner
       type: string
       description: |-
+        * `teacher` - teacher
         * `sub` - sub
         * `student` - student
         * `parent` - parent
+        * `owner` - owner
     SessionAssessmentCreate:
       type: object
       description: |-
@@ -9202,6 +9580,10 @@ components:
         business_name:
           type: string
           default: ''
+        currency:
+          type: string
+          default: NGN
+          maxLength: 3
       required:
       - account_number
       - bank_code
@@ -9248,11 +9630,40 @@ components:
           type: string
         account_number:
           type: string
+        currency:
+          type: string
+          default: NGN
       required:
       - account_name
       - account_number
       - bank_code
       - subaccount_code
+    SubaccountStatusResponse:
+      type: object
+      description: Status of an academy's settlement subaccount configuration.
+      properties:
+        is_configured:
+          type: boolean
+        subaccount_code:
+          type: string
+          nullable: true
+        subaccount_usd_code:
+          type: string
+          nullable: true
+        account_name:
+          type: string
+          nullable: true
+        bank_code:
+          type: string
+          nullable: true
+        account_number:
+          type: string
+          nullable: true
+        currency:
+          type: string
+          default: NGN
+      required:
+      - is_configured
     SubmissionTypeEnum:
       enum:
       - audio_recitation

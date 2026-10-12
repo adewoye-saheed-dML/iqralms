@@ -129,6 +129,15 @@ class PricingAgreement(models.Model):
             "student or their parent — see serializers.py."
         ),
     )
+    currency = models.CharField(
+        max_length=3,
+        blank=True,
+        default="",
+        help_text=(
+            "Operating currency for this student agreement (e.g. USD, NGN). "
+            "If blank, automatically populated from the owning academy's currency."
+        ),
+    )
     active = models.BooleanField(
         default=True,
         help_text=(
@@ -174,12 +183,6 @@ class PricingAgreement(models.Model):
         if self.level_id:
             return self.level.track.organization
         return None
-
-    @property
-    def currency(self):
-        """Operating currency inherited from the owning academy (e.g. USD, NGN, GBP)."""
-        org = self.organization
-        return getattr(org, "currency", "NGN") if org else "NGN"
 
     def _is_active_here(self, user):
         """Is ``user`` an active member/participant of the academy that owns this level?
@@ -288,6 +291,12 @@ class PricingAgreement(models.Model):
                         code="invalid_approver_role",
                         params={"role": approver.role},
                     )
+
+        if not self.currency:
+            org = self.organization
+            self.currency = (getattr(org, "currency", "NGN") if org else "NGN").upper()
+        else:
+            self.currency = self.currency.strip().upper()
 
         if errors:
             raise ValidationError(errors)

@@ -9,8 +9,9 @@ class SubaccountResolveSerializer(serializers.Serializer):
     """Payload to resolve an academy's settlement bank details."""
 
     organization_id = serializers.IntegerField(required=True)
-    bank_code = serializers.CharField(required=True, max_length=10)
-    account_number = serializers.CharField(required=True, max_length=20)
+    bank_code = serializers.CharField(required=True, max_length=50)
+    account_number = serializers.CharField(required=True, max_length=34)
+    currency = serializers.CharField(required=False, allow_blank=True, default="NGN", max_length=10)
 
 
 class SubaccountResolveResponseSerializer(serializers.Serializer):
@@ -19,15 +20,17 @@ class SubaccountResolveResponseSerializer(serializers.Serializer):
     account_name = serializers.CharField()
     bank_code = serializers.CharField()
     account_number = serializers.CharField()
+    currency = serializers.CharField(required=False, default="NGN")
 
 
 class SubaccountConfirmSerializer(serializers.Serializer):
     """Payload to confirm and create an academy's settlement subaccount."""
 
     organization_id = serializers.IntegerField(required=True)
-    bank_code = serializers.CharField(required=True, max_length=10)
-    account_number = serializers.CharField(required=True, max_length=20)
+    bank_code = serializers.CharField(required=True, max_length=50)
+    account_number = serializers.CharField(required=True, max_length=34)
     business_name = serializers.CharField(required=False, allow_blank=True, default="")
+    currency = serializers.CharField(required=False, allow_blank=True, default="NGN", max_length=10)
 
 
 class SubaccountSetupResponseSerializer(serializers.Serializer):
@@ -37,6 +40,7 @@ class SubaccountSetupResponseSerializer(serializers.Serializer):
     subaccount_code = serializers.CharField()
     bank_code = serializers.CharField()
     account_number = serializers.CharField()
+    currency = serializers.CharField(required=False, default="NGN")
 
 
 class SubaccountStatusResponseSerializer(serializers.Serializer):
@@ -44,9 +48,11 @@ class SubaccountStatusResponseSerializer(serializers.Serializer):
 
     is_configured = serializers.BooleanField()
     subaccount_code = serializers.CharField(allow_null=True, required=False)
+    subaccount_usd_code = serializers.CharField(allow_null=True, required=False)
     account_name = serializers.CharField(allow_null=True, required=False)
     bank_code = serializers.CharField(allow_null=True, required=False)
     account_number = serializers.CharField(allow_null=True, required=False)
+    currency = serializers.CharField(required=False, default="NGN")
 
 
 class PaymentInitializeSerializer(serializers.Serializer):

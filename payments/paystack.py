@@ -134,10 +134,12 @@ class PaystackClient:
         account_number: str,
         percentage_charge: float = 0.0,
         description: str = "",
+        currency: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a Paystack Subaccount for an academy.
 
         percentage_charge is 0.0 per Decision D-011 (IqraLMS takes 0% cut).
+        Supports currency (e.g. NGN, USD).
         """
         body = {
             "business_name": business_name,
@@ -146,6 +148,8 @@ class PaystackClient:
             "percentage_charge": percentage_charge,
             "description": description or f"Subaccount for {business_name}",
         }
+        if currency:
+            body["currency"] = currency.upper()
         res = self._request("POST", "subaccount", json_data=body)
         return res.get("data", {})
 

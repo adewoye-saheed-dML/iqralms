@@ -41,6 +41,8 @@ automatically a student. The two answer different questions and neither implies 
 other.
 """
 
+from typing import Optional
+
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
@@ -144,6 +146,12 @@ class Organization(models.Model):
         blank=True,
         help_text="Paystack subaccount code for routing tuition directly to the academy bank account.",
     )
+    paystack_subaccount_usd_code = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        help_text="Paystack subaccount code for routing USD tuition to the academy domiciliary bank account.",
+    )
     currency = models.CharField(
         max_length=3,
         default="NGN",
@@ -151,6 +159,15 @@ class Organization(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def get_paystack_subaccount_code(self, currency: str = "NGN") -> Optional[str]:
+        """Resolve the appropriate Paystack subaccount code based on transaction currency."""
+        curr = (currency or "NGN").upper()
+        if curr == "USD":
+            return self.paystack_subaccount_usd_code or (
+                self.paystack_subaccount_code if (self.currency or "").upper() == "USD" else None
+            )
+        return self.paystack_subaccount_code
 
     class Meta:
         ordering = ["name", "pk"]

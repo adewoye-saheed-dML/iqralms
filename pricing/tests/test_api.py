@@ -157,6 +157,22 @@ class PricingAgreementCreateAPITests(PricingWorld):
             response.data["reason_display"], "Discount — financial hardship"
         )
 
+    def test_create_agreement_with_explicit_currency(self):
+        """A lead can record a rate in USD for a diaspora student while academy is in NGN."""
+        response = self.post_agreement(currency="USD")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["currency"], "USD")
+        agreement = PricingAgreement.objects.get(pk=response.data["id"])
+        self.assertEqual(agreement.currency, "USD")
+
+    def test_create_agreement_defaults_to_organization_currency(self):
+        """When currency is omitted, it inherits the organization operating currency."""
+        self.organization.currency = "NGN"
+        self.organization.save()
+        response = self.post_agreement()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["currency"], "NGN")
+
     def test_an_unknown_reason_is_a_400(self):
         response = self.post_agreement(reason="mates_rates")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

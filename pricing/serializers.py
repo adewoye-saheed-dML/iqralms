@@ -137,11 +137,23 @@ class PricingAgreementCreateSerializer(serializers.ModelSerializer):
 
     student = serializers.PrimaryKeyRelatedField(queryset=User.objects.none())
     level = serializers.PrimaryKeyRelatedField(queryset=Level.objects.none())
+    currency = serializers.CharField(max_length=3, required=False, allow_blank=True)
 
     class Meta:
         model = PricingAgreement
-        fields = ["student", "level", "standard_rate", "agreed_rate", "reason", "notes"]
-        extra_kwargs = {"notes": {"required": False}}
+        fields = [
+            "student",
+            "level",
+            "standard_rate",
+            "agreed_rate",
+            "currency",
+            "reason",
+            "notes",
+        ]
+        extra_kwargs = {
+            "notes": {"required": False},
+            "currency": {"required": False},
+        }
 
     def get_fields(self):
         fields = super().get_fields()

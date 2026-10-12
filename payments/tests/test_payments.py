@@ -96,6 +96,79 @@ class SubaccountSetupTests(TestCase):
 
     @patch("payments.paystack.PaystackClient.resolve_account_number")
     @patch("payments.paystack.PaystackClient.create_subaccount")
+    def test_owner_can_confirm_usd_subaccount(self, mock_sub, mock_resolve):
+        mock_resolve.return_value = {
+            "account_name": "Noor Academy USD Domiciliary",
+            "account_number": "0123456789",
+        }
+        mock_sub.return_value = {
+            "subaccount_code": "SUB_noor_usd",
+            "account_name": "Noor Academy USD Domiciliary",
+        }
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/payments/subaccount/confirm/",
+            {
+                "organization_id": self.org.pk,
+                "bank_code": "058",
+                "account_number": "0123456789",
+                "business_name": "Noor Academy USD",
+                "currency": "USD",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["subaccount_code"], "SUB_noor_usd")
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.paystack_subaccount_usd_code, "SUB_noor_usd")
+
+    @patch("payments.paystack.PaystackClient.resolve_account_number")
+    def test_non_ngn_resolve_falls_back_to_org_name_if_paystack_fails(self, mock_resolve):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        mock_resolve.side_effect = DRFValidationError("Account resolution not supported for international bank.")
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/payments/subaccount/resolve/",
+            {
+                "organization_id": self.org.pk,
+                "bank_code": "TG001",
+                "account_number": "TG53TG0001000123456789",
+                "currency": "XOF",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["account_name"], self.org.name)
+        self.assertEqual(response.data["currency"], "XOF")
+
+    @patch("payments.paystack.PaystackClient.resolve_account_number")
+    @patch("payments.paystack.PaystackClient.create_subaccount")
+    def test_non_ngn_confirm_succeeds_even_if_bank_resolve_fails(self, mock_sub, mock_resolve):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        mock_resolve.side_effect = DRFValidationError("Account resolution not supported.")
+        mock_sub.return_value = {"subaccount_code": "SUB_togo_xof"}
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/payments/subaccount/confirm/",
+            {
+                "organization_id": self.org.pk,
+                "bank_code": "TG001",
+                "account_number": "TG53TG0001000123456789",
+                "business_name": "Togo Quran Academy",
+                "currency": "XOF",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["subaccount_code"], "SUB_togo_xof")
+        self.assertEqual(response.data["currency"], "XOF")
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.paystack_subaccount_code, "SUB_togo_xof")
+
+    @patch("payments.paystack.PaystackClient.resolve_account_number")
+    @patch("payments.paystack.PaystackClient.create_subaccount")
     def test_failed_bank_resolution_does_not_create_subaccount(self, mock_sub, mock_resolve):
         from rest_framework.exceptions import ValidationError as DRFValidationError
         mock_resolve.side_effect = DRFValidationError("Could not resolve account name.")
@@ -245,6 +318,8 @@ class PaymentInitializationAndVerificationTests(TestCase):
     def test_adult_student_can_initialize_tuition_payment_in_usd(self, mock_init):
         self.org.currency = "USD"
         self.org.save()
+        self.agreement.currency = "USD"
+        self.agreement.save()
         mock_init.return_value = {
             "authorization_url": "https://checkout.paystack.com/auth_usd_123",
             "access_code": "acc_usd_123",
@@ -264,6 +339,62 @@ class PaymentInitializationAndVerificationTests(TestCase):
         # Ensure Paystack client received USD
         _, kwargs = mock_init.call_args
         self.assertEqual(kwargs["currency"], "USD")
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_mixed_currency_student_billed_in_usd_with_usd_subaccount(self, mock_init):
+        # Academy default currency is NGN, with an NGN subaccount and a USD domiciliary subaccount
+        self.org.currency = "NGN"
+        self.org.paystack_subaccount_code = "SUB_ngn_local"
+        self.org.paystack_subaccount_usd_code = "SUB_usd_domiciliary"
+        self.org.save()
+
+        # Student is abroad in the US with an explicit USD agreement
+        self.agreement.currency = "USD"
+        self.agreement.agreed_rate = Decimal("100.00")
+        self.agreement.save()
+
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/auth_usd_diaspora",
+            "access_code": "acc_usd_diaspora",
+            "reference": "ref_usd_diaspora",
+        }
+
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            "/api/payments/initialize/",
+            {"pricing_agreement_id": self.agreement.pk},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["currency"], "USD")
+        self.assertEqual(response.data["amount"], "100.00")
+
+        # Paystack was called with the USD subaccount and amount in cents (100 * 100)
+        _, kwargs = mock_init.call_args
+        self.assertEqual(kwargs["currency"], "USD")
+        self.assertEqual(kwargs["subaccount"], "SUB_usd_domiciliary")
+        self.assertEqual(kwargs["amount_kobo"], 10000)
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_mixed_currency_fails_safely_if_usd_subaccount_not_configured(self, mock_init):
+        # Academy is in NGN with only an NGN subaccount
+        self.org.currency = "NGN"
+        self.org.paystack_subaccount_code = "SUB_ngn_only"
+        self.org.paystack_subaccount_usd_code = None
+        self.org.save()
+
+        self.agreement.currency = "USD"
+        self.agreement.save()
+
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            "/api/payments/initialize/",
+            {"pricing_agreement_id": self.agreement.pk},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("USD settlement bank account", str(response.data))
+        mock_init.assert_not_called()
 
     @patch("payments.paystack.PaystackClient.initialize_transaction")
     def test_linked_parent_can_initialize_tuition_payment_for_child(self, mock_init):

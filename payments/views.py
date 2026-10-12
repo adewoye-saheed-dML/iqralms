@@ -3,6 +3,7 @@
 import json
 import logging
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import permissions, serializers, status
@@ -93,6 +94,7 @@ class SubaccountResolveView(APIView):
                 organization=organization,
                 bank_code=data["bank_code"],
                 account_number=data["account_number"],
+                currency=data.get("currency"),
             )
         except PaystackAPIError as exc:
             return _paystack_error_response(exc)
@@ -139,6 +141,7 @@ class SubaccountConfirmView(APIView):
                 bank_code=data["bank_code"],
                 account_number=data["account_number"],
                 business_name=data.get("business_name"),
+                currency=data.get("currency"),
             )
         except PaystackAPIError as exc:
             return _paystack_error_response(exc)
@@ -150,6 +153,7 @@ class SubaccountConfirmView(APIView):
     summary="Get current tuition settlement subaccount status for an academy",
     parameters=[
         OpenApiParameter(name="organization_id", description="Organization ID", required=True, type=int),
+        OpenApiParameter(name="currency", description="Currency (NGN, USD)", required=False, type=str),
     ],
     responses={
         200: SubaccountStatusResponseSerializer,
@@ -182,7 +186,8 @@ class SubaccountStatusView(APIView):
         if not is_owner_or_admin:
             raise PermissionDenied("Only academy owners or administrators can view settlement bank details.")
 
-        status_data = get_academy_subaccount_status(organization)
+        currency = request.query_params.get("currency")
+        status_data = get_academy_subaccount_status(organization, currency=currency)
         return Response(SubaccountStatusResponseSerializer(status_data).data, status=status.HTTP_200_OK)
 
 
@@ -298,6 +303,8 @@ class PaymentInitializeView(APIView):
                 pricing_agreement=pricing_agreement,
                 callback_url=callback_url,
             )
+        except DjangoValidationError as exc:
+            raise ValidationError(getattr(exc, "message_dict", None) or {"detail": exc.messages})
         except PaystackAPIError as exc:
             return _paystack_error_response(exc)
 
