@@ -24,6 +24,7 @@ from django.urls import path
 from .views import (
     MeView,
     MyChildrenView,
+    MyOrganizationTeacherConfigurationView,
     OrganizationChildrenView,
     OrganizationTeacherConfigurationDetailView,
     OrganizationTeacherConfigurationListCreateView,
@@ -47,6 +48,11 @@ urlpatterns = [
         "organizations/<int:organization_pk>/teacher-configurations/",
         OrganizationTeacherConfigurationListCreateView.as_view(),
         name="organization-teacher-configuration-list",
+    ),
+    path(
+        "organizations/<int:organization_pk>/teacher-configurations/mine/",
+        MyOrganizationTeacherConfigurationView.as_view(),
+        name="my-organization-teacher-configuration",
     ),
     path(
         "organizations/<int:organization_pk>/teacher-configurations/<int:pk>/",

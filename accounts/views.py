@@ -69,6 +69,7 @@ from .serializers import (
     OrganizationTeacherConfigurationUpdateSerializer,
     ParentLinkCreateSerializer,
     RegisterSerializer,
+    TeacherPayoutAccountUpdateSerializer,
     UserSerializer,
 )
 from .tenancy import children_in_organization
@@ -395,3 +396,81 @@ class OrganizationTeacherConfigurationDetailView(
             configuration, context=self.get_serializer_context()
         ).data
         return Response(body, status=status.HTTP_200_OK)
+
+
+class MyOrganizationTeacherConfigurationView(
+    TeacherConfigurationScopedMixin, generics.RetrieveUpdateAPIView
+):
+    """GET/PATCH the teacher's own teaching configuration and payout bank details.
+
+    An active teacher in the academy may read their terms and update their settlement bank details
+    (bank_code, bank_name, account_number, account_name). Teachers cannot alter their rates,
+    approved status, or hours.
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_serializer_class(self):
+        if self.request.method == "PATCH":
+            return TeacherPayoutAccountUpdateSerializer
+        return OrganizationTeacherConfigurationSerializer
+
+    def get_object(self):
+        user = self.request.user
+        membership = self.caller_membership
+        if not user.is_teacher and getattr(membership, "role", "") != "teacher":
+            raise PermissionDenied("Only teachers can access their teaching configuration.")
+
+        config = OrganizationTeacherConfiguration.objects.filter(membership=membership).first()
+        if not config:
+            config = OrganizationTeacherConfiguration.objects.create(
+                membership=membership,
+                approved=True,
+                max_weekly_hours=20,
+                hourly_payout_rate=15.00,
+            )
+        return config
+
+    @extend_schema(
+        responses={
+            200: OpenApiResponse(response=OrganizationTeacherConfigurationSerializer),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Not a teacher in this organization."),
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        config = self.get_object()
+        serializer = OrganizationTeacherConfigurationSerializer(
+            config, context=self.get_serializer_context()
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=TeacherPayoutAccountUpdateSerializer,
+        responses={
+            200: OpenApiResponse(response=OrganizationTeacherConfigurationSerializer),
+            400: OpenApiResponse(description="Invalid account details."),
+            401: OpenApiResponse(description="Not authenticated."),
+            403: OpenApiResponse(description="Not a teacher in this organization."),
+        },
+    )
+    def patch(self, request, *args, **kwargs):
+        configuration = self.get_object()
+        serializer = self.get_serializer(configuration, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        configuration = serializer.save()
+
+        # Sync to teacher profile if present
+        profile = getattr(configuration.membership.user, "teacher_profile", None)
+        if profile:
+            for field in ("bank_code", "bank_name", "account_number", "account_name"):
+                if field in serializer.validated_data:
+                    setattr(profile, field, serializer.validated_data[field])
+            profile.save()
+
+        body = OrganizationTeacherConfigurationSerializer(
+            configuration, context=self.get_serializer_context()
+        ).data
+        return Response(body, status=status.HTTP_200_OK)
+

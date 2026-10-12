@@ -302,6 +302,11 @@ class OrganizationTeacherConfigurationSerializer(serializers.ModelSerializer):
         source="membership.organization", read_only=True
     )
 
+    bank_code = serializers.CharField(source="effective_bank_code", read_only=True)
+    bank_name = serializers.CharField(source="effective_bank_name", read_only=True)
+    account_number = serializers.CharField(source="effective_account_number", read_only=True)
+    account_name = serializers.CharField(source="effective_account_name", read_only=True)
+
     class Meta:
         model = OrganizationTeacherConfiguration
         fields = [
@@ -319,6 +324,10 @@ class OrganizationTeacherConfigurationSerializer(serializers.ModelSerializer):
             "fixed_period_amount",
             "fixed_period_cadence",
             "approved",
+            "bank_code",
+            "bank_name",
+            "account_number",
+            "account_name",
             "created_at",
             "updated_at",
         ]
@@ -459,6 +468,10 @@ class OrganizationTeacherConfigurationUpdateSerializer(serializers.Serializer):
         choices=FixedPeriodCadence.choices, required=False, allow_null=True
     )
     approved = serializers.BooleanField(required=False)
+    bank_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    bank_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    account_number = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    account_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
 
     def validate(self, attrs):
         if not attrs:
@@ -476,7 +489,36 @@ class OrganizationTeacherConfigurationUpdateSerializer(serializers.Serializer):
             "fixed_period_amount",
             "fixed_period_cadence",
             "approved",
+            "bank_code",
+            "bank_name",
+            "account_number",
+            "account_name",
         ):
+            if field in validated_data:
+                setattr(configuration, field, validated_data[field])
+        try:
+            configuration.save()
+        except DjangoValidationError as exc:
+            raise as_drf_error(exc) from exc
+        return configuration
+
+
+class TeacherPayoutAccountUpdateSerializer(serializers.Serializer):
+    """Teacher updating their settlement bank details on their own configuration."""
+
+    bank_code = serializers.CharField(max_length=20, required=True)
+    bank_name = serializers.CharField(max_length=100, required=True)
+    account_number = serializers.CharField(max_length=20, required=True)
+    account_name = serializers.CharField(max_length=150, required=True)
+
+    def validate_account_number(self, value):
+        val = value.strip().replace(" ", "")
+        if not val.isdigit() or len(val) < 10:
+            raise serializers.ValidationError("Account number must be at least 10 digits.")
+        return val
+
+    def update(self, configuration, validated_data):
+        for field in ("bank_code", "bank_name", "account_number", "account_name"):
             if field in validated_data:
                 setattr(configuration, field, validated_data[field])
         try:

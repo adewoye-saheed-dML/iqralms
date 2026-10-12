@@ -434,3 +434,43 @@ class TeacherConfigurationReadAndUpdateAPITests(APITestCase):
         self.client.force_authenticate(user=admin)
         response = self.client.get(configurations_url(self.organization))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_teacher_can_view_and_update_payout_bank_details_and_owner_sees_it(self):
+        """Teacher manages their own payout bank details, which owner can then view."""
+        mine_url = reverse(
+            "accounts:my-organization-teacher-configuration",
+            kwargs={"organization_pk": self.organization.pk},
+        )
+
+        # 1. Teacher reads their own configuration
+        self.client.force_authenticate(user=self.teacher)
+        get_res = self.client.get(mine_url)
+        self.assertEqual(get_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(get_res.data["account_number"], "")
+
+        # 2. Teacher updates their bank details
+        payload = {
+            "bank_code": "058",
+            "bank_name": "Guaranty Trust Bank (GTBank)",
+            "account_number": "0123456789",
+            "account_name": "Ustadh Bilal",
+        }
+        patch_res = self.client.patch(mine_url, payload, format="json")
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_res.data["bank_code"], "058")
+        self.assertEqual(patch_res.data["bank_name"], "Guaranty Trust Bank (GTBank)")
+        self.assertEqual(patch_res.data["account_number"], "0123456789")
+        self.assertEqual(patch_res.data["account_name"], "Ustadh Bilal")
+
+        # 3. Owner views teacher configurations and sees the updated bank details
+        self.client.force_authenticate(user=self.owner)
+        owner_res = self.client.get(configurations_url(self.organization))
+        self.assertEqual(owner_res.status_code, status.HTTP_200_OK)
+        teacher_entry = next(
+            item for item in owner_res.data if item["user"] == self.teacher.pk
+        )
+        self.assertEqual(teacher_entry["bank_code"], "058")
+        self.assertEqual(teacher_entry["bank_name"], "Guaranty Trust Bank (GTBank)")
+        self.assertEqual(teacher_entry["account_number"], "0123456789")
+        self.assertEqual(teacher_entry["account_name"], "Ustadh Bilal")
+

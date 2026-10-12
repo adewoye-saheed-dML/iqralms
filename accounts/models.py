@@ -273,6 +273,30 @@ class TeacherProfile(models.Model):
             "against this (see tech-debt.md)."
         ),
     )
+    bank_code = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="NIP/NUBAN bank code for teacher payout routing.",
+    )
+    bank_name = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Settlement bank name.",
+    )
+    account_number = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="NUBAN account number.",
+    )
+    account_name = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        help_text="Beneficiary name matching the bank account.",
+    )
 
     def clean(self):
         errors = {}
@@ -406,6 +430,30 @@ class OrganizationTeacherConfiguration(models.Model):
             "teacher may be approved by one and not another."
         ),
     )
+    bank_code = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="NIP/NUBAN bank code for teacher payout routing.",
+    )
+    bank_name = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Settlement bank name.",
+    )
+    account_number = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="NUBAN account number.",
+    )
+    account_name = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        help_text="Beneficiary name matching the bank account.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -421,6 +469,34 @@ class OrganizationTeacherConfiguration(models.Model):
     def organization(self):
         """The academy that set these terms."""
         return self.membership.organization
+
+    @property
+    def effective_bank_code(self) -> str:
+        if self.bank_code:
+            return self.bank_code
+        profile = getattr(self.membership.user, "teacher_profile", None)
+        return getattr(profile, "bank_code", "") if profile else ""
+
+    @property
+    def effective_bank_name(self) -> str:
+        if self.bank_name:
+            return self.bank_name
+        profile = getattr(self.membership.user, "teacher_profile", None)
+        return getattr(profile, "bank_name", "") if profile else ""
+
+    @property
+    def effective_account_number(self) -> str:
+        if self.account_number:
+            return self.account_number
+        profile = getattr(self.membership.user, "teacher_profile", None)
+        return getattr(profile, "account_number", "") if profile else ""
+
+    @property
+    def effective_account_name(self) -> str:
+        if self.account_name:
+            return self.account_name
+        profile = getattr(self.membership.user, "teacher_profile", None)
+        return getattr(profile, "account_name", "") if profile else ""
 
     def clean(self):
         errors = {}
