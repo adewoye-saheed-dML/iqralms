@@ -532,6 +532,17 @@ def route_session(
         "organization": organization,
     }
 
+    if preferred_teacher is None and organization is not None and student is not None:
+        from organizations.models import StudentEnrollment
+
+        enrollment = StudentEnrollment.objects.filter(
+            organization=organization,
+            user=student,
+            status="active",
+        ).select_related("teacher").first()
+        if enrollment and enrollment.teacher_id:
+            preferred_teacher = enrollment.teacher
+
     if preferred_teacher is not None:
         return _resolve_preferred(teacher=preferred_teacher, **common)
 

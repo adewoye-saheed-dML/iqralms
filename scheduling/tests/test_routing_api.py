@@ -369,6 +369,39 @@ class RouteAPITests(RouteAPIWorld):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["booking"]["duration_minutes"], 30)
 
+    def test_routes_to_allocated_teacher_when_preferred_teacher_omitted(self):
+        from organizations.models import StudentEnrollment
+        allocated_teacher = self.available_teacher(lead=False)
+        enrollment = StudentEnrollment.objects.filter(
+            organization=self.organization,
+            user=self.student,
+        ).first()
+        if enrollment:
+            enrollment.track = self.level.track
+            enrollment.level = self.level
+            enrollment.teacher = allocated_teacher
+            enrollment.save()
+        else:
+            StudentEnrollment.objects.create(
+                organization=self.organization,
+                user=self.student,
+                track=self.level.track,
+                level=self.level,
+                teacher=allocated_teacher,
+            )
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            route_url(self.organization),
+            {
+                "level": self.level.pk,
+                "requested_time_window": {"start_time_utc": self.slot.isoformat()},
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["booking"]["teacher"]["id"], allocated_teacher.pk)
+        self.assertEqual(response.data["routed_reason"], "student_choice")
+
 
 class RouteNoCapacityAPITests(RouteAPIWorld):
     """Acceptance criterion 6 over HTTP — an honest refusal, not a forced booking."""

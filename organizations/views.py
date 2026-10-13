@@ -489,6 +489,9 @@ class MyStudentEnrollmentListView(OrganizationScopedMixin, generics.ListAPIView)
             child_ids = ParentLink.objects.filter(parent=user).values_list("student_id", flat=True)
             return base_qs.filter(user_id__in=child_ids)
 
+        if membership.role == OrganizationRole.STUDENT or getattr(user, "role", None) == Role.STUDENT:
+            return base_qs.filter(user=user)
+
         raise PermissionDenied("You do not have permission to view this student list.")
 
     @extend_schema(

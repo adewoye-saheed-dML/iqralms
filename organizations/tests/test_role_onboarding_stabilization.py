@@ -303,7 +303,10 @@ class RoleOnboardingStabilizationTests(APITestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["user_id"], self.student.id)
 
-        # 5. Student denied access
+        # 5. Student sees own enrollment
         self.client.force_authenticate(user=self.student)
         res = self.client.get(url)
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        results = res.data if isinstance(res.data, list) else res.data.get("results", [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["user_id"], self.student.id)

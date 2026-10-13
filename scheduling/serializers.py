@@ -102,7 +102,16 @@ def resolve_requested_student(caller, student, *, organization):
     only for themselves, and a parent must name one of their linked children in that academy.
     Permission classes have already established the caller is one or the other.
     """
-    if caller.role == Role.STUDENT:
+    is_student_caller = caller.role == Role.STUDENT
+    if not is_student_caller and organization is not None:
+        from organizations.models import OrganizationRole
+        is_student_caller = caller.organization_memberships.filter(
+            organization=organization,
+            role=OrganizationRole.STUDENT,
+            status="active",
+        ).exists()
+
+    if is_student_caller:
         if student is not None and student != caller:
             raise serializers.ValidationError(
                 {"student": ["You can only book sessions for yourself."]}
@@ -459,11 +468,24 @@ class RouteRequestSerializer(AcademyScopedSerializerMixin, serializers.Serialize
             self.organization
             or (level.track.organization if level and hasattr(level, "track") and level.track else None)
         )
-        attrs["student"] = resolve_requested_student(
+        student = resolve_requested_student(
             self.context["request"].user,
             attrs.get("student"),
             organization=organization,
         )
+        attrs["student"] = student
+
+        if not attrs.get("preferred_teacher") and student and organization:
+            from organizations.models import StudentEnrollment
+
+            enrollment = StudentEnrollment.objects.filter(
+                organization=organization,
+                user=student,
+                status="active",
+            ).select_related("teacher").first()
+            if enrollment and enrollment.teacher_id:
+                attrs["preferred_teacher"] = enrollment.teacher
+
         return attrs
 
 

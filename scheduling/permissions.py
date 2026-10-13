@@ -16,7 +16,15 @@ class IsStudent(BasePermission):
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(user and user.is_authenticated and user.role == Role.STUDENT)
+        if not (user and user.is_authenticated):
+            return False
+        if user.role == Role.STUDENT:
+            return True
+        membership = getattr(view, "caller_membership", None)
+        if membership:
+            from organizations.models import OrganizationRole
+            return membership.role == OrganizationRole.STUDENT
+        return False
 
 
 class IsTeacher(BasePermission):
@@ -37,11 +45,15 @@ class IsStudentOrParent(BasePermission):
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(
-            user
-            and user.is_authenticated
-            and user.role in {Role.STUDENT, Role.PARENT}
-        )
+        if not (user and user.is_authenticated):
+            return False
+        if user.role in {Role.STUDENT, Role.PARENT}:
+            return True
+        membership = getattr(view, "caller_membership", None)
+        if membership:
+            from organizations.models import OrganizationRole
+            return membership.role in {OrganizationRole.STUDENT, OrganizationRole.PARENT}
+        return False
 
 
 class IsLeadTeacher(BasePermission):

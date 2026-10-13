@@ -24,9 +24,11 @@ there, so the API and a direct ORM write cannot disagree.
 
 from datetime import timezone as dt_timezone
 
+from django.db.models import Q
 from rest_framework import serializers
 
-from accounts.models import Role, User
+from accounts.models import Role, User, TEACHER_ROLES
+from organizations.models import OrganizationRole
 from scheduling.models import Booking
 
 from .models import StatementStatus, TeacherPayout
@@ -143,9 +145,10 @@ def teachers_in(organization):
     from organizations.models import MembershipStatus
 
     return User.objects.filter(
-        role__in=[Role.LEAD, Role.SUB],
         organization_memberships__organization=organization,
         organization_memberships__status=MembershipStatus.ACTIVE,
+    ).filter(
+        Q(role__in=TEACHER_ROLES) | Q(organization_memberships__role=OrganizationRole.TEACHER)
     ).distinct()
 
 
@@ -157,13 +160,15 @@ class PayoutGenerateSerializer(PayoutPeriodSerializer):
     whole academy. Either way the run is idempotent, so narrowing is a convenience
     rather than a way to avoid duplicates.
 
-    Only ``lead`` and ``sub`` accounts are offered, because nobody else can be a
+    Only teacher accounts are offered, because nobody else can be a
     booking's teacher. A student id here is a 400 rather than an empty run.
     When scoped to an organization, only active teachers in that organization are accepted.
     """
 
     teacher = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(role__in=[Role.LEAD, Role.SUB]),
+        queryset=User.objects.filter(
+            Q(role__in=TEACHER_ROLES) | Q(organization_memberships__role=OrganizationRole.TEACHER)
+        ).distinct(),
         required=False,
         allow_null=True,
     )

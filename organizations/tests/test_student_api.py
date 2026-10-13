@@ -196,3 +196,31 @@ class StudentEnrollmentAPITests(APITestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["user_id"], student1.id)
         self.assertEqual(results[0]["teacher_id"], teacher.id)
+
+    def test_student_can_fetch_own_enrollment(self):
+        from curriculum.tests.factories import TrackFactory, LevelFactory
+        from curriculum.models import TeacherTrack
+        track = TrackFactory(organization=self.org)
+        level = LevelFactory(track=track)
+        student = UserFactory(role=Role.STUDENT)
+        teacher = UserFactory(role=Role.SUB, first_name="Bilal", last_name="Khan")
+        teacher_mem = OrganizationMembershipFactory(
+            organization=self.org, user=teacher, role=OrganizationRole.TEACHER
+        )
+        TeacherTrack.objects.create(membership=teacher_mem, track=track, active=True)
+        OrganizationMembershipFactory(
+            organization=self.org, user=student, role=OrganizationRole.STUDENT
+        )
+        StudentEnrollment.objects.create(
+            organization=self.org, user=student, track=track, level=level, teacher=teacher
+        )
+
+        self.client.force_authenticate(user=student)
+        mine_url = reverse("organizations:student-mine-list", args=[self.org.pk])
+        response = self.client.get(mine_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data["results"] if "results" in response.data else response.data
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["user_id"], student.id)
+        self.assertEqual(results[0]["teacher_id"], teacher.id)
+        self.assertEqual(results[0]["teacher_name"], "Bilal Khan")

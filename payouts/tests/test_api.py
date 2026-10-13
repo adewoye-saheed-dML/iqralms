@@ -17,6 +17,7 @@ from django.utils import timezone as dj_timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from accounts.models import Role
 from accounts.tests.factories import (
     LeadTeacherFactory,
     ParentFactory,
@@ -509,6 +510,17 @@ class TenantIsolationAPITests(PayoutWorld):
         self.assertIn("Bank Name", content)
         self.assertIn("Account Number", content)
         self.assertIn("Amount", content)
+        self.assertIn(self.teacher.username, content)
+
+    def test_lead_can_export_payouts_csv_filtered_by_teacher_id_with_teacher_role(self):
+        self.teacher.role = Role.TEACHER
+        self.teacher.save()
+        self.generate()
+        self.client.force_authenticate(user=self.lead)
+        response = self.client.get(f"{self.export_url}?teacher_id={self.teacher.pk}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        content = response.content.decode("utf-8")
         self.assertIn(self.teacher.username, content)
 
     def test_sub_teacher_cannot_export_payouts_csv(self):

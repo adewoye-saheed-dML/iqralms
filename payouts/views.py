@@ -21,6 +21,7 @@ from datetime import timezone as dt_timezone
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -29,8 +30,8 @@ from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from accounts.models import Role, User
-from organizations.models import MembershipStatus
+from accounts.models import Role, User, TEACHER_ROLES
+from organizations.models import MembershipStatus, OrganizationRole
 from organizations.permissions import IsOrganizationMember
 from organizations.views import OrganizationScopedMixin
 
@@ -183,7 +184,9 @@ def requested_teacher(request, organization=None, name="teacher_id"):
         teacher_id = int(raw)
     except (TypeError, ValueError):
         raise ValidationError({name: ["Must be an integer."]})
-    qs = User.objects.filter(pk=teacher_id, role__in=[Role.LEAD, Role.SUB])
+    qs = User.objects.filter(pk=teacher_id).filter(
+        Q(role__in=TEACHER_ROLES) | Q(organization_memberships__role=OrganizationRole.TEACHER)
+    )
     if organization is not None:
         qs = qs.filter(
             organization_memberships__organization=organization,
