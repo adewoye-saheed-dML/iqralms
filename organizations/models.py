@@ -150,19 +150,19 @@ class Organization(models.Model):
         max_length=100,
         null=True,
         blank=True,
-        help_text="Paystack subaccount code for routing USD tuition to the academy domiciliary bank account.",
+        help_text="Paystack subaccount code for routing USD tuition to the academy bank account.",
     )
     currency = models.CharField(
         max_length=3,
-        default="NGN",
-        help_text="Operating currency for tuition and billing (e.g. NGN, USD, GBP, EUR).",
+        default="USD",
+        help_text="Operating currency for tuition and billing (e.g. USD, EUR, GBP, NGN).",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def get_paystack_subaccount_code(self, currency: str = "NGN") -> Optional[str]:
+    def get_paystack_subaccount_code(self, currency: str = "USD") -> Optional[str]:
         """Resolve the appropriate Paystack subaccount code based on transaction currency."""
-        curr = (currency or "NGN").upper()
+        curr = (currency or "USD").upper()
         if curr == "USD":
             return self.paystack_subaccount_usd_code or (
                 self.paystack_subaccount_code if (self.currency or "").upper() == "USD" else None

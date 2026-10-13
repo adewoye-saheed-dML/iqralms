@@ -653,3 +653,114 @@ class PlatformSubscriptionTests(TestCase):
             )
         self.assertIn("Institutional tier is sales-assisted", str(ctx.exception))
 
+    def test_billing_location_view_detects_nigeria_and_global(self):
+        # 1. Without headers, falls back to GLOBAL/USD
+        res = self.client.get("/api/billing/location/")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["is_nigeria"])
+        self.assertEqual(res.data["currency"], "USD")
+
+        # 2. With Cloudflare NG header
+        res_ng = self.client.get("/api/billing/location/", HTTP_CF_IPCOUNTRY="NG")
+        self.assertEqual(res_ng.status_code, 200)
+        self.assertTrue(res_ng.data["is_nigeria"])
+        self.assertEqual(res_ng.data["country"], "NG")
+        self.assertEqual(res_ng.data["currency"], "NGN")
+
+        # 3. With foreign country header (e.g. TG for Togo or US)
+        res_togo = self.client.get("/api/billing/location/", HTTP_CF_IPCOUNTRY="TG")
+        self.assertEqual(res_togo.status_code, 200)
+        self.assertFalse(res_togo.data["is_nigeria"])
+        self.assertEqual(res_togo.data["country"], "TG")
+        self.assertEqual(res_togo.data["currency"], "USD")
+
+        # 4. Context fallback to organization timezone Africa/Lagos
+        res_org = self.client.get(f"/api/billing/location/?organization_id={self.org.pk}")
+        self.assertEqual(res_org.status_code, 200)
+        self.assertTrue(res_org.data["is_nigeria"])
+        self.assertEqual(res_org.data["currency"], "NGN")
+
+        # 5. Browser timezone fallback via ?tz=Africa/Lagos (no CDN header, no org)
+        res_tz = self.client.get("/api/billing/location/?tz=Africa/Lagos")
+        self.assertEqual(res_tz.status_code, 200)
+        self.assertTrue(res_tz.data["is_nigeria"], "Browser timezone Africa/Lagos should resolve as Nigeria")
+        self.assertEqual(res_tz.data["currency"], "NGN")
+
+        # 6. Non-Nigerian browser timezone must NOT resolve as Nigeria
+        res_tz_us = self.client.get("/api/billing/location/?tz=America/New_York")
+        self.assertEqual(res_tz_us.status_code, 200)
+        self.assertFalse(res_tz_us.data["is_nigeria"])
+        self.assertEqual(res_tz_us.data["currency"], "USD")
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_global_user_subscribes_in_usd_cents(self, mock_init):
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/usd_sub",
+            "access_code": "acc_usd_123",
+        }
+        # Foreign academy in US / outside Nigeria
+        foreign_org = Organization.objects.create(
+            name="Global Quran Academy",
+            slug="global-quran",
+            timezone="America/New_York",
+            is_active=False,
+        )
+        OrganizationMembership.objects.create(
+            organization=foreign_org,
+            user=self.owner,
+            role=OrganizationRole.OWNER,
+            status=MembershipStatus.ACTIVE,
+        )
+
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": foreign_org.pk, "tier": "growth"},
+            HTTP_CF_IPCOUNTRY="US",
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+
+        # Verify Paystack was initialized with USD amount ($50 -> 5000 cents) and USD currency
+        mock_init.assert_called_once()
+        call_kwargs = mock_init.call_args.kwargs
+        self.assertEqual(call_kwargs["amount_kobo"], 5000)  # $50 in cents
+        self.assertEqual(call_kwargs["currency"], "USD")
+        self.assertEqual(call_kwargs["plan_code"], "PLN_growth_tier_usd")
+
+    def test_foreign_user_cannot_bypass_and_request_ngn(self):
+        foreign_org = Organization.objects.create(
+            name="Togo Quran Institute",
+            slug="togo-quran",
+            timezone="Africa/Lome",
+            is_active=False,
+        )
+        OrganizationMembership.objects.create(
+            organization=foreign_org,
+            user=self.owner,
+            role=OrganizationRole.OWNER,
+            status=MembershipStatus.ACTIVE,
+        )
+
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": foreign_org.pk, "tier": "growth", "currency": "NGN"},
+            HTTP_CF_IPCOUNTRY="TG",
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Naira plans are exclusively available to academies in Nigeria", str(res.data["currency"]))
+
+    def test_nigerian_user_cannot_request_usd(self):
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "starter", "currency": "USD"},
+            HTTP_CF_IPCOUNTRY="NG",
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Academies in Nigeria must subscribe using local Naira", str(res.data["currency"]))
+
+

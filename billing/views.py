@@ -15,8 +15,10 @@ from organizations.models import MembershipStatus, Organization, OrganizationRol
 from payments.paystack import verify_paystack_signature
 from payments.serializers import PaystackWebhookPayloadSerializer
 from .constants import get_tiers_display
+from .geo import get_client_country, is_nigerian_client
 from .models import PlatformSubscription
 from .serializers import (
+    BillingLocationSerializer,
     PlatformSubscriptionSerializer,
     SubscribeRequestSerializer,
     SubscriptionInitializeResponseSerializer,
@@ -29,6 +31,35 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@extend_schema(
+    summary="Detect visitor location and return applicable billing currency",
+    responses={200: BillingLocationSerializer},
+)
+class BillingLocationView(APIView):
+    """Public endpoint to detect visitor country and return applicable billing currency."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        org_id = request.query_params.get("organization_id")
+        organization = None
+        if org_id:
+            organization = Organization.objects.filter(pk=org_id).first()
+
+        country = get_client_country(request, organization)
+        is_ng = is_nigerian_client(request, organization)
+        currency = "NGN" if is_ng else "USD"
+        return Response(
+            {
+                "country": country,
+                "is_nigeria": is_ng,
+                "currency": currency,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 @extend_schema(
@@ -73,10 +104,22 @@ class SubscribeView(APIView):
         if not membership or membership.role != OrganizationRole.OWNER:
             raise PermissionDenied("Only the academy owner can manage platform subscriptions.")
 
+        is_ng = is_nigerian_client(request, organization)
+        requested_currency = serializer.validated_data.get("currency")
+        if requested_currency:
+            if is_ng and requested_currency != "NGN":
+                raise ValidationError({"currency": "Academies in Nigeria must subscribe using local Naira (NGN) plans."})
+            if not is_ng and requested_currency == "NGN":
+                raise ValidationError({"currency": "Naira plans are exclusively available to academies in Nigeria. Global accounts must subscribe in USD."})
+            currency = requested_currency
+        else:
+            currency = "NGN" if is_ng else "USD"
+
         subscription, init_data = initialize_platform_subscription(
             organization=organization,
             user=request.user,
             tier=tier,
+            currency=currency,
             callback_url=callback_url,
         )
         return Response(

@@ -162,7 +162,7 @@ class PaystackClient:
                 return {
                     "subaccount_code": id_or_code,
                     "business_name": "Academy Tuition",
-                    "settlement_bank": "058",
+                    "settlement_bank": "BANK001",
                     "account_number": "0123456789",
                     "account_name": "TEST ACCOUNT",
                     "active": True,

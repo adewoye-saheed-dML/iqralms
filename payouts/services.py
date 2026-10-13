@@ -22,6 +22,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 from django.db.models import Count, Q, Sum
+from django.utils import timezone as dj_timezone
 
 from scheduling.models import Booking
 
@@ -440,3 +441,51 @@ def generate_fixed_period_payouts(*, organization, period_start, period_end, tea
         existing_payout_teachers.add(teacher_obj.pk)
 
     return result
+
+
+@transaction.atomic
+def bulk_finalize_payouts(
+    *,
+    organization,
+    payout_ids=None,
+    period_start=None,
+    period_end=None,
+    teacher=None,
+):
+    """Finalize multiple generated payouts atomically for batch bank reconciliation.
+
+    All matching generated payouts are locked and marked as finalized, setting finalized_at.
+    Returns counts, list of finalized IDs, and total settled amount.
+    """
+    if organization is None:
+        raise ValueError("An explicit organization context is required for bulk finalization.")
+
+    rows = TeacherPayout.objects.in_organization(organization).filter(
+        status=PayoutStatus.GENERATED
+    )
+    if payout_ids is not None:
+        rows = rows.filter(pk__in=payout_ids)
+    if period_start is not None:
+        rows = rows.filter(booking__start_time_utc__gte=period_start)
+    if period_end is not None:
+        rows = rows.filter(booking__start_time_utc__lt=period_end)
+    if teacher is not None:
+        rows = rows.filter(teacher=getattr(teacher, "pk", teacher))
+
+    locked_payouts = list(rows.select_for_update())
+    now = dj_timezone.now()
+    finalized_ids = []
+    total_amount = Decimal("0.00")
+
+    for payout in locked_payouts:
+        payout.status = PayoutStatus.FINALIZED
+        payout.finalized_at = now
+        payout.save()
+        finalized_ids.append(payout.pk)
+        total_amount += payout.amount
+
+    return {
+        "finalized_count": len(finalized_ids),
+        "finalized_ids": finalized_ids,
+        "total_amount": str(total_amount),
+    }

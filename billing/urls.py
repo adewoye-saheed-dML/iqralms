@@ -3,6 +3,7 @@
 from django.urls import path
 
 from .views import (
+    BillingLocationView,
     BillingTiersListView,
     PaystackBillingWebhookView,
     SubscribeView,
@@ -12,6 +13,7 @@ from .views import (
 app_name = "billing"
 
 urlpatterns = [
+    path("location/", BillingLocationView.as_view(), name="location"),
     path("tiers/", BillingTiersListView.as_view(), name="tiers"),
     path("subscribe/initialize/", SubscribeView.as_view(), name="subscribe_initialize"),
     path("subscribe/", SubscribeView.as_view(), name="subscribe"),

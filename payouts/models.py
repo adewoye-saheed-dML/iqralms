@@ -52,12 +52,8 @@ from scheduling.models import Booking, BookingStatus, Cohort, MINUTES_PER_HOUR
 
 from .exceptions import PayoutAlreadyFinalized
 
-#: The academy's one currency. Conversion is explicitly out of scope for Phase 8,
-#: so this is a stored constant rather than a configurable per-teacher field: a
-#: second currency is a product decision with its own rounding questions, and
-#: storing the code on every record is what makes that decision possible later
-#: without reinterpreting the rows written today.
-PAYOUT_CURRENCY = "NGN"
+#: The academy's default fallback currency.
+PAYOUT_CURRENCY = "USD"
 
 #: Money is exact to the kobo. One quantize, at the end of the calculation.
 MONEY_PRECISION = Decimal("0.01")
@@ -226,7 +222,7 @@ class TeacherPayout(models.Model):
     currency = models.CharField(
         max_length=3,
         default=PAYOUT_CURRENCY,
-        help_text="ISO code, snapshotted. NGN today; conversion is out of scope.",
+        help_text="ISO code, snapshotted. Currency at payout generation time.",
     )
     status = models.CharField(
         max_length=16,

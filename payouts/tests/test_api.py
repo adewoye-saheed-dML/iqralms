@@ -132,6 +132,19 @@ class PayoutWorld(APITestCase):
             kwargs={"organization_pk": org.pk, "pk": pk},
         )
 
+    @property
+    def export_url(self):
+        return reverse(
+            "payouts:payout-export", kwargs={"organization_pk": self.organization.pk}
+        )
+
+    @property
+    def bulk_finalize_url(self):
+        return reverse(
+            "payouts:payout-bulk-finalize",
+            kwargs={"organization_pk": self.organization.pk},
+        )
+
     def generate(self, user=None, organization=None, **overrides):
         org = organization or self.organization
         url = reverse(
@@ -290,7 +303,7 @@ class StatementAPITests(PayoutWorld):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["session_count"], 1)
         self.assertEqual(response.data["total_amount"], "5000.00")
-        self.assertEqual(response.data["currency"], "NGN")
+        self.assertEqual(response.data["currency"], self.organization.currency)
         self.assertEqual(len(response.data["payouts"]), 1)
 
     def test_the_statement_total_agrees_with_the_records_it_lists(self):
@@ -484,3 +497,43 @@ class TenantIsolationAPITests(PayoutWorld):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("teacher_id", response.data)
+
+    def test_lead_can_export_payouts_csv(self):
+        self.generate()
+        self.client.force_authenticate(user=self.lead)
+        response = self.client.get(self.export_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        content = response.content.decode("utf-8")
+        self.assertIn("Beneficiary Name", content)
+        self.assertIn("Bank Name", content)
+        self.assertIn("Account Number", content)
+        self.assertIn("Amount", content)
+        self.assertIn(self.teacher.username, content)
+
+    def test_sub_teacher_cannot_export_payouts_csv(self):
+        self.generate()
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.get(self.export_url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_lead_can_bulk_finalize_payouts(self):
+        self.generate()
+        payouts = list(TeacherPayout.objects.in_organization(self.organization))
+        self.assertTrue(len(payouts) > 0)
+        payout_ids = [p.pk for p in payouts]
+
+        self.client.force_authenticate(user=self.lead)
+        response = self.client.post(self.bulk_finalize_url, {"payout_ids": payout_ids}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["finalized_count"], len(payout_ids))
+
+        for p in TeacherPayout.objects.filter(pk__in=payout_ids):
+            self.assertEqual(p.status, PayoutStatus.FINALIZED)
+            self.assertIsNotNone(p.finalized_at)
+
+    def test_sub_teacher_cannot_bulk_finalize(self):
+        self.generate()
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(self.bulk_finalize_url, {"payout_ids": [1]}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

@@ -277,7 +277,7 @@ class TeacherProfile(models.Model):
         max_length=20,
         blank=True,
         default="",
-        help_text="NIP/NUBAN bank code for teacher payout routing.",
+        help_text="Bank code or routing/sort code for teacher payout routing.",
     )
     bank_name = models.CharField(
         max_length=100,
@@ -289,7 +289,7 @@ class TeacherProfile(models.Model):
         max_length=20,
         blank=True,
         default="",
-        help_text="NUBAN account number.",
+        help_text="Bank account number or IBAN.",
     )
     account_name = models.CharField(
         max_length=150,
@@ -434,7 +434,7 @@ class OrganizationTeacherConfiguration(models.Model):
         max_length=20,
         blank=True,
         default="",
-        help_text="NIP/NUBAN bank code for teacher payout routing.",
+        help_text="Bank code or routing/sort code for teacher payout routing.",
     )
     bank_name = models.CharField(
         max_length=100,
@@ -446,7 +446,7 @@ class OrganizationTeacherConfiguration(models.Model):
         max_length=20,
         blank=True,
         default="",
-        help_text="NUBAN account number.",
+        help_text="Bank account number or IBAN.",
     )
     account_name = models.CharField(
         max_length=150,

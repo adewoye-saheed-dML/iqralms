@@ -87,6 +87,11 @@ class SubscribeRequestSerializer(serializers.Serializer):
         required=False,
         default=SubscriptionTier.STARTER,
     )
+    currency = serializers.ChoiceField(
+        choices=["NGN", "USD"],
+        required=False,
+        default=None,
+    )
     callback_url = serializers.CharField(required=False, allow_blank=True, default=None)
 
     def to_internal_value(self, data):
@@ -103,4 +108,12 @@ class SubscriptionInitializeResponseSerializer(serializers.Serializer):
     authorization_url = serializers.CharField()
     access_code = serializers.CharField()
     reference = serializers.CharField()
+
+
+class BillingLocationSerializer(serializers.Serializer):
+    """Response payload for detected client country and default currency."""
+
+    country = serializers.CharField()
+    is_nigeria = serializers.BooleanField()
+    currency = serializers.CharField()
 

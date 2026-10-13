@@ -35,6 +35,7 @@ class SubaccountSetupTests(TestCase):
             name="Noor Academy",
             slug="noor-academy",
             timezone="Africa/Lagos",
+            currency="NGN",
             is_active=True,
         )
         OrganizationMembership.objects.create(
@@ -274,6 +275,7 @@ class PaymentInitializationAndVerificationTests(TestCase):
         self.student.is_minor = False
         self.student.save()
         self.org = self.agreement.organization
+        self.org.currency = "NGN"
         self.org.paystack_subaccount_code = "SUB_test_acct"
         self.org.save()
 

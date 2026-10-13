@@ -16,10 +16,12 @@ creates payout records; marking a session taught stays the scheduling app's
 decision.
 """
 
+import csv
 from datetime import timezone as dt_timezone
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.http import HttpResponse
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
@@ -33,17 +35,25 @@ from organizations.permissions import IsOrganizationMember
 from organizations.views import OrganizationScopedMixin
 
 from .exceptions import PayoutAlreadyFinalized
-from .models import TeacherPayout
+from .models import PayoutStatus, TeacherPayout
 from .permissions import IsLeadTeacher, IsTeacher
 from .serializers import (
+    BulkFinalizationResultSerializer,
     GenerationResultSerializer,
     MyStatementSerializer,
     MyTeacherPayoutSerializer,
+    PayoutBulkFinalizeSerializer,
     PayoutGenerateSerializer,
     StatementSerializer,
     TeacherPayoutSerializer,
 )
-from .services import PAYOUT_RELATED, generate_payouts, payouts_for, statement_for
+from .services import (
+    PAYOUT_RELATED,
+    bulk_finalize_payouts,
+    generate_payouts,
+    payouts_for,
+    statement_for,
+)
 
 
 class AcademyScopedView(OrganizationScopedMixin):
@@ -438,3 +448,176 @@ class PayoutFinalizeView(AcademyScopedView, generics.GenericAPIView):
             raise Conflict(str(exc)) from exc
         body = self.get_serializer(payout).data
         return Response(body, status=status.HTTP_200_OK)
+
+
+class PayoutExportView(AcademyScopedView, generics.GenericAPIView):
+    """GET /api/payouts/organizations/<organization_pk>/export/ — bank transfer batch CSV export.
+
+    Enables the academy lead/owner to export a CSV batch file of payouts
+    for offline execution via corporate or mobile banking (NIP/NUBAN batch payment).
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
+
+    @extend_schema(
+        parameters=PERIOD_PARAMS
+        + [
+            OpenApiParameter(
+                name="teacher_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Narrow the export to one teacher.",
+            ),
+            OpenApiParameter(
+                name="status",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Filter by payout status (e.g. 'generated', 'finalized', 'all'). Defaults to 'all'.",
+            ),
+        ],
+        responses={
+            200: OpenApiResponse(description="CSV batch export of teacher payouts with bank details."),
+            400: OpenApiResponse(description="Invalid teacher_id or period parameter."),
+            403: OpenApiResponse(description="Not an organization owner or administrator."),
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        start, end = optional_period(request)
+        teacher = requested_teacher(request, organization=self.organization)
+        status_param = request.query_params.get("status", "all").strip().lower()
+
+        rows = payouts_for(
+            organization=self.organization,
+            teacher=teacher,
+            period_start=start,
+            period_end=end,
+        )
+        if status_param in (PayoutStatus.GENERATED, PayoutStatus.FINALIZED):
+            rows = rows.filter(status=status_param)
+
+        # Prefetch teacher bank configs for this organization
+        teacher_ids = list(rows.values_list("teacher_id", flat=True).distinct())
+        from accounts.models import OrganizationTeacherConfiguration
+
+        configs = OrganizationTeacherConfiguration.objects.filter(
+            membership__organization=self.organization,
+            membership__user_id__in=teacher_ids,
+        ).select_related("membership__user", "membership__user__teacher_profile")
+        config_map = {c.membership.user_id: c for c in configs}
+
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        filename_prefix = f"payouts_org_{self.organization.pk}"
+        if start and end:
+            s_str = start.strftime("%Y%m%d")
+            e_str = end.strftime("%Y%m%d")
+            filename = f"{filename_prefix}_{s_str}_to_{e_str}.csv"
+        else:
+            filename = f"{filename_prefix}_batch.csv"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+        writer = csv.writer(response)
+        writer.writerow([
+            "Beneficiary Name",
+            "Bank Name",
+            "Bank Code",
+            "Account Number",
+            "Amount",
+            "Currency",
+            "Narration",
+            "Teacher Username",
+            "Payout ID",
+            "Status",
+            "Duration (Minutes)",
+            "Rate Used",
+            "Session Start (UTC)",
+        ])
+
+        for p in rows:
+            cfg = config_map.get(p.teacher_id)
+            user = p.teacher
+            profile = getattr(user, "teacher_profile", None)
+
+            beneficiary_name = ""
+            bank_name = ""
+            bank_code = ""
+            account_number = ""
+
+            if cfg:
+                beneficiary_name = cfg.effective_account_name
+                bank_name = cfg.effective_bank_name
+                bank_code = cfg.effective_bank_code
+                account_number = cfg.effective_account_number
+            elif profile:
+                beneficiary_name = profile.account_name
+                bank_name = profile.bank_name
+                bank_code = profile.bank_code
+                account_number = profile.account_number
+
+            if not beneficiary_name:
+                beneficiary_name = user.get_full_name() or user.username
+
+            narration = f"Payout #{p.pk} - {user.username}"
+            session_start = p.session_start_utc.isoformat() if p.session_start_utc else ""
+
+            writer.writerow([
+                beneficiary_name,
+                bank_name,
+                bank_code,
+                account_number,
+                f"{p.amount:.2f}",
+                p.currency,
+                narration,
+                user.username,
+                p.pk,
+                p.status,
+                p.minutes_paid,
+                f"{p.rate_used:.2f}",
+                session_start,
+            ])
+
+        return response
+
+
+class PayoutBulkFinalizeView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/payouts/organizations/<organization_pk>/bulk-finalize/ — mark multiple payouts as settled.
+
+    Allows the lead or owner to finalize awaiting payouts in a period or for specific IDs
+    after executing bank transfers off-platform.
+    """
+
+    serializer_class = PayoutBulkFinalizeSerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
+
+    @extend_schema(
+        request=PayoutBulkFinalizeSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=BulkFinalizationResultSerializer,
+                description="Batch finalization complete.",
+            ),
+            400: OpenApiResponse(description="Invalid request parameters."),
+            403: OpenApiResponse(description="Not an organization owner or administrator."),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        payout_ids = data.get("payout_ids")
+        period_start = data.get("period_start")
+        period_end = data.get("period_end")
+        teacher_id = data.get("teacher_id")
+
+        teacher = None
+        if teacher_id is not None:
+            teacher = requested_teacher(request, organization=self.organization, name="teacher_id")
+
+        result = bulk_finalize_payouts(
+            organization=self.organization,
+            payout_ids=payout_ids,
+            period_start=period_start,
+            period_end=period_end,
+            teacher=teacher,
+        )
+        return Response(result, status=status.HTTP_200_OK)

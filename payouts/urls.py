@@ -21,6 +21,8 @@ from .views import (
     LeadStatementView,
     MyPayoutListView,
     MyStatementView,
+    PayoutBulkFinalizeView,
+    PayoutExportView,
     PayoutFinalizeView,
     PayoutGenerateView,
 )
@@ -35,5 +37,7 @@ urlpatterns = [
     path(f"{ACADEMY}statements/", LeadStatementView.as_view(), name="statements"),
     path(f"{ACADEMY}generate/", PayoutGenerateView.as_view(), name="payout-generate"),
     path(f"{ACADEMY}lead/", LeadPayoutListView.as_view(), name="payout-lead"),
+    path(f"{ACADEMY}export/", PayoutExportView.as_view(), name="payout-export"),
+    path(f"{ACADEMY}bulk-finalize/", PayoutBulkFinalizeView.as_view(), name="payout-bulk-finalize"),
     path(f"{ACADEMY}<int:pk>/finalize/", PayoutFinalizeView.as_view(), name="payout-finalize"),
 ]

@@ -26,7 +26,7 @@ def resolve_academy_subaccount(
 ) -> Dict[str, Any]:
     """Resolve bank details with Paystack without creating a subaccount."""
     client = client or PaystackClient()
-    currency = (currency or getattr(organization, "currency", "NGN") or "NGN").upper()
+    currency = (currency or getattr(organization, "currency", "USD") or "USD").upper()
 
     account_name = ""
     try:
@@ -67,7 +67,7 @@ def confirm_academy_subaccount(
     """Re-resolve bank details and create a Paystack subaccount for an academy."""
     client = client or PaystackClient()
     business_name = business_name or organization.name
-    currency = (currency or getattr(organization, "currency", "NGN") or "NGN").upper()
+    currency = (currency or getattr(organization, "currency", "USD") or "USD").upper()
 
     account_name = ""
     try:

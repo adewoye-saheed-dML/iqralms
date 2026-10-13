@@ -82,6 +82,7 @@ def initialize_platform_subscription(
     organization,
     user,
     tier: str = "starter",
+    currency: str = "NGN",
     callback_url: Optional[str] = None,
     client: Optional[PaystackClient] = None,
 ) -> Tuple[PlatformSubscription, Dict[str, Any]]:
@@ -103,16 +104,24 @@ def initialize_platform_subscription(
             "This academy already has a subscription. Plan switching is not currently supported automatically."
         )
 
+    currency = str(currency).upper()
     tier_info = SUBSCRIPTION_TIERS[tier]
-    price_ngn = tier_info.get("price_ngn")
-    if not price_ngn:
-        raise DRFValidationError("Selected tier has no payable rate configured.")
 
-    amount_kobo = int(price_ngn * 100)
+    if currency == "USD":
+        price_usd = tier_info.get("price_usd")
+        if not price_usd:
+            raise DRFValidationError("Selected tier has no payable USD rate configured.")
+        amount_subunit = int(price_usd * 100)  # Cents
+    else:
+        price_ngn = tier_info.get("price_ngn")
+        if not price_ngn:
+            raise DRFValidationError("Selected tier has no payable rate configured.")
+        amount_subunit = int(price_ngn * 100)  # Kobo
+
     # Server-authoritative plan code resolution: client cannot spoof plan code
-    resolved_plan_code = get_tier_plan_code(tier)
+    resolved_plan_code = get_tier_plan_code(tier, currency=currency)
     if not resolved_plan_code:
-        raise DRFValidationError(f"No Paystack plan code is configured for tier '{tier}'.")
+        raise DRFValidationError(f"No Paystack plan code is configured for tier '{tier}' in {currency}.")
 
     client = client or PaystackClient()
     reference = f"sub_{uuid.uuid4().hex[:16]}"
@@ -120,16 +129,18 @@ def initialize_platform_subscription(
     metadata = {
         "organization_id": organization.pk,
         "tier": tier,
+        "currency": currency,
         "type": "platform_subscription",
     }
 
     init_data = client.initialize_transaction(
         email=user.email,
-        amount_kobo=amount_kobo,
+        amount_kobo=amount_subunit,
         reference=reference,
         plan_code=resolved_plan_code,
         callback_url=callback_url,
         metadata=metadata,
+        currency=currency,
     )
 
     with transaction.atomic():
@@ -157,6 +168,7 @@ def subscribe_organization(
     organization,
     user,
     tier: str = "starter",
+    currency: str = "NGN",
     client: Optional[PaystackClient] = None,
 ) -> PlatformSubscription:
     """Subscribe an academy to a self-serve IqraLMS platform plan (starter, growth, professional)."""
@@ -164,6 +176,7 @@ def subscribe_organization(
         organization=organization,
         user=user,
         tier=tier,
+        currency=currency,
         client=client,
     )
     return sub

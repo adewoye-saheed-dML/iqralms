@@ -247,3 +247,24 @@ class StatementSerializer(MyStatementSerializer):
 
     teacher = serializers.CharField(source="teacher.username", read_only=True)
     payouts = TeacherPayoutSerializer(many=True, read_only=True)
+
+
+class PayoutBulkFinalizeSerializer(serializers.Serializer):
+    """Request payload for bulk finalization."""
+
+    payout_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        allow_empty=True,
+    )
+    period_start = serializers.DateTimeField(required=False, default_timezone=dt_timezone.utc)
+    period_end = serializers.DateTimeField(required=False, default_timezone=dt_timezone.utc)
+    teacher_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class BulkFinalizationResultSerializer(serializers.Serializer):
+    """Result returned after bulk finalization."""
+
+    finalized_count = serializers.IntegerField(read_only=True)
+    finalized_ids = serializers.ListField(child=serializers.IntegerField(), read_only=True)
+    total_amount = serializers.CharField(read_only=True)
