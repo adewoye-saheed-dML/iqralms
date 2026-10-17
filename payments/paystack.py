@@ -117,14 +117,18 @@ class PaystackClient:
 
     def resolve_account_number(self, account_number: str, bank_code: str) -> Dict[str, Any]:
         """Resolve account number and bank code to verify account name."""
-        if getattr(settings, "DEBUG", False) and self.secret_key.startswith("sk_test_"):
+        clean_num = str(account_number or "").strip()
+        if len(clean_num) != 10:
+            raise PaystackAPIError("Account number must be 10 digits for NUBAN bank verification.")
+
+        if getattr(settings, "DEBUG", False) and (not self.secret_key or self.secret_key.startswith("sk_test_")):
             if getattr(settings, "PAYSTACK_MOCK_RESOLVE", True):
-                logger.info("DEBUG Paystack simulation: mock bank resolve")
+                logger.info("DEBUG Paystack simulation: mock bank resolve for %s at %s", clean_num, bank_code)
                 return {
-                "account_number": account_number,
-                "account_name": "TEST ACCOUNT",
-            }
-        res = self._request("GET", "bank/resolve", params={"account_number": account_number, "bank_code": bank_code})
+                    "account_number": clean_num,
+                    "account_name": "USTADH AHMAD MUSA",
+                }
+        res = self._request("GET", "bank/resolve", params={"account_number": clean_num, "bank_code": bank_code})
         return res.get("data", {})
 
     def create_subaccount(

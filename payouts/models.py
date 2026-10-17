@@ -99,6 +99,14 @@ class PayoutStatus(models.TextChoices):
     FINALIZED = "finalized", "Finalized"
 
 
+class TeacherConfirmationStatus(models.TextChoices):
+    """Teacher's verification of received payment after payout is cleared/finalized."""
+
+    PENDING = "pending", "Pending Confirmation"
+    CONFIRMED = "confirmed", "Confirmed"
+    DISPUTED = "disputed", "Disputed"
+
+
 class StatementStatus(models.TextChoices):
     """How settled one teacher's period is. A statement is computed, never stored.
 
@@ -230,6 +238,22 @@ class TeacherPayout(models.Model):
         default=PayoutStatus.GENERATED,
         help_text="generated → finalized. Finalized records are immutable.",
     )
+    confirmation_status = models.CharField(
+        max_length=16,
+        choices=TeacherConfirmationStatus.choices,
+        default=TeacherConfirmationStatus.PENDING,
+        help_text="Teacher's acknowledgment: pending, confirmed, or disputed.",
+    )
+    confirmation_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Reason or details provided by the teacher upon confirmation or dispute.",
+    )
+    confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the teacher confirmed or disputed receipt.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     finalized_at = models.DateTimeField(
         null=True,
@@ -314,6 +338,21 @@ class TeacherPayout(models.Model):
         self.save()
         return self
 
+    def confirm_receipt(self, *, confirmed: bool, notes: str = "", when=None):
+        """Teacher confirms (True) or disputes (False with reason) receiving the finalized payout."""
+        if not self.is_finalized:
+            raise ValidationError(
+                "Only finalized payouts can be confirmed by teachers.",
+                code="payout_not_finalized",
+            )
+        self.confirmation_status = (
+            TeacherConfirmationStatus.CONFIRMED if confirmed else TeacherConfirmationStatus.DISPUTED
+        )
+        self.confirmation_notes = notes.strip() if notes else ""
+        self.confirmed_at = when or dj_timezone.now()
+        self.save()
+        return self
+
     # --- Validation ---------------------------------------------------------
 
     def _stored(self):
@@ -323,14 +362,20 @@ class TeacherPayout(models.Model):
         return type(self).objects.filter(pk=self.pk).first()
 
     def _validate_still_mutable(self, errors, stored):
-        """A finalized payout is history; a generated one may only be finalized."""
+        """A finalized payout is history; a generated one may only be finalized.
+
+        After finalization, financial numbers and status cannot change; only the
+        teacher's post-payment confirmation details may be recorded.
+        """
         if stored.status == PayoutStatus.FINALIZED:
-            errors[NON_FIELD_ERRORS] = ValidationError(
-                "Payout %(pk)s was finalized on %(when)s and cannot be changed. "
-                "A correction is a new decision, not an edit to an old one.",
-                code="payout_finalized",
-                params={"pk": self.pk, "when": stored.finalized_at},
-            )
+            disallowed_fields = IMMUTABLE_FIELDS + ("status", "finalized_at")
+            if any(getattr(self, f) != getattr(stored, f) for f in disallowed_fields):
+                errors[NON_FIELD_ERRORS] = ValidationError(
+                    "Payout %(pk)s was finalized on %(when)s and cannot be changed. "
+                    "A correction is a new decision, not an edit to an old one.",
+                    code="payout_finalized",
+                    params={"pk": self.pk, "when": stored.finalized_at},
+                )
             return
         for field in IMMUTABLE_FIELDS:
             if getattr(self, field) != getattr(stored, field):

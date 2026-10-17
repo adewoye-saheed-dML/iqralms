@@ -278,6 +278,8 @@ class PaymentInitializationAndVerificationTests(TestCase):
         self.org.currency = "NGN"
         self.org.paystack_subaccount_code = "SUB_test_acct"
         self.org.save()
+        self.agreement.currency = "NGN"
+        self.agreement.save()
 
         self.parent = ParentFactory()
         ParentLink.objects.create(parent=self.parent, student=self.student)

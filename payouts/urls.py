@@ -25,6 +25,7 @@ from .views import (
     PayoutExportView,
     PayoutFinalizeView,
     PayoutGenerateView,
+    TeacherPayoutConfirmView,
 )
 
 app_name = "payouts"
@@ -40,4 +41,5 @@ urlpatterns = [
     path(f"{ACADEMY}export/", PayoutExportView.as_view(), name="payout-export"),
     path(f"{ACADEMY}bulk-finalize/", PayoutBulkFinalizeView.as_view(), name="payout-bulk-finalize"),
     path(f"{ACADEMY}<int:pk>/finalize/", PayoutFinalizeView.as_view(), name="payout-finalize"),
+    path(f"{ACADEMY}<int:pk>/confirm/", TeacherPayoutConfirmView.as_view(), name="payout-confirm"),
 ]

@@ -436,6 +436,128 @@ class Availability(models.Model):
         )
 
 
+class StudentAvailabilityQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        """The availability windows published to a single academy."""
+        organization_id = getattr(organization, "pk", organization)
+        return self.filter(organization_id=organization_id)
+
+    def for_student(self, student):
+        student_id = getattr(student, "pk", student)
+        return self.filter(student_id=student_id)
+
+
+class StudentAvailability(models.Model):
+    """One weekly recurring window a student (or their parent on their behalf) declares free time for lessons, stored UTC."""
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="student_availabilities",
+        help_text="The academy this student availability window is published to.",
+    )
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="student_availability_windows",
+        help_text="The student learner user.",
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_student_availabilities",
+        help_text="The user (student, linked parent, or admin) who declared this window.",
+    )
+    weekday = models.PositiveSmallIntegerField(choices=Weekday.choices)
+    start_time_utc = models.TimeField(
+        help_text="UTC. Local time is converted at point of entry."
+    )
+    end_time_utc = models.TimeField(help_text="UTC, exclusive. Must be after the start.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StudentAvailabilityQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["student", "weekday", "start_time_utc"]
+        verbose_name_plural = "student availabilities"
+
+    def clean(self):
+        errors = {}
+        if self.start_time_utc and self.end_time_utc:
+            if self.start_time_utc >= self.end_time_utc:
+                errors["end_time_utc"] = ValidationError(
+                    "End time must be after start time.",
+                    code="end_before_start",
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def covers(self, weekday: int, start_time, end_time) -> bool:
+        """Whether ``[start_time, end_time)`` on ``weekday`` sits inside this window."""
+        return (
+            self.weekday == weekday
+            and self.start_time_utc <= start_time
+            and end_time <= self.end_time_utc
+        )
+
+    def overlaps_with(self, weekday: int, start_time, end_time) -> bool:
+        """Whether this window overlaps with ``[start_time, end_time)`` on ``weekday``."""
+        if self.weekday != weekday:
+            return False
+        return max(self.start_time_utc, start_time) < min(self.end_time_utc, end_time)
+
+    def local_window(self, tz_name):
+        """This window as ``(weekday, start, end)`` in ``tz_name``, for display."""
+        weekday, start = utc_time_to_local(self.weekday, self.start_time_utc, tz_name)
+        _, end = utc_time_to_local(self.weekday, self.end_time_utc, tz_name)
+        return (weekday, start, end)
+
+    @classmethod
+    def create_from_local(
+        cls,
+        *,
+        organization,
+        student,
+        created_by=None,
+        weekday,
+        start_local,
+        end_local,
+        tz_name=None,
+        on_or_after=None,
+    ):
+        """Create the row(s) for a window a student (or parent) stated in their own zone."""
+        tz_name = tz_name or getattr(student, "timezone", None) or "UTC"
+        org_id = getattr(organization, "pk", organization)
+
+        rows = []
+        for utc_weekday, start_utc, end_utc in local_window_to_utc(
+            weekday, start_local, end_local, tz_name, on_or_after
+        ):
+            instance = cls.objects.create(
+                organization_id=org_id,
+                student=student,
+                created_by=created_by,
+                weekday=utc_weekday,
+                start_time_utc=start_utc,
+                end_time_utc=end_utc,
+            )
+            rows.append(instance)
+        return rows
+
+    def __str__(self):
+        return (
+            f"Student {self.student.username} {self.get_weekday_display()} "
+            f"{self.start_time_utc:%H:%M}-{self.end_time_utc:%H:%M} UTC"
+        )
+
+
 class TeacherBookingLock(models.Model):
     """A mutex row, one per teacher, held for the length of a booking's write.
 

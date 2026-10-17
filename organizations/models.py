@@ -388,6 +388,14 @@ class EnrollmentStatus(models.TextChoices):
     INACTIVE = "inactive", "Inactive"
 
 
+class ScheduleAgreementStatus(models.TextChoices):
+    """Status of teacher agreement on a student's declared availability schedule."""
+
+    PENDING = "pending", "Pending Teacher Agreement"
+    AGREED = "agreed", "Agreed by Teacher"
+    ALTERNATIVE_PROPOSED = "alternative_proposed", "Alternative Proposed"
+
+
 class StudentEnrollmentQuerySet(models.QuerySet):
     def active(self):
         """The enrollments that represent active student participation in an academy.
@@ -472,6 +480,22 @@ class StudentEnrollment(models.Model):
         choices=EnrollmentStatus.choices,
         default=EnrollmentStatus.ACTIVE,
         help_text="Whether the student is currently active in this academy.",
+    )
+    schedule_agreement_status = models.CharField(
+        max_length=32,
+        choices=ScheduleAgreementStatus.choices,
+        default=ScheduleAgreementStatus.PENDING,
+        help_text="Status of teacher agreement on the student's declared availability schedule.",
+    )
+    schedule_agreement_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Teacher's alternative time proposal notes or agreement comments.",
+    )
+    schedule_agreed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the allocated teacher agreed to the current student availability schedule.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

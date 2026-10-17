@@ -89,6 +89,9 @@ class MyTeacherPayoutSerializer(serializers.ModelSerializer):
 
     booking = PayoutSessionSerializer(read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
+    confirmation_status_display = serializers.CharField(
+        source="get_confirmation_status_display", read_only=True
+    )
 
     class Meta:
         model = TeacherPayout
@@ -102,6 +105,10 @@ class MyTeacherPayoutSerializer(serializers.ModelSerializer):
             "currency",
             "status",
             "status_display",
+            "confirmation_status",
+            "confirmation_status_display",
+            "confirmation_notes",
+            "confirmed_at",
             "created_at",
             "finalized_at",
         ]
@@ -273,3 +280,26 @@ class BulkFinalizationResultSerializer(serializers.Serializer):
     finalized_count = serializers.IntegerField(read_only=True)
     finalized_ids = serializers.ListField(child=serializers.IntegerField(), read_only=True)
     total_amount = serializers.CharField(read_only=True)
+
+
+class TeacherPayoutConfirmSerializer(serializers.Serializer):
+    """Teacher confirms receiving payment (confirmed=True) or disputes it (confirmed=False with reason)."""
+
+    confirmed = serializers.BooleanField(required=True)
+    reason = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=1000,
+        help_text="Required if confirmed is False, explaining why payment was not received or disputed.",
+    )
+
+    def validate(self, attrs):
+        confirmed = attrs.get("confirmed")
+        reason = (attrs.get("reason") or "").strip()
+        if not confirmed and not reason:
+            raise serializers.ValidationError(
+                {"reason": ["A reason must be provided when disputing or reporting payment not received."]}
+            )
+        attrs["reason"] = reason
+        return attrs

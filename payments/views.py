@@ -80,14 +80,17 @@ class SubaccountResolveView(APIView):
             membership = OrganizationMembership.objects.filter(
                 user=request.user, organization=organization, status=MembershipStatus.ACTIVE
             ).first()
-        is_owner_or_admin = (
+        is_authorized = (
             getattr(request.user, "is_superuser", False)
             or getattr(request.user, "is_staff", False)
             or getattr(request.user, "role", None) in {Role.OWNER, "owner"}
-            or (membership and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN})
+            or (
+                membership
+                and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN, OrganizationRole.TEACHER}
+            )
         )
-        if not is_owner_or_admin:
-            raise PermissionDenied("Only academy owners or administrators can resolve bank details.")
+        if not is_authorized:
+            raise PermissionDenied("Only active academy owners, administrators, or teachers can resolve bank details.")
 
         try:
             result = resolve_academy_subaccount(
@@ -100,6 +103,55 @@ class SubaccountResolveView(APIView):
             return _paystack_error_response(exc)
 
         return Response(SubaccountResolveResponseSerializer(result).data, status=status.HTTP_200_OK)
+
+
+@extend_schema(
+    summary="List banks available for settlement and payout routing",
+    responses={200: OpenApiResponse(description="List of available banks.")},
+)
+class BankListView(APIView):
+    """List banks available for settlement and payout routing (defaults to Nigeria)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        country = request.query_params.get("country", "nigeria").lower()
+        client = PaystackClient()
+        banks = []
+        try:
+            res = client._request("GET", "bank", params={"country": country, "perPage": 100})
+            banks = res.get("data", [])
+        except Exception:
+            banks = []
+
+        if not banks:
+            banks = [
+                {"name": "Access Bank", "code": "044"},
+                {"name": "Guaranty Trust Bank (GTBank)", "code": "058"},
+                {"name": "Zenith Bank", "code": "057"},
+                {"name": "First Bank of Nigeria", "code": "011"},
+                {"name": "United Bank for Africa (UBA)", "code": "033"},
+                {"name": "Kuda Microfinance Bank", "code": "50211"},
+                {"name": "OPay (PayCom)", "code": "999992"},
+                {"name": "PalmPay", "code": "999991"},
+                {"name": "Moniepoint Microfinance Bank", "code": "090405"},
+                {"name": "Stanbic IBTC Bank", "code": "221"},
+                {"name": "Sterling Bank", "code": "232"},
+                {"name": "Fidelity Bank", "code": "070"},
+                {"name": "First City Monument Bank (FCMB)", "code": "214"},
+                {"name": "Union Bank of Nigeria", "code": "032"},
+                {"name": "Wema Bank (ALAT)", "code": "035"},
+                {"name": "Polaris Bank", "code": "076"},
+                {"name": "Jaiz Bank", "code": "301"},
+                {"name": "Taj Bank", "code": "302"},
+                {"name": "Lotus Bank", "code": "303"},
+                {"name": "VFD Microfinance Bank", "code": "090110"},
+                {"name": "Keystone Bank", "code": "082"},
+                {"name": "Ecobank Nigeria", "code": "050"},
+                {"name": "Heritage Bank", "code": "030"},
+                {"name": "Providus Bank", "code": "101"},
+            ]
+        return Response(banks, status=status.HTTP_200_OK)
 
 
 @extend_schema(

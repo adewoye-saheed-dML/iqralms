@@ -31,6 +31,7 @@ from .models import (
     Cohort,
     DEFAULT_DURATION_MINUTES,
     DEFAULT_MAX_STUDENTS,
+    StudentAvailability,
     TeacherWaitlist,
 )
 
@@ -173,6 +174,8 @@ class AvailabilitySerializer(serializers.ModelSerializer):
 
     teacher_username = serializers.CharField(source="teacher.username", read_only=True)
     weekday_display = serializers.CharField(source="get_weekday_display", read_only=True)
+    start_time = serializers.CharField(source="start_time_utc", read_only=True)
+    end_time = serializers.CharField(source="end_time_utc", read_only=True)
     local = serializers.SerializerMethodField()
 
     class Meta:
@@ -185,6 +188,8 @@ class AvailabilitySerializer(serializers.ModelSerializer):
             "weekday_display",
             "start_time_utc",
             "end_time_utc",
+            "start_time",
+            "end_time",
             "local",
         ]
         read_only_fields = fields
@@ -213,6 +218,102 @@ class AvailabilityCreateSerializer(serializers.Serializer):
         if attrs["start_time"] >= attrs["end_time"]:
             raise serializers.ValidationError({"end_time": ["End time must be after start time."]})
         return attrs
+
+
+class StudentAvailabilitySerializer(serializers.ModelSerializer):
+    """Read representation of one student declared availability window."""
+
+    student_username = serializers.CharField(source="student.username", read_only=True)
+    student_name = serializers.SerializerMethodField(read_only=True)
+    created_by_username = serializers.CharField(source="created_by.username", read_only=True)
+    weekday_display = serializers.CharField(source="get_weekday_display", read_only=True)
+    start_time = serializers.CharField(source="start_time_utc", read_only=True)
+    end_time = serializers.CharField(source="end_time_utc", read_only=True)
+    local = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentAvailability
+        fields = [
+            "id",
+            "student",
+            "student_username",
+            "student_name",
+            "created_by",
+            "created_by_username",
+            "weekday",
+            "weekday_display",
+            "start_time_utc",
+            "end_time_utc",
+            "start_time",
+            "end_time",
+            "local",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_student_name(self, obj) -> str:
+        name = f"{obj.student.first_name} {obj.student.last_name}".strip()
+        return name or obj.student.username
+
+    @extend_schema_field(LocalWindowSerializer)
+    def get_local(self, obj) -> dict:
+        tz_name = viewer_timezone(self.context, obj.student)
+        weekday, start, end = obj.local_window(tz_name)
+        return {
+            "timezone": tz_name,
+            "weekday": weekday,
+            "start_time": start,
+            "end_time": end,
+        }
+
+
+class StudentAvailabilityWindowInputSerializer(serializers.Serializer):
+    weekday = serializers.IntegerField(min_value=0, max_value=6)
+    start_time = serializers.TimeField()
+    end_time = serializers.TimeField()
+
+    def validate(self, attrs):
+        if attrs["start_time"] >= attrs["end_time"]:
+            raise serializers.ValidationError({"end_time": ["End time must be after start time."]})
+        return attrs
+
+
+class StudentAvailabilityBatchCreateSerializer(serializers.Serializer):
+    student_id = serializers.IntegerField(required=False, help_text="Target student user ID. Defaults to caller if student.")
+    windows = StudentAvailabilityWindowInputSerializer(many=True, help_text="List of weekly recurring availability windows in local time.")
+    timezone = serializers.CharField(required=False, allow_blank=True, default="", help_text="Timezone for the local times. Defaults to user's timezone or UTC.")
+
+
+class ScheduleAgreementActionSerializer(serializers.Serializer):
+    agreed = serializers.BooleanField(help_text="True if teacher agrees to current schedule, False if proposing alternative.")
+    notes = serializers.CharField(required=False, allow_blank=True, default="", help_text="Optional comments or proposed alternative times.")
+
+
+class OverlappingWindowSerializer(serializers.Serializer):
+    weekday = serializers.IntegerField()
+    weekday_display = serializers.CharField()
+    start_time_utc = serializers.CharField()
+    end_time_utc = serializers.CharField()
+    start_time = serializers.CharField(required=False)
+    end_time = serializers.CharField(required=False)
+    overlap_minutes = serializers.IntegerField()
+
+
+class MatchingTeacherSerializer(serializers.Serializer):
+    teacher_id = serializers.IntegerField()
+    teacher_name = serializers.CharField()
+    teacher_username = serializers.CharField()
+    is_currently_assigned = serializers.BooleanField()
+    track_id = serializers.IntegerField()
+    track_name = serializers.CharField()
+    match_quality = serializers.CharField()
+    overlap_total_minutes = serializers.IntegerField()
+    overlap_total_hours = serializers.FloatField()
+    overlapping_windows = OverlappingWindowSerializer(many=True)
+    teacher_windows = AvailabilitySerializer(many=True)
+    active_students_count = serializers.IntegerField()
+    max_weekly_hours = serializers.FloatField(allow_null=True)
 
 
 class BookingSerializer(serializers.ModelSerializer):

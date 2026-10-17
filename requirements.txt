@@ -1,21 +1,29 @@
-Django>=5.2,<6.0
-djangorestframework>=3.15
-dj-rest-auth>=7.0
-drf-spectacular>=0.28
-django-cors-headers>=4.0
-factory-boy>=3.3
-
-# Phase 6 — production hardening.
-# psycopg 3 is the PostgreSQL driver; [binary] ships prebuilt wheels so a fresh
-# clone needs no libpq or compiler. A deployment that prefers to build against
-# the system libpq should install plain `psycopg` instead.
-psycopg[binary]>=3.2
-# Parses DATABASE_URL. config/settings.py wraps it so a bad URL fails as
-# ImproperlyConfigured rather than as a library traceback.
-dj-database-url>=2.3
-# Private object storage for placement audio. [s3] pulls in boto3, which is what
-# generates the presigned URLs.
-django-storages[s3]>=1.14
-
-# Phase 10 - Bulk Import
-openpyxl>=3.1
+asgiref==3.12.1
+attrs==26.1.0
+boto3==1.43.114
+botocore==1.43.114
+dj-database-url==3.1.2
+dj-rest-auth==7.2.0
+Django==6.1.2
+django-cors-headers==4.9.0
+django-environ==0.14.0
+django-storages==1.14.6
+djangorestframework==3.18.3
+drf-spectacular==0.30.0
+inflection==0.5.1
+jmespath==1.1.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+pillow==12.3.0
+psycopg==3.3.6
+psycopg-binary==3.3.6
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+referencing==0.37.0
+rpds-py==2026.9.1
+s3transfer==0.19.2
+six==1.17.0
+sqlparse==0.6.0
+uritemplate==4.2.0
+urllib3==2.8.0
+openpyxl

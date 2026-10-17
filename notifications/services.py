@@ -670,3 +670,141 @@ def send_parent_guardian_notification_email(
             exc,
         )
         return False
+
+
+def notify_student_availability_updated(
+    student,
+    organization,
+    actor=None,
+    *,
+    channels: Optional[List[DeliveryChannel]] = None,
+) -> List[Notification]:
+    """Emit STUDENT_AVAILABILITY_UPDATED notification to the student's allocated teacher(s).
+
+    Notifies the allocated teacher when student or parent adjusts weekly learning hours,
+    allowing the teacher to review the updated schedule and confirm agreement or propose an alternative.
+    """
+    from organizations.models import StudentEnrollment
+
+    enrollments = StudentEnrollment.objects.filter(
+        organization=organization,
+        user=student,
+        status="active",
+        teacher__isnull=False,
+    ).select_related("teacher", "track")
+
+    notifications = []
+    actor_user = actor or student
+    actor_role = getattr(actor_user, "role", "student")
+    actor_name = actor_user.get_full_name() or actor_user.username
+    student_name = student.get_full_name() or student.username
+
+    for enrollment in enrollments:
+        teacher = enrollment.teacher
+        if not teacher:
+            continue
+        if not active_membership(user=teacher, organization=organization):
+            continue
+
+        track_name = enrollment.track.name if enrollment.track else "Enrolled Track"
+        payload = {
+            "student_id": student.id,
+            "student_name": student_name,
+            "actor_id": actor_user.id,
+            "actor_name": actor_name,
+            "actor_role": actor_role,
+            "track_id": enrollment.track_id,
+            "track_name": track_name,
+            "enrollment_id": enrollment.id,
+        }
+
+        notif = create_notification(
+            organization=organization,
+            event_type=EventType.STUDENT_AVAILABILITY_UPDATED,
+            recipient=teacher,
+            title=f"Schedule Adjusted: {student_name}",
+            summary=(
+                f"{actor_name} ({'Parent' if actor_role == 'parent' else 'Student'}) updated "
+                f"weekly availability for {track_name}. Please review and confirm your schedule agreement."
+            ),
+            payload=payload,
+            channels=channels,
+        )
+        notifications.append(notif)
+
+    return notifications
+
+
+def notify_schedule_agreement_response(
+    enrollment,
+    teacher,
+    agreed: bool,
+    notes: str = "",
+    *,
+    channels: Optional[List[DeliveryChannel]] = None,
+) -> List[Notification]:
+    """Notify student and linked parents when allocated teacher responds to schedule agreement."""
+    organization = enrollment.organization
+    student = enrollment.user
+    notifications = []
+
+    teacher_name = teacher.get_full_name() or teacher.username
+    student_name = student.get_full_name() or student.username
+    track_name = enrollment.track.name if enrollment.track else "Course"
+
+    payload = {
+        "enrollment_id": enrollment.id,
+        "teacher_id": teacher.id,
+        "teacher_name": teacher_name,
+        "student_id": student.id,
+        "student_name": student_name,
+        "agreed": agreed,
+        "notes": notes,
+        "track_id": enrollment.track_id,
+        "track_name": track_name,
+    }
+
+    title = (
+        f"Schedule Confirmed by {teacher_name}"
+        if agreed
+        else f"Schedule Alternative Proposed by {teacher_name}"
+    )
+    summary = (
+        f"Ustadh {teacher_name} has agreed to your weekly learning schedule for {track_name}."
+        if agreed
+        else (
+            f"Ustadh {teacher_name} reviewed your schedule for {track_name} and proposed an adjustment: {notes}"
+            if notes
+            else f"Ustadh {teacher_name} proposed an alternative time for {track_name}."
+        )
+    )
+
+    # 1. Notify student
+    if active_membership(user=student, organization=organization):
+        notif = create_notification(
+            organization=organization,
+            event_type=EventType.SCHEDULE_AGREEMENT_RESPONSE,
+            recipient=student,
+            title=title,
+            summary=summary,
+            payload=payload,
+            channels=channels,
+        )
+        notifications.append(notif)
+
+    # 2. Notify linked parents
+    for link in getattr(student, "parent_links", []).all() if hasattr(student, "parent_links") else []:
+        parent = link.parent
+        if active_membership(user=parent, organization=organization):
+            notif = create_notification(
+                organization=organization,
+                event_type=EventType.SCHEDULE_AGREEMENT_RESPONSE,
+                recipient=parent,
+                title=title,
+                summary=summary,
+                payload=payload,
+                channels=channels,
+            )
+            notifications.append(notif)
+
+    return notifications

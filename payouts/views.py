@@ -46,6 +46,7 @@ from .serializers import (
     PayoutBulkFinalizeSerializer,
     PayoutGenerateSerializer,
     StatementSerializer,
+    TeacherPayoutConfirmSerializer,
     TeacherPayoutSerializer,
 )
 from .services import (
@@ -266,6 +267,57 @@ class MyStatementView(AcademyScopedView, generics.GenericAPIView):
             period_end=end,
         )
         return Response(self.get_serializer(statement).data)
+
+
+class TeacherPayoutConfirmView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/payouts/organizations/<organization_pk>/<int:pk>/confirm/ — teacher confirms receipt or disputes payout.
+
+    The teacher confirms having received the transfer (confirmed=True) or disputes it
+    with a mandatory reason (confirmed=False, reason="...").
+    Only the payout's assigned teacher may confirm it, and only once the payout is finalized.
+    """
+
+    serializer_class = TeacherPayoutConfirmSerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsTeacher]
+
+    def get_queryset(self):
+        return (
+            TeacherPayout.objects.in_organization(self.organization)
+            .filter(teacher=self.request.user)
+            .select_related(*PAYOUT_RELATED)
+        )
+
+    @extend_schema(
+        request=TeacherPayoutConfirmSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=MyTeacherPayoutSerializer,
+                description="Payout confirmation status recorded.",
+            ),
+            400: OpenApiResponse(description="Invalid payload or missing dispute reason."),
+            403: OpenApiResponse(description="Not authorized or not the payout teacher."),
+            404: OpenApiResponse(description="No such payout for this teacher in this academy."),
+            409: OpenApiResponse(description="Payout cannot be confirmed because it is not finalized."),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        payout = self.get_object()
+        if not payout.is_finalized:
+            raise Conflict("Payout cannot be confirmed because it has not been cleared/finalized by the academy yet.")
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        payout.confirm_receipt(
+            confirmed=data["confirmed"],
+            notes=data.get("reason", ""),
+        )
+
+        return Response(
+            MyTeacherPayoutSerializer(payout, context=self.get_serializer_context()).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 # --- Lead-facing -------------------------------------------------------------
@@ -533,6 +585,8 @@ class PayoutExportView(AcademyScopedView, generics.GenericAPIView):
             "Duration (Minutes)",
             "Rate Used",
             "Session Start (UTC)",
+            "Teacher Confirmation",
+            "Teacher Notes",
         ])
 
         for p in rows:
@@ -576,6 +630,8 @@ class PayoutExportView(AcademyScopedView, generics.GenericAPIView):
                 p.minutes_paid,
                 f"{p.rate_used:.2f}",
                 session_start,
+                p.confirmation_status,
+                p.confirmation_notes,
             ])
 
         return response

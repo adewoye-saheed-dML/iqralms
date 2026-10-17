@@ -29,7 +29,14 @@ from .exceptions import (
     NoCapacity,
     WaitlistEntryAlreadyFulfilled,
 )
-from .models import Availability, Booking, ClassSessionRecording, Cohort, TeacherWaitlist
+from .models import (
+    Availability,
+    Booking,
+    ClassSessionRecording,
+    Cohort,
+    StudentAvailability,
+    TeacherWaitlist,
+)
 from .permissions import (
     CanBookSession,
     CanManageAvailability,
@@ -49,9 +56,13 @@ from .serializers import (
     ClassSessionRecordingSerializer,
     CohortCreateSerializer,
     CohortSerializer,
+    MatchingTeacherSerializer,
     NoCapacitySerializer,
     RouteRequestSerializer,
     RoutedSerializer,
+    ScheduleAgreementActionSerializer,
+    StudentAvailabilityBatchCreateSerializer,
+    StudentAvailabilitySerializer,
     WaitlistEntrySerializer,
     WaitlistPromoteSerializer,
     as_drf_error,
@@ -1104,4 +1115,437 @@ class AcademySessionRecordingDetailView(AcademyScopedView, generics.RetrieveDest
 
     def perform_destroy(self, instance):
         instance.delete()
+
+
+class StudentAvailabilityListView(AcademyScopedView, generics.GenericAPIView):
+    """GET /api/scheduling/organizations/{id}/student-availability/ — list student availability windows.
+    POST /api/scheduling/organizations/{id}/student-availability/ — set/replace student availability windows.
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = StudentAvailabilitySerializer
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="student_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Whose availability to list. Defaults to the requesting student.",
+            )
+        ],
+        responses={200: StudentAvailabilitySerializer(many=True)},
+    )
+    def get(self, request, *args, **kwargs):
+        from accounts.models import ParentLink, Role
+        from organizations.models import StudentEnrollment
+        from organizations.permissions import is_owner_admin_or_lead_teacher
+
+        caller = request.user
+        raw_id = request.query_params.get("student_id")
+
+        if raw_id:
+            try:
+                target_student_id = int(raw_id)
+            except (ValueError, TypeError):
+                raise ValidationError({"student_id": ["Must be an integer."]})
+        elif getattr(caller, "role", None) == Role.STUDENT:
+            target_student_id = caller.id
+        else:
+            target_student_id = None
+
+        if target_student_id:
+            # Check read permission for this student
+            is_self = caller.id == target_student_id
+            is_parent = ParentLink.objects.filter(parent=caller, student_id=target_student_id).exists()
+            is_staff = is_owner_admin_or_lead_teacher(self, caller)
+            is_assigned_teacher = StudentEnrollment.objects.filter(
+                organization=self.organization,
+                user_id=target_student_id,
+                teacher=caller,
+            ).exists()
+
+            if not (is_self or is_parent or is_staff or is_assigned_teacher):
+                raise PermissionDenied("You do not have permission to view this student's availability.")
+
+            qs = StudentAvailability.objects.filter(
+                organization=self.organization, student_id=target_student_id
+            ).select_related("student", "created_by")
+        else:
+            # Listing without student_id:
+            # If parent: list for all their linked children in this academy
+            if getattr(caller, "role", None) == Role.PARENT:
+                child_ids = ParentLink.objects.filter(parent=caller).values_list("student_id", flat=True)
+                qs = StudentAvailability.objects.filter(
+                    organization=self.organization, student_id__in=child_ids
+                ).select_related("student", "created_by")
+            elif is_owner_admin_or_lead_teacher(self, caller):
+                qs = StudentAvailability.objects.filter(
+                    organization=self.organization
+                ).select_related("student", "created_by")
+            elif getattr(caller, "is_teacher", False):
+                student_ids = StudentEnrollment.objects.filter(
+                    organization=self.organization, teacher=caller
+                ).values_list("user_id", flat=True)
+                qs = StudentAvailability.objects.filter(
+                    organization=self.organization, student_id__in=student_ids
+                ).select_related("student", "created_by")
+            else:
+                qs = StudentAvailability.objects.none()
+
+        serializer = StudentAvailabilitySerializer(
+            qs, many=True, context=self.get_serializer_context()
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=StudentAvailabilityBatchCreateSerializer,
+        responses={201: StudentAvailabilitySerializer(many=True)},
+    )
+    def post(self, request, *args, **kwargs):
+        from accounts.models import ParentLink, Role, User
+        from django.db import transaction
+        from notifications.services import notify_student_availability_updated
+        from organizations.models import ScheduleAgreementStatus, StudentEnrollment
+        from organizations.permissions import is_owner_or_admin
+
+        caller = request.user
+        serializer = StudentAvailabilityBatchCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        target_student_id = serializer.validated_data.get("student_id")
+        if not target_student_id:
+            if getattr(caller, "role", None) == Role.STUDENT:
+                target_student_id = caller.id
+            else:
+                raise ValidationError({"student_id": ["Target student_id is required."]})
+
+        try:
+            target_student = User.objects.get(id=target_student_id)
+        except User.DoesNotExist:
+            raise ValidationError({"student_id": ["Student user not found."]})
+
+        # Permission check: solely for student or their parent for minors alone (owners/admins excluded)
+        is_self = caller.id == target_student.id
+        is_parent = ParentLink.objects.filter(parent=caller, student=target_student).exists()
+
+        if getattr(target_student, "is_minor", False):
+            if not is_parent:
+                raise PermissionDenied("For minor students, weekly availability must be declared by their linked parent.")
+        else:
+            if not (is_self or is_parent):
+                raise PermissionDenied("Student availability can only be declared directly by the student or their linked parent.")
+
+        windows_data = serializer.validated_data.get("windows", [])
+        tz_name = (
+            serializer.validated_data.get("timezone")
+            or getattr(target_student, "timezone", None)
+            or getattr(caller, "timezone", None)
+            or "UTC"
+        )
+
+        with transaction.atomic():
+            # Replace existing availability windows for this student in this organization
+            StudentAvailability.objects.filter(
+                organization=self.organization, student=target_student
+            ).delete()
+
+            created = []
+            for w in windows_data:
+                rows = StudentAvailability.create_from_local(
+                    organization=self.organization,
+                    student=target_student,
+                    created_by=caller,
+                    weekday=w["weekday"],
+                    start_local=w["start_time"],
+                    end_local=w["end_time"],
+                    tz_name=tz_name,
+                )
+                created.extend(rows)
+
+            # Check if student is actively enrolled with an allocated teacher
+            enrollments = StudentEnrollment.objects.filter(
+                organization=self.organization,
+                user=target_student,
+                status="active",
+                teacher__isnull=False,
+            )
+            if enrollments.exists():
+                enrollments.update(
+                    schedule_agreement_status=ScheduleAgreementStatus.PENDING,
+                    schedule_agreement_notes="",
+                    schedule_agreed_at=None,
+                )
+                notify_student_availability_updated(
+                    student=target_student,
+                    organization=self.organization,
+                    actor=caller,
+                )
+
+        return Response(
+            StudentAvailabilitySerializer(created, many=True, context=self.get_serializer_context()).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class StudentAvailabilityDetailView(AcademyScopedView, generics.DestroyAPIView):
+    """DELETE /api/scheduling/organizations/{id}/student-availability/{pk}/ — remove availability window."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = StudentAvailabilitySerializer
+
+    def get_queryset(self):
+        from accounts.models import ParentLink
+
+        caller = self.request.user
+        parent_child_ids = ParentLink.objects.filter(parent=caller).values_list("student_id", flat=True)
+        return StudentAvailability.objects.filter(
+            Q(organization=self.organization)
+            & (Q(student=caller) | Q(student_id__in=parent_child_ids))
+        )
+
+
+class StudentAvailabilityAgreementView(AcademyScopedView, generics.GenericAPIView):
+    """POST /api/scheduling/organizations/{id}/student-availability/{student_id}/agree/ — teacher schedule agreement."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = ScheduleAgreementActionSerializer
+
+    @extend_schema(
+        request=ScheduleAgreementActionSerializer,
+        responses={200: OpenApiResponse(description="Schedule agreement recorded.")},
+    )
+    def post(self, request, organization_pk=None, student_id=None, *args, **kwargs):
+        from django.utils import timezone as dj_timezone
+        from notifications.services import notify_schedule_agreement_response
+        from organizations.models import EnrollmentStatus, ScheduleAgreementStatus, StudentEnrollment
+        from organizations.permissions import is_owner_or_admin
+
+        caller = request.user
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        agreed = serializer.validated_data["agreed"]
+        notes = serializer.validated_data.get("notes", "")
+
+        enrollment = StudentEnrollment.objects.filter(
+            organization=self.organization,
+            user_id=student_id,
+            status=EnrollmentStatus.ACTIVE,
+        ).select_related("teacher", "track", "user").first()
+
+        if not enrollment:
+            raise ValidationError({"student_id": ["Active student enrollment not found in this academy."]})
+
+        is_teacher = enrollment.teacher_id == caller.id
+        is_admin = is_owner_or_admin(self, caller)
+
+        if not (is_teacher or is_admin):
+            raise PermissionDenied("Only the allocated teacher or academy leadership can respond to schedule agreements.")
+
+        if agreed:
+            enrollment.schedule_agreement_status = ScheduleAgreementStatus.AGREED
+            enrollment.schedule_agreement_notes = notes
+            enrollment.schedule_agreed_at = dj_timezone.now()
+            enrollment.save(update_fields=["schedule_agreement_status", "schedule_agreement_notes", "schedule_agreed_at"])
+        else:
+            enrollment.schedule_agreement_status = ScheduleAgreementStatus.ALTERNATIVE_PROPOSED
+            enrollment.schedule_agreement_notes = notes
+            enrollment.save(update_fields=["schedule_agreement_status", "schedule_agreement_notes"])
+
+        notify_schedule_agreement_response(
+            enrollment=enrollment,
+            teacher=caller,
+            agreed=agreed,
+            notes=notes,
+        )
+
+        from organizations.serializers import StudentDetailSerializer
+        return Response(
+            {
+                "success": True,
+                "agreed": agreed,
+                "schedule_agreement_status": enrollment.schedule_agreement_status,
+                "schedule_agreement_notes": enrollment.schedule_agreement_notes,
+                "schedule_agreed_at": enrollment.schedule_agreed_at,
+                "enrollment": StudentDetailSerializer(enrollment, context=self.get_serializer_context()).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class TeacherAvailabilityMatchView(AcademyScopedView, generics.GenericAPIView):
+    """GET /api/scheduling/organizations/{id}/matching-teachers/ — compare teacher and student availability."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    serializer_class = MatchingTeacherSerializer
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="student_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Student user ID to match availability against.",
+            ),
+            OpenApiParameter(
+                name="track_id",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Curriculum track ID (subject) to match qualified teachers. Defaults to student's enrolled track.",
+            ),
+        ],
+        responses={200: MatchingTeacherSerializer(many=True)},
+    )
+    def get(self, request, *args, **kwargs):
+        from accounts.models import OrganizationTeacherConfiguration, User
+        from curriculum.models import TeacherTrack, Track
+        from organizations.models import EnrollmentStatus, StudentEnrollment
+        from organizations.permissions import is_owner_admin_or_lead_teacher
+
+        if not is_owner_admin_or_lead_teacher(self, request.user):
+            raise PermissionDenied("Only academy leadership can view teacher availability matching.")
+
+        raw_student_id = request.query_params.get("student_id")
+        if not raw_student_id:
+            raise ValidationError({"student_id": ["student_id is required."]})
+        try:
+            student_id = int(raw_student_id)
+        except (ValueError, TypeError):
+            raise ValidationError({"student_id": ["Must be an integer."]})
+
+        enrollment = StudentEnrollment.objects.filter(
+            organization=self.organization,
+            user_id=student_id,
+        ).select_related("track", "teacher").first()
+
+        raw_track_id = request.query_params.get("track_id")
+        if raw_track_id:
+            try:
+                track_id = int(raw_track_id)
+            except (ValueError, TypeError):
+                raise ValidationError({"track_id": ["Must be an integer."]})
+        elif enrollment and enrollment.track_id:
+            track_id = enrollment.track_id
+        else:
+            track_id = None
+
+        # Student weekly availability windows
+        student_windows = list(
+            StudentAvailability.objects.filter(
+                organization=self.organization,
+                student_id=student_id,
+            ).order_by("weekday", "start_time_utc")
+        )
+
+        # Teachers eligible for track in this organization
+        teacher_track_qs = TeacherTrack.objects.filter(
+            membership__organization=self.organization,
+            active=True,
+        ).select_related("membership__user", "track")
+
+        if track_id:
+            teacher_track_qs = teacher_track_qs.filter(track_id=track_id)
+
+        # Fetch candidate teachers
+        eligible_teachers_map = {}
+        for tt in teacher_track_qs:
+            teacher_user = tt.membership.user
+            eligible_teachers_map[teacher_user.id] = (teacher_user, tt.track)
+
+        # If no track filter, also include active teachers in the academy
+        if not track_id:
+            from accounts.models import Role
+            active_teachers = User.objects.filter(
+                organization_memberships__organization=self.organization,
+                role__in=[Role.SUB, Role.LEAD],
+            ).distinct()
+            for t in active_teachers:
+                if t.id not in eligible_teachers_map:
+                    eligible_teachers_map[t.id] = (t, getattr(enrollment, "track", None))
+
+        results = []
+        for teacher_id, (teacher_user, track_obj) in eligible_teachers_map.items():
+            teacher_windows = list(
+                Availability.objects.filter(
+                    organization=self.organization,
+                    teacher=teacher_user,
+                ).order_by("weekday", "start_time_utc")
+            )
+
+            # Calculate overlapping windows
+            overlapping = []
+            total_overlap_min = 0
+
+            for sw in student_windows:
+                for tw in teacher_windows:
+                    if sw.weekday == tw.weekday:
+                        o_start = max(sw.start_time_utc, tw.start_time_utc)
+                        o_end = min(sw.end_time_utc, tw.end_time_utc)
+                        if o_start < o_end:
+                            o_min = (o_end.hour * 60 + o_end.minute) - (o_start.hour * 60 + o_start.minute)
+                            total_overlap_min += o_min
+                            overlapping.append({
+                                "weekday": sw.weekday,
+                                "weekday_display": sw.get_weekday_display(),
+                                "start_time_utc": o_start.strftime("%H:%M:%S"),
+                                "end_time_utc": o_end.strftime("%H:%M:%S"),
+                                "start_time": o_start.strftime("%H:%M:%S"),
+                                "end_time": o_end.strftime("%H:%M:%S"),
+                                "overlap_minutes": o_min,
+                            })
+
+            if total_overlap_min >= 240:
+                match_quality = "high"
+            elif total_overlap_min > 0:
+                match_quality = "moderate"
+            else:
+                match_quality = "none"
+
+            active_students_count = StudentEnrollment.objects.filter(
+                organization=self.organization,
+                teacher=teacher_user,
+                status=EnrollmentStatus.ACTIVE,
+            ).count()
+
+            config = OrganizationTeacherConfiguration.objects.filter(
+                membership__organization=self.organization,
+                membership__user=teacher_user,
+            ).first()
+            max_hours = float(config.max_weekly_hours) if config and config.max_weekly_hours else None
+
+            is_assigned = bool(enrollment and enrollment.teacher_id == teacher_user.id)
+            teacher_name = teacher_user.get_full_name() or teacher_user.username
+
+            results.append({
+                "teacher_id": teacher_user.id,
+                "teacher_name": teacher_name,
+                "teacher_username": teacher_user.username,
+                "is_currently_assigned": is_assigned,
+                "track_id": track_obj.id if track_obj else 0,
+                "track_name": track_obj.name if track_obj else "Unassigned",
+                "match_quality": match_quality,
+                "overlap_total_minutes": total_overlap_min,
+                "overlap_total_hours": round(total_overlap_min / 60.0, 1),
+                "overlapping_windows": overlapping,
+                "teacher_windows": teacher_windows,
+                "active_students_count": active_students_count,
+                "max_weekly_hours": max_hours,
+            })
+
+        # Sort: Currently assigned first, then best overlap minutes descending
+        results.sort(
+            key=lambda x: (
+                1 if x["is_currently_assigned"] else 0,
+                x["overlap_total_minutes"],
+            ),
+            reverse=True,
+        )
+
+        serializer = MatchingTeacherSerializer(
+            results, many=True, context=self.get_serializer_context()
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
 

@@ -89,6 +89,11 @@ class PlatformSubscription(models.Model):
         blank=True,
         help_text="End of the current paid billing period.",
     )
+    onboarding_email_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the creator/head onboarding video guide email was sent.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -103,7 +108,6 @@ class PlatformSubscription(models.Model):
 
     def __str__(self):
         return f"{self.organization.name}: {self.tier} ({self.status})"
-
 
 
 class BillingWebhookEvent(models.Model):
@@ -132,3 +136,73 @@ class BillingWebhookEvent(models.Model):
 
     def __str__(self):
         return f"{self.event_type} ({self.event_id}) at {self.processed_at:%Y-%m-%d %H:%M}"
+
+
+class SubscriberOnboardingDispatch(models.Model):
+    """Log of onboarding guide emails sent by the platform creator to academy subscribers."""
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="onboarding_dispatches",
+        help_text="The academy whose subscriber/owner was notified.",
+    )
+    recipient_email = models.EmailField(
+        help_text="Email address the onboarding guide was sent to.",
+    )
+    subject = models.CharField(
+        max_length=255,
+        default="Welcome to Iqra LMS: Complete Academy Setup Guide & Video Walkthroughs",
+    )
+    sent_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sent_onboarding_emails",
+        help_text="Platform admin or creator who initiated the onboarding dispatch.",
+    )
+    video_links = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of guide video objects included in this dispatch.",
+    )
+    custom_message = models.TextField(
+        blank=True,
+        default="",
+        help_text="Personalized note or instructions from the platform creator.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Onboarding dispatch to {self.recipient_email} at {self.created_at}"
+
+
+class PlatformAnnouncement(models.Model):
+    """Global system or curriculum announcements from the platform head."""
+
+    title = models.CharField(max_length=200)
+    message = models.TextField()
+    is_active = models.BooleanField(default=True)
+    level = models.CharField(
+        max_length=20,
+        choices=[("info", "Information"), ("warning", "Warning"), ("success", "Success")],
+        default="info",
+    )
+    created_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="announcements_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Announcement: {self.title} ({'Active' if self.is_active else 'Inactive'})"

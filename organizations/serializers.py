@@ -233,6 +233,12 @@ class StudentListSerializer(serializers.ModelSerializer):
     level_id = serializers.IntegerField(source="level.id", read_only=True, allow_null=True)
     teacher_id = serializers.IntegerField(source="teacher.id", read_only=True, allow_null=True)
     teacher_name = serializers.SerializerMethodField(read_only=True)
+    schedule_agreement_status = serializers.CharField(read_only=True)
+    schedule_agreement_status_display = serializers.CharField(
+        source="get_schedule_agreement_status_display", read_only=True
+    )
+    schedule_agreement_notes = serializers.CharField(read_only=True)
+    schedule_agreed_at = serializers.DateTimeField(read_only=True)
 
     def get_teacher_name(self, obj) -> str | None:
         if not obj.teacher:
@@ -259,6 +265,11 @@ class StudentListSerializer(serializers.ModelSerializer):
             "level_id",
             "teacher_id",
             "teacher_name",
+
+            "schedule_agreement_status",
+            "schedule_agreement_status_display",
+            "schedule_agreement_notes",
+            "schedule_agreed_at",
 
             "created_at",
             "updated_at",
@@ -326,7 +337,7 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
 class StudentEnrollmentUpdateSerializer(serializers.Serializer):
     """Updating a student's enrollment status."""
 
-    from .models import EnrollmentStatus
+    from .models import EnrollmentStatus, ScheduleAgreementStatus
     from curriculum.models import Track, Level
     status = serializers.ChoiceField(choices=EnrollmentStatus.choices, required=False)
     track_id = serializers.PrimaryKeyRelatedField(
@@ -338,8 +349,13 @@ class StudentEnrollmentUpdateSerializer(serializers.Serializer):
     teacher_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), source="teacher", required=False, allow_null=True
     )
+    schedule_agreement_status = serializers.ChoiceField(
+        choices=ScheduleAgreementStatus.choices, required=False
+    )
+    schedule_agreement_notes = serializers.CharField(required=False, allow_blank=True)
 
     def update(self, enrollment, validated_data):
+        from .models import ScheduleAgreementStatus
 
         if "status" in validated_data:
             enrollment.status = validated_data["status"]
@@ -348,7 +364,18 @@ class StudentEnrollmentUpdateSerializer(serializers.Serializer):
         if "level" in validated_data:
             enrollment.level = validated_data["level"]
         if "teacher" in validated_data:
+            old_teacher_id = enrollment.teacher_id
             enrollment.teacher = validated_data["teacher"]
+            # If teacher was newly allocated or changed, set agreement status to pending
+            if validated_data["teacher"] and getattr(validated_data["teacher"], "id", None) != old_teacher_id:
+                enrollment.schedule_agreement_status = ScheduleAgreementStatus.PENDING
+                enrollment.schedule_agreement_notes = ""
+                enrollment.schedule_agreed_at = None
+
+        if "schedule_agreement_status" in validated_data:
+            enrollment.schedule_agreement_status = validated_data["schedule_agreement_status"]
+        if "schedule_agreement_notes" in validated_data:
+            enrollment.schedule_agreement_notes = validated_data["schedule_agreement_notes"]
 
         try:
             enrollment.save()

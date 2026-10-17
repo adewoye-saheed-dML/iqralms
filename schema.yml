@@ -1524,6 +1524,23 @@ paths:
         '201':
           description: Created. Body carries the user, an account status of 'active'
             or 'pending_parent_link', and a human-readable detail message.
+  /api/billing/location/:
+    get:
+      operationId: billing_location_retrieve
+      description: Public endpoint to detect visitor country and return applicable
+        billing currency.
+      summary: Detect visitor location and return applicable billing currency
+      tags:
+      - billing
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingLocation'
+          description: ''
   /api/billing/status/:
     get:
       operationId: billing_status_retrieve
@@ -3812,6 +3829,58 @@ paths:
       responses:
         '200':
           description: Webhook event processed or acknowledged.
+  /api/payouts/organizations/{organization_pk}/{id}/confirm/:
+    post:
+      operationId: payouts_organizations_confirm_create
+      description: |-
+        POST /api/payouts/organizations/<organization_pk>/<int:pk>/confirm/ — teacher confirms receipt or disputes payout.
+
+        The teacher confirms having received the transfer (confirmed=True) or disputes it
+        with a mandatory reason (confirmed=False, reason="...").
+        Only the payout's assigned teacher may confirm it, and only once the payout is finalized.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - payouts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeacherPayoutConfirm'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TeacherPayoutConfirm'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TeacherPayoutConfirm'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyTeacherPayout'
+          description: Payout confirmation status recorded.
+        '400':
+          description: Invalid payload or missing dispute reason.
+        '403':
+          description: Not authorized or not the payout teacher.
+        '404':
+          description: No such payout for this teacher in this academy.
+        '409':
+          description: Payout cannot be confirmed because it is not finalized.
   /api/payouts/organizations/{organization_pk}/{id}/finalize/:
     post:
       operationId: payouts_organizations_finalize_create
@@ -3851,6 +3920,94 @@ paths:
           description: No such payout.
         '409':
           description: Already finalized.
+  /api/payouts/organizations/{organization_pk}/bulk-finalize/:
+    post:
+      operationId: payouts_organizations_bulk_finalize_create
+      description: |-
+        POST /api/payouts/organizations/<organization_pk>/bulk-finalize/ — mark multiple payouts as settled.
+
+        Allows the lead or owner to finalize awaiting payouts in a period or for specific IDs
+        after executing bank transfers off-platform.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - payouts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayoutBulkFinalize'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PayoutBulkFinalize'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PayoutBulkFinalize'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkFinalizationResult'
+          description: Batch finalization complete.
+        '400':
+          description: Invalid request parameters.
+        '403':
+          description: Not an organization owner or administrator.
+  /api/payouts/organizations/{organization_pk}/export/:
+    get:
+      operationId: payouts_organizations_export_retrieve
+      description: |-
+        GET /api/payouts/organizations/<organization_pk>/export/ — bank transfer batch CSV export.
+
+        Enables the academy lead/owner to export a CSV batch file of payouts
+        for offline execution via corporate or mobile banking (NIP/NUBAN batch payment).
+      parameters:
+      - in: query
+        name: end
+        schema:
+          type: string
+        description: Exclusive period end, ISO-8601 UTC.
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: start
+        schema:
+          type: string
+        description: Inclusive period start, ISO-8601 UTC, e.g. 2026-08-01T00:00:00Z.
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: Filter by payout status (e.g. 'generated', 'finalized', 'all').
+          Defaults to 'all'.
+      - in: query
+        name: teacher_id
+        schema:
+          type: integer
+        description: Narrow the export to one teacher.
+      tags:
+      - payouts
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: CSV batch export of teacher payouts with bank details.
+        '400':
+          description: Invalid teacher_id or period parameter.
+        '403':
+          description: Not an organization owner or administrator.
   /api/payouts/organizations/{organization_pk}/generate/:
     post:
       operationId: payouts_organizations_generate_create
@@ -4088,6 +4245,239 @@ paths:
           description: Missing, unparseable or inverted period.
         '403':
           description: Not an active teacher account in this academy.
+  /api/platform-admin/activities/:
+    get:
+      operationId: platform_admin_activities_list
+      description: Aggregates notable platform-wide audit log events for executive
+        oversight.
+      summary: Oversee Notable Platform Activities
+      parameters:
+      - in: query
+        name: category
+        schema:
+          type: string
+        description: Filter category (Billing, Academies, Curriculum, Security)
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Max activity records
+      tags:
+      - platform-admin
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PlatformActivity'
+          description: ''
+  /api/platform-admin/announcements/:
+    get:
+      operationId: platform_admin_announcements_list
+      description: List or create platform-wide broadcasts.
+      summary: Platform Global Announcements
+      tags:
+      - platform-admin
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PlatformAnnouncement'
+          description: ''
+    post:
+      operationId: platform_admin_announcements_create
+      description: List or create platform-wide broadcasts.
+      summary: Platform Global Announcements
+      tags:
+      - platform-admin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlatformAnnouncement'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlatformAnnouncement'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PlatformAnnouncement'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PlatformAnnouncement'
+          description: ''
+  /api/platform-admin/onboarding-dispatches/:
+    get:
+      operationId: platform_admin_onboarding_dispatches_list
+      description: Lists history of sent onboarding emails.
+      summary: List Onboarding Email Dispatches
+      tags:
+      - platform-admin
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubscriberOnboardingDispatch'
+          description: ''
+  /api/platform-admin/onboarding-videos/:
+    get:
+      operationId: platform_admin_onboarding_videos_list
+      description: Returns the official suite of onboarding walkthrough videos.
+      summary: List Subscriber Onboarding Guide Videos
+      tags:
+      - platform-admin
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GuideVideo'
+          description: ''
+  /api/platform-admin/overview/:
+    get:
+      operationId: platform_admin_overview_retrieve
+      description: Returns high-level platform health, MRR, academies, students, and
+        subscriptions count.
+      summary: Platform Creator / Super Admin Overview KPIs
+      tags:
+      - platform-admin
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformOverview'
+          description: ''
+  /api/platform-admin/send-onboarding-email/:
+    post:
+      operationId: platform_admin_send_onboarding_email_create
+      description: Sends rich onboarding email containing video links, walkthroughs,
+        and setup steps.
+      summary: Dispatch Onboarding Email with Guide Videos to a Subscriber
+      tags:
+      - platform-admin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OnboardingEmailSend'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OnboardingEmailSend'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OnboardingEmailSend'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: Onboarding email dispatched successfully.
+        '400':
+          description: Invalid request payload.
+  /api/platform-admin/subscribers/:
+    get:
+      operationId: platform_admin_subscribers_list
+      description: Lists all tenant academies with owner, subscription tier, student
+        counts, and status.
+      summary: List All Academy Subscribers
+      parameters:
+      - in: query
+        name: q
+        schema:
+          type: string
+        description: Search academy name, slug, or owner email
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: Filter by subscription status
+      - in: query
+        name: tier
+        schema:
+          type: string
+        description: Filter by subscription tier
+      tags:
+      - platform-admin
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubscriberDetail'
+          description: ''
+  /api/platform-admin/subscribers/{id}/manage/:
+    post:
+      operationId: platform_admin_subscribers_manage_create
+      description: Allows platform creator to activate, comp, suspend, change tier,
+        or extend subscription.
+      summary: Manage Subscriber Academy Platform Subscription
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - platform-admin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriberSubscriptionManage'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SubscriberSubscriptionManage'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubscriberSubscriptionManage'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: Subscription updated successfully.
+        '404':
+          description: Academy not found.
   /api/pricing/children/{student_id}/active/:
     get:
       operationId: pricing_children_active_retrieve
@@ -4806,6 +5196,43 @@ paths:
                 items:
                   $ref: '#/components/schemas/Cohort'
           description: ''
+  /api/scheduling/organizations/{organization_pk}/matching-teachers/:
+    get:
+      operationId: scheduling_organizations_matching_teachers_list
+      description: GET /api/scheduling/organizations/{id}/matching-teachers/ — compare
+        teacher and student availability.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+        description: Student user ID to match availability against.
+        required: true
+      - in: query
+        name: track_id
+        schema:
+          type: integer
+        description: Curriculum track ID (subject) to match qualified teachers. Defaults
+          to student's enrolled track.
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MatchingTeacher'
+          description: ''
   /api/scheduling/organizations/{organization_pk}/recordings/:
     get:
       operationId: scheduling_organizations_recordings_list
@@ -4978,6 +5405,134 @@ paths:
             outside their hours or over their cap to avoid this. For a ``preferred_teacher``
             request this is also the waitlisted outcome: ``considered.waitlist`` carries
             the entry, and no other teacher has been assigned.'
+  /api/scheduling/organizations/{organization_pk}/student-availability/:
+    get:
+      operationId: scheduling_organizations_student_availability_list
+      description: |-
+        GET /api/scheduling/organizations/{id}/student-availability/ — list student availability windows.
+        POST /api/scheduling/organizations/{id}/student-availability/ — set/replace student availability windows.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: student_id
+        schema:
+          type: integer
+        description: Whose availability to list. Defaults to the requesting student.
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StudentAvailability'
+          description: ''
+    post:
+      operationId: scheduling_organizations_student_availability_create
+      description: |-
+        GET /api/scheduling/organizations/{id}/student-availability/ — list student availability windows.
+        POST /api/scheduling/organizations/{id}/student-availability/ — set/replace student availability windows.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentAvailabilityBatchCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/StudentAvailabilityBatchCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/StudentAvailabilityBatchCreate'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StudentAvailability'
+          description: ''
+  /api/scheduling/organizations/{organization_pk}/student-availability/{id}/:
+    delete:
+      operationId: scheduling_organizations_student_availability_destroy
+      description: DELETE /api/scheduling/organizations/{id}/student-availability/{pk}/
+        — remove availability window.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/scheduling/organizations/{organization_pk}/student-availability/{student_id}/agree/:
+    post:
+      operationId: scheduling_organizations_student_availability_agree_create
+      description: POST /api/scheduling/organizations/{id}/student-availability/{student_id}/agree/
+        — teacher schedule agreement.
+      parameters:
+      - in: path
+        name: organization_pk
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: student_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - scheduling
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleAgreementAction'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ScheduleAgreementAction'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ScheduleAgreementAction'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          description: Schedule agreement recorded.
   /api/scheduling/organizations/{organization_pk}/waitlist/:
     get:
       operationId: scheduling_organizations_waitlist_list
@@ -5162,132 +5717,6 @@ paths:
           description: Webhook event processed or acknowledged.
 components:
   schemas:
-    ActionEnum:
-      enum:
-      - auth.login_success
-      - auth.login_failed
-      - auth.logout
-      - auth.password_changed
-      - auth.password_reset_requested
-      - organization.created
-      - organization.settings_updated
-      - membership.created
-      - membership.role_changed
-      - membership.suspended
-      - membership.reactivated
-      - invitation.created
-      - invitation.resent
-      - invitation.revoked
-      - invitation.accepted
-      - invitation.email_failed
-      - permission.changed
-      - curriculum.track_created
-      - curriculum.track_updated
-      - curriculum.track_archived
-      - curriculum.level_created
-      - curriculum.level_updated
-      - curriculum.level_archived
-      - curriculum.teacher_assignment_changed
-      - enrollment.created
-      - enrollment.updated
-      - enrollment.withdrawn
-      - availability.created
-      - availability.updated
-      - availability.deleted
-      - booking.created
-      - booking.updated
-      - booking.cancelled
-      - booking.completed
-      - booking.no_show
-      - cohort.created
-      - cohort.updated
-      - cohort.cancelled
-      - cohort.assignment_changed
-      - assessment.created
-      - assessment.updated
-      - assessment.finalized
-      - assessment.reopened
-      - pricing.agreement_created
-      - pricing.agreement_updated
-      - pricing.agreement_deactivated
-      - pricing.rate_changed
-      - payout.created
-      - payout.finalized
-      - payout.reopened
-      - notification.provider_updated
-      - notification.configuration_updated
-      - notification.sent
-      - video.provider_updated
-      - video.meeting_created
-      - video.meeting_updated
-      - video.meeting_cancelled
-      - bulk_import.started
-      - bulk_import.validated
-      - bulk_import.completed
-      - bulk_import.failed
-      type: string
-      description: |-
-        * `auth.login_success` - Login Success
-        * `auth.login_failed` - Login Failed
-        * `auth.logout` - Logout
-        * `auth.password_changed` - Password Changed
-        * `auth.password_reset_requested` - Password Reset Requested
-        * `organization.created` - Organization Created
-        * `organization.settings_updated` - Organization Settings Updated
-        * `membership.created` - Membership Created
-        * `membership.role_changed` - Membership Role Changed
-        * `membership.suspended` - Membership Suspended
-        * `membership.reactivated` - Membership Reactivated
-        * `invitation.created` - Invitation Created
-        * `invitation.resent` - Invitation Resent
-        * `invitation.revoked` - Invitation Revoked
-        * `invitation.accepted` - Invitation Accepted
-        * `invitation.email_failed` - Invitation Email Failed
-        * `permission.changed` - Permission Changed
-        * `curriculum.track_created` - Track Created
-        * `curriculum.track_updated` - Track Updated
-        * `curriculum.track_archived` - Track Archived
-        * `curriculum.level_created` - Level Created
-        * `curriculum.level_updated` - Level Updated
-        * `curriculum.level_archived` - Level Archived
-        * `curriculum.teacher_assignment_changed` - Teacher Assignment Changed
-        * `enrollment.created` - Enrollment Created
-        * `enrollment.updated` - Enrollment Updated
-        * `enrollment.withdrawn` - Enrollment Withdrawn
-        * `availability.created` - Availability Created
-        * `availability.updated` - Availability Updated
-        * `availability.deleted` - Availability Deleted
-        * `booking.created` - Booking Created
-        * `booking.updated` - Booking Updated
-        * `booking.cancelled` - Booking Cancelled
-        * `booking.completed` - Booking Completed
-        * `booking.no_show` - Booking No Show
-        * `cohort.created` - Cohort Created
-        * `cohort.updated` - Cohort Updated
-        * `cohort.cancelled` - Cohort Cancelled
-        * `cohort.assignment_changed` - Cohort Assignment Changed
-        * `assessment.created` - Assessment Created
-        * `assessment.updated` - Assessment Updated
-        * `assessment.finalized` - Assessment Finalized
-        * `assessment.reopened` - Assessment Reopened
-        * `pricing.agreement_created` - Agreement Created
-        * `pricing.agreement_updated` - Agreement Updated
-        * `pricing.agreement_deactivated` - Agreement Deactivated
-        * `pricing.rate_changed` - Rate Changed
-        * `payout.created` - Payout Created
-        * `payout.finalized` - Payout Finalized
-        * `payout.reopened` - Payout Reopened
-        * `notification.provider_updated` - Notification Provider Updated
-        * `notification.configuration_updated` - Notification Configuration Updated
-        * `notification.sent` - Notification Sent
-        * `video.provider_updated` - Video Provider Updated
-        * `video.meeting_created` - Meeting Created
-        * `video.meeting_updated` - Meeting Updated
-        * `video.meeting_cancelled` - Meeting Cancelled
-        * `bulk_import.started` - Bulk Import Started
-        * `bulk_import.validated` - Bulk Import Validated
-        * `bulk_import.completed` - Bulk Import Completed
-        * `bulk_import.failed` - Bulk Import Failed
     ActorTypeEnum:
       enum:
       - USER
@@ -5428,6 +5857,7 @@ components:
         active:
           type: boolean
           readOnly: true
+          default: true
           description: 'False once a later rubric for the same track supersedes this
             one. Superseded rubrics are kept: historical assessments reference their
             criteria.'
@@ -5698,7 +6128,7 @@ components:
           description: Preserves actor ID if the user is deleted
         action:
           allOf:
-          - $ref: '#/components/schemas/ActionEnum'
+          - $ref: '#/components/schemas/AuditLogActionEnum'
           readOnly: true
         object_type:
           type: string
@@ -5727,6 +6157,132 @@ components:
       - object_type
       - organization
       - request_id
+    AuditLogActionEnum:
+      enum:
+      - auth.login_success
+      - auth.login_failed
+      - auth.logout
+      - auth.password_changed
+      - auth.password_reset_requested
+      - organization.created
+      - organization.settings_updated
+      - membership.created
+      - membership.role_changed
+      - membership.suspended
+      - membership.reactivated
+      - invitation.created
+      - invitation.resent
+      - invitation.revoked
+      - invitation.accepted
+      - invitation.email_failed
+      - permission.changed
+      - curriculum.track_created
+      - curriculum.track_updated
+      - curriculum.track_archived
+      - curriculum.level_created
+      - curriculum.level_updated
+      - curriculum.level_archived
+      - curriculum.teacher_assignment_changed
+      - enrollment.created
+      - enrollment.updated
+      - enrollment.withdrawn
+      - availability.created
+      - availability.updated
+      - availability.deleted
+      - booking.created
+      - booking.updated
+      - booking.cancelled
+      - booking.completed
+      - booking.no_show
+      - cohort.created
+      - cohort.updated
+      - cohort.cancelled
+      - cohort.assignment_changed
+      - assessment.created
+      - assessment.updated
+      - assessment.finalized
+      - assessment.reopened
+      - pricing.agreement_created
+      - pricing.agreement_updated
+      - pricing.agreement_deactivated
+      - pricing.rate_changed
+      - payout.created
+      - payout.finalized
+      - payout.reopened
+      - notification.provider_updated
+      - notification.configuration_updated
+      - notification.sent
+      - video.provider_updated
+      - video.meeting_created
+      - video.meeting_updated
+      - video.meeting_cancelled
+      - bulk_import.started
+      - bulk_import.validated
+      - bulk_import.completed
+      - bulk_import.failed
+      type: string
+      description: |-
+        * `auth.login_success` - Login Success
+        * `auth.login_failed` - Login Failed
+        * `auth.logout` - Logout
+        * `auth.password_changed` - Password Changed
+        * `auth.password_reset_requested` - Password Reset Requested
+        * `organization.created` - Organization Created
+        * `organization.settings_updated` - Organization Settings Updated
+        * `membership.created` - Membership Created
+        * `membership.role_changed` - Membership Role Changed
+        * `membership.suspended` - Membership Suspended
+        * `membership.reactivated` - Membership Reactivated
+        * `invitation.created` - Invitation Created
+        * `invitation.resent` - Invitation Resent
+        * `invitation.revoked` - Invitation Revoked
+        * `invitation.accepted` - Invitation Accepted
+        * `invitation.email_failed` - Invitation Email Failed
+        * `permission.changed` - Permission Changed
+        * `curriculum.track_created` - Track Created
+        * `curriculum.track_updated` - Track Updated
+        * `curriculum.track_archived` - Track Archived
+        * `curriculum.level_created` - Level Created
+        * `curriculum.level_updated` - Level Updated
+        * `curriculum.level_archived` - Level Archived
+        * `curriculum.teacher_assignment_changed` - Teacher Assignment Changed
+        * `enrollment.created` - Enrollment Created
+        * `enrollment.updated` - Enrollment Updated
+        * `enrollment.withdrawn` - Enrollment Withdrawn
+        * `availability.created` - Availability Created
+        * `availability.updated` - Availability Updated
+        * `availability.deleted` - Availability Deleted
+        * `booking.created` - Booking Created
+        * `booking.updated` - Booking Updated
+        * `booking.cancelled` - Booking Cancelled
+        * `booking.completed` - Booking Completed
+        * `booking.no_show` - Booking No Show
+        * `cohort.created` - Cohort Created
+        * `cohort.updated` - Cohort Updated
+        * `cohort.cancelled` - Cohort Cancelled
+        * `cohort.assignment_changed` - Cohort Assignment Changed
+        * `assessment.created` - Assessment Created
+        * `assessment.updated` - Assessment Updated
+        * `assessment.finalized` - Assessment Finalized
+        * `assessment.reopened` - Assessment Reopened
+        * `pricing.agreement_created` - Agreement Created
+        * `pricing.agreement_updated` - Agreement Updated
+        * `pricing.agreement_deactivated` - Agreement Deactivated
+        * `pricing.rate_changed` - Rate Changed
+        * `payout.created` - Payout Created
+        * `payout.finalized` - Payout Finalized
+        * `payout.reopened` - Payout Reopened
+        * `notification.provider_updated` - Notification Provider Updated
+        * `notification.configuration_updated` - Notification Configuration Updated
+        * `notification.sent` - Notification Sent
+        * `video.provider_updated` - Video Provider Updated
+        * `video.meeting_created` - Meeting Created
+        * `video.meeting_updated` - Meeting Updated
+        * `video.meeting_cancelled` - Meeting Cancelled
+        * `bulk_import.started` - Bulk Import Started
+        * `bulk_import.validated` - Bulk Import Validated
+        * `bulk_import.completed` - Bulk Import Completed
+        * `bulk_import.failed` - Bulk Import Failed
     Availability:
       type: object
       description: Read representation of one declared window. Public endpoint.
@@ -5790,6 +6346,20 @@ components:
       - end_time
       - start_time
       - weekday
+    BillingLocation:
+      type: object
+      description: Response payload for detected client country and default currency.
+      properties:
+        country:
+          type: string
+        is_nigeria:
+          type: boolean
+        currency:
+          type: string
+      required:
+      - country
+      - currency
+      - is_nigeria
     Booking:
       type: object
       description: Read representation, shared by create, both listings, cancel and
@@ -5977,6 +6547,25 @@ components:
         * `completed` - Completed
         * `no_show` - No show
         * `cancelled` - Cancelled
+    BulkFinalizationResult:
+      type: object
+      description: Result returned after bulk finalization.
+      properties:
+        finalized_count:
+          type: integer
+          readOnly: true
+        finalized_ids:
+          type: array
+          items:
+            type: integer
+          readOnly: true
+        total_amount:
+          type: string
+          readOnly: true
+      required:
+      - finalized_count
+      - finalized_ids
+      - total_amount
     ChannelEnum:
       enum:
       - email
@@ -6168,6 +6757,24 @@ components:
         * `hourly` - Hourly
         * `per_class` - Per Class
         * `fixed_period` - Fixed Period
+    ConfirmationStatusEnum:
+      enum:
+      - pending
+      - confirmed
+      - disputed
+      type: string
+      description: |-
+        * `pending` - Pending Confirmation
+        * `confirmed` - Confirmed
+        * `disputed` - Disputed
+    CurrencyEnum:
+      enum:
+      - NGN
+      - USD
+      type: string
+      description: |-
+        * `NGN` - NGN
+        * `USD` - USD
     CustomLogin:
       type: object
       description: Custom login serializer that safely handles multiple users with
@@ -6201,6 +6808,8 @@ components:
       - placement_reviewed
       - progress_ready
       - teacher_invitation
+      - student_availability_updated
+      - schedule_agreement_response
       type: string
       description: |-
         * `booking_confirmed` - Booking Confirmed
@@ -6208,6 +6817,8 @@ components:
         * `placement_reviewed` - Placement Reviewed
         * `progress_ready` - Progress Ready
         * `teacher_invitation` - Teacher Invitation
+        * `student_availability_updated` - Student Availability Updated
+        * `schedule_agreement_response` - Schedule Agreement Response
     FamilyAssessment:
       type: object
       description: |-
@@ -6421,6 +7032,32 @@ components:
       - skipped
       - skipped_count
       - total_amount
+    GuideVideo:
+      type: object
+      description: Guide video item for subscriber onboarding.
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        duration:
+          type: string
+        url:
+          type: string
+        category:
+          type: string
+        order:
+          type: integer
+      required:
+      - category
+      - description
+      - duration
+      - id
+      - order
+      - title
+      - url
     ImportJobResponse:
       type: object
       properties:
@@ -6901,6 +7538,16 @@ components:
       required:
       - name
       - track
+    LevelEnum:
+      enum:
+      - info
+      - warning
+      - success
+      type: string
+      description: |-
+        * `info` - Information
+        * `warning` - Warning
+        * `success` - Success
     LinkedStudent:
       type: object
       description: A child as seen by their linked parent — no signup_code, no PII
@@ -6972,6 +7619,56 @@ components:
       - start_time
       - timezone
       - weekday
+    MatchingTeacher:
+      type: object
+      properties:
+        teacher_id:
+          type: integer
+        teacher_name:
+          type: string
+        teacher_username:
+          type: string
+        is_currently_assigned:
+          type: boolean
+        track_id:
+          type: integer
+        track_name:
+          type: string
+        match_quality:
+          type: string
+        overlap_total_minutes:
+          type: integer
+        overlap_total_hours:
+          type: number
+          format: double
+        overlapping_windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/OverlappingWindow'
+        teacher_windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/Availability'
+        active_students_count:
+          type: integer
+        max_weekly_hours:
+          type: number
+          format: double
+          nullable: true
+      required:
+      - active_students_count
+      - is_currently_assigned
+      - match_quality
+      - max_weekly_hours
+      - overlap_total_hours
+      - overlap_total_minutes
+      - overlapping_windows
+      - teacher_id
+      - teacher_name
+      - teacher_username
+      - teacher_windows
+      - track_id
+      - track_name
     MaterialTypeEnum:
       enum:
       - pdf
@@ -7211,7 +7908,7 @@ components:
         currency:
           type: string
           readOnly: true
-          description: ISO code, snapshotted. NGN today; conversion is out of scope.
+          description: ISO code, snapshotted. Currency at payout generation time.
         status:
           allOf:
           - $ref: '#/components/schemas/PayoutStatusEnum'
@@ -7224,6 +7921,30 @@ components:
         status_display:
           type: string
           readOnly: true
+        confirmation_status:
+          allOf:
+          - $ref: '#/components/schemas/ConfirmationStatusEnum'
+          readOnly: true
+          description: |-
+            Teacher's acknowledgment: pending, confirmed, or disputed.
+
+            * `pending` - Pending Confirmation
+            * `confirmed` - Confirmed
+            * `disputed` - Disputed
+        confirmation_status_display:
+          type: string
+          readOnly: true
+        confirmation_notes:
+          type: string
+          readOnly: true
+          description: Reason or details provided by the teacher upon confirmation
+            or dispute.
+        confirmed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Timestamp when the teacher confirmed or disputed receipt.
         created_at:
           type: string
           format: date-time
@@ -7238,6 +7959,10 @@ components:
       - amount
       - booking
       - cohort
+      - confirmation_notes
+      - confirmation_status
+      - confirmation_status_display
+      - confirmed_at
       - created_at
       - currency
       - finalized_at
@@ -7294,6 +8019,8 @@ components:
             * `placement_reviewed` - Placement Reviewed
             * `progress_ready` - Progress Ready
             * `teacher_invitation` - Teacher Invitation
+            * `student_availability_updated` - Student Availability Updated
+            * `schedule_agreement_response` - Schedule Agreement Response
         event_type_display:
           type: string
           readOnly: true
@@ -7455,6 +8182,28 @@ components:
     NullEnum:
       enum:
       - null
+    OnboardingEmailSend:
+      type: object
+      description: Payload to trigger an onboarding guide email to a subscriber.
+      properties:
+        organization_id:
+          type: integer
+        recipient_email:
+          type: string
+          format: email
+        subject:
+          type: string
+          default: 'Welcome to Iqra LMS: Complete Academy Setup Guide & Video Walkthroughs'
+        custom_message:
+          type: string
+          default: ''
+        include_all_videos:
+          type: boolean
+          default: true
+        selected_video_ids:
+          type: array
+          items:
+            type: string
     Organization:
       type: object
       description: |-
@@ -7488,8 +8237,8 @@ components:
           maxLength: 64
         currency:
           type: string
-          description: Operating currency for tuition and billing (e.g. NGN, USD,
-            GBP, EUR).
+          description: Operating currency for tuition and billing (e.g. USD, EUR,
+            GBP, NGN).
           maxLength: 3
         paystack_subaccount_code:
           type: string
@@ -7502,7 +8251,7 @@ components:
           readOnly: true
           nullable: true
           description: Paystack subaccount code for routing USD tuition to the academy
-            domiciliary bank account.
+            bank account.
         is_active:
           type: boolean
           readOnly: true
@@ -7965,6 +8714,25 @@ components:
       required:
       - max_weekly_hours
       - user
+    OverlappingWindow:
+      type: object
+      properties:
+        weekday:
+          type: integer
+        weekday_display:
+          type: string
+        start_time_utc:
+          type: string
+        end_time_utc:
+          type: string
+        overlap_minutes:
+          type: integer
+      required:
+      - end_time_utc
+      - overlap_minutes
+      - start_time_utc
+      - weekday
+      - weekday_display
     PaginatedAuditLogList:
       type: object
       required:
@@ -8157,8 +8925,8 @@ components:
           maxLength: 64
         currency:
           type: string
-          description: Operating currency for tuition and billing (e.g. NGN, USD,
-            GBP, EUR).
+          description: Operating currency for tuition and billing (e.g. USD, EUR,
+            GBP, NGN).
           maxLength: 3
         paystack_subaccount_code:
           type: string
@@ -8171,7 +8939,7 @@ components:
           readOnly: true
           nullable: true
           description: Paystack subaccount code for routing USD tuition to the academy
-            domiciliary bank account.
+            bank account.
         is_active:
           type: boolean
           readOnly: true
@@ -8355,6 +9123,10 @@ components:
         teacher_id:
           type: integer
           nullable: true
+        schedule_agreement_status:
+          $ref: '#/components/schemas/ScheduleAgreementStatusEnum'
+        schedule_agreement_notes:
+          type: string
     PatchedTeacherPayoutAccountUpdate:
       type: object
       description: Teacher updating their settlement bank details on their own configuration.
@@ -8446,6 +9218,23 @@ components:
       - currency
       - payment_id
       - reference
+    PayoutBulkFinalize:
+      type: object
+      description: Request payload for bulk finalization.
+      properties:
+        payout_ids:
+          type: array
+          items:
+            type: integer
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        teacher_id:
+          type: integer
+          nullable: true
     PayoutGenerate:
       type: object
       description: |-
@@ -8456,7 +9245,7 @@ components:
         whole academy. Either way the run is idempotent, so narrowing is a convenience
         rather than a way to avoid duplicates.
 
-        Only ``lead`` and ``sub`` accounts are offered, because nobody else can be a
+        Only teacher accounts are offered, because nobody else can be a
         booking's teacher. A student id here is a 400 rather than an empty run.
         When scoped to an organization, only active teachers in that organization are accepted.
       properties:
@@ -8548,6 +9337,136 @@ components:
       required:
       - data
       - event
+    PlatformActivity:
+      type: object
+      description: Unified notable platform activity event.
+      properties:
+        id:
+          type: integer
+        organization_id:
+          type: integer
+          nullable: true
+        organization_name:
+          type: string
+        action:
+          type: string
+        action_display:
+          type: string
+        category:
+          type: string
+        actor_username:
+          type: string
+        actor_email:
+          type: string
+        object_type:
+          type: string
+        object_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - action
+      - action_display
+      - actor_email
+      - actor_username
+      - category
+      - created_at
+      - id
+      - metadata
+      - object_id
+      - object_type
+      - organization_id
+      - organization_name
+    PlatformAnnouncement:
+      type: object
+      description: Model serializer for platform announcements.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          maxLength: 200
+        message:
+          type: string
+        is_active:
+          type: boolean
+        level:
+          $ref: '#/components/schemas/LevelEnum'
+        created_by:
+          type: integer
+          readOnly: true
+          nullable: true
+        created_by_username:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - created_by
+      - created_by_username
+      - id
+      - message
+      - title
+    PlatformOverview:
+      type: object
+      description: Executive KPI metrics for the platform creator.
+      properties:
+        total_academies:
+          type: integer
+        active_subscribers:
+          type: integer
+        trial_subscribers:
+          type: integer
+        past_due_subscribers:
+          type: integer
+        disabled_subscribers:
+          type: integer
+        total_students:
+          type: integer
+        total_teachers:
+          type: integer
+        total_completed_classes:
+          type: integer
+        mrr_usd:
+          type: number
+          format: double
+        mrr_ngn:
+          type: number
+          format: double
+        platform_gross_volume_usd:
+          type: number
+          format: double
+        platform_gross_volume_ngn:
+          type: number
+          format: double
+        tiers_distribution:
+          type: object
+          additionalProperties: {}
+        system_health:
+          $ref: '#/components/schemas/SystemHealth'
+      required:
+      - active_subscribers
+      - disabled_subscribers
+      - mrr_ngn
+      - mrr_usd
+      - past_due_subscribers
+      - platform_gross_volume_ngn
+      - platform_gross_volume_usd
+      - system_health
+      - tiers_distribution
+      - total_academies
+      - total_completed_classes
+      - total_students
+      - total_teachers
+      - trial_subscribers
     PlatformSubscription:
       type: object
       description: Current subscription status and capacity usage for an academy.
@@ -8566,7 +9485,7 @@ components:
           readOnly: true
         tier:
           allOf:
-          - $ref: '#/components/schemas/PlatformSubscriptionTierEnum'
+          - $ref: '#/components/schemas/Tier7c5Enum'
           readOnly: true
           description: |-
             Subscription tier: starter, growth, professional, institutional.
@@ -8582,7 +9501,7 @@ components:
           description: Paystack Plan code for IqraLMS platform access (null for institutional).
         status:
           allOf:
-          - $ref: '#/components/schemas/PlatformSubscriptionStatusEnum'
+          - $ref: '#/components/schemas/Status767Enum'
           readOnly: true
           description: |-
             Current subscription lifecycle status.
@@ -8639,32 +9558,6 @@ components:
       - student_cap
       - tier
       - updated_at
-    PlatformSubscriptionStatusEnum:
-      enum:
-      - pending
-      - active
-      - past_due
-      - not_renewing
-      - disabled
-      type: string
-      description: |-
-        * `pending` - Pending
-        * `active` - Active
-        * `past_due` - Past Due
-        * `not_renewing` - Not Renewing
-        * `disabled` - Disabled
-    PlatformSubscriptionTierEnum:
-      enum:
-      - starter
-      - growth
-      - professional
-      - institutional
-      type: string
-      description: |-
-        * `starter` - Starter
-        * `growth` - Growth
-        * `professional` - Professional
-        * `institutional` - Institutional
     PricingAgreement:
       type: object
       description: |-
@@ -8958,6 +9851,29 @@ components:
         * `lead_full_routed` - Lead teacher full, routed to a sub teacher
         * `student_choice` - Teacher named directly by the student or parent
         * `cohort_assigned` - Assigned a seat in an open cohort
+    ScheduleAgreementAction:
+      type: object
+      properties:
+        agreed:
+          type: boolean
+          description: True if teacher agrees to current schedule, False if proposing
+            alternative.
+        notes:
+          type: string
+          default: ''
+          description: Optional comments or proposed alternative times.
+      required:
+      - agreed
+    ScheduleAgreementStatusEnum:
+      enum:
+      - pending
+      - agreed
+      - alternative_proposed
+      type: string
+      description: |-
+        * `pending` - Pending Teacher Agreement
+        * `agreed` - Agreed by Teacher
+        * `alternative_proposed` - Alternative Proposed
     SelfRegisterableRoleEnum:
       enum:
       - teacher
@@ -9085,6 +10001,20 @@ components:
         * `generated` - Generated, none finalized
         * `partly_finalized` - Partly finalized
         * `finalized` - Fully finalized
+    Status767Enum:
+      enum:
+      - pending
+      - active
+      - past_due
+      - not_renewing
+      - disabled
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `active` - Active
+        * `past_due` - Past Due
+        * `not_renewing` - Not Renewing
+        * `disabled` - Disabled
     StudentAssignment:
       type: object
       properties:
@@ -9260,6 +10190,110 @@ components:
           nullable: true
       required:
       - title
+    StudentAvailability:
+      type: object
+      description: Read representation of one student declared availability window.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        student:
+          type: integer
+          readOnly: true
+          description: The student learner user.
+        student_username:
+          type: string
+          readOnly: true
+        student_name:
+          type: string
+          readOnly: true
+        created_by:
+          type: integer
+          readOnly: true
+          nullable: true
+          description: The user (student, linked parent, or admin) who declared this
+            window.
+        created_by_username:
+          type: string
+          readOnly: true
+        weekday:
+          allOf:
+          - $ref: '#/components/schemas/WeekdayEnum'
+          readOnly: true
+        weekday_display:
+          type: string
+          readOnly: true
+        start_time_utc:
+          type: string
+          format: time
+          readOnly: true
+          description: UTC. Local time is converted at point of entry.
+        end_time_utc:
+          type: string
+          format: time
+          readOnly: true
+          description: UTC, exclusive. Must be after the start.
+        local:
+          allOf:
+          - $ref: '#/components/schemas/LocalWindow'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - created_by
+      - created_by_username
+      - end_time_utc
+      - id
+      - local
+      - start_time_utc
+      - student
+      - student_name
+      - student_username
+      - updated_at
+      - weekday
+      - weekday_display
+    StudentAvailabilityBatchCreate:
+      type: object
+      properties:
+        student_id:
+          type: integer
+          description: Target student user ID. Defaults to caller if student.
+        windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudentAvailabilityWindowInput'
+          description: List of weekly recurring availability windows in local time.
+        timezone:
+          type: string
+          default: ''
+          description: Timezone for the local times. Defaults to user's timezone or
+            UTC.
+      required:
+      - windows
+    StudentAvailabilityWindowInput:
+      type: object
+      properties:
+        weekday:
+          type: integer
+          maximum: 6
+          minimum: 0
+        start_time:
+          type: string
+          format: time
+        end_time:
+          type: string
+          format: time
+      required:
+      - end_time
+      - start_time
+      - weekday
     StudentDetail:
       type: object
       description: A student's enrollment, as seen in the academy's detail view.
@@ -9308,6 +10342,19 @@ components:
           type: string
           nullable: true
           readOnly: true
+        schedule_agreement_status:
+          type: string
+          readOnly: true
+        schedule_agreement_status_display:
+          type: string
+          readOnly: true
+        schedule_agreement_notes:
+          type: string
+          readOnly: true
+        schedule_agreed_at:
+          type: string
+          format: date-time
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -9326,6 +10373,10 @@ components:
       - is_minor
       - last_name
       - level_id
+      - schedule_agreed_at
+      - schedule_agreement_notes
+      - schedule_agreement_status
+      - schedule_agreement_status_display
       - teacher_id
       - teacher_name
       - track_id
@@ -9503,6 +10554,19 @@ components:
           type: string
           nullable: true
           readOnly: true
+        schedule_agreement_status:
+          type: string
+          readOnly: true
+        schedule_agreement_status_display:
+          type: string
+          readOnly: true
+        schedule_agreement_notes:
+          type: string
+          readOnly: true
+        schedule_agreed_at:
+          type: string
+          format: date-time
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -9521,6 +10585,10 @@ components:
       - is_minor
       - last_name
       - level_id
+      - schedule_agreed_at
+      - schedule_agreement_notes
+      - schedule_agreement_status
+      - schedule_agreement_status_display
       - teacher_id
       - teacher_name
       - track_id
@@ -9573,17 +10641,17 @@ components:
           type: integer
         bank_code:
           type: string
-          maxLength: 10
+          maxLength: 50
         account_number:
           type: string
-          maxLength: 20
+          maxLength: 34
         business_name:
           type: string
           default: ''
         currency:
           type: string
-          default: NGN
-          maxLength: 3
+          default: ''
+          maxLength: 10
       required:
       - account_number
       - bank_code
@@ -9596,10 +10664,14 @@ components:
           type: integer
         bank_code:
           type: string
-          maxLength: 10
+          maxLength: 50
         account_number:
           type: string
-          maxLength: 20
+          maxLength: 34
+        currency:
+          type: string
+          default: ''
+          maxLength: 10
       required:
       - account_number
       - bank_code
@@ -9614,6 +10686,9 @@ components:
           type: string
         account_number:
           type: string
+        currency:
+          type: string
+          default: USD
       required:
       - account_name
       - account_number
@@ -9632,7 +10707,7 @@ components:
           type: string
         currency:
           type: string
-          default: NGN
+          default: USD
       required:
       - account_name
       - account_number
@@ -9661,7 +10736,7 @@ components:
           nullable: true
         currency:
           type: string
-          default: NGN
+          default: USD
       required:
       - is_configured
     SubmissionTypeEnum:
@@ -9686,6 +10761,8 @@ components:
           allOf:
           - $ref: '#/components/schemas/SubscribeRequestTierEnum'
           default: starter
+        currency:
+          $ref: '#/components/schemas/CurrencyEnum'
         callback_url:
           type: string
       required:
@@ -9700,6 +10777,168 @@ components:
         * `starter` - starter
         * `growth` - growth
         * `professional` - professional
+    SubscriberDetail:
+      type: object
+      description: Detailed view of an academy subscriber for the creator.
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        slug:
+          type: string
+        owner_id:
+          type: integer
+          nullable: true
+        owner_username:
+          type: string
+        owner_email:
+          type: string
+        owner_name:
+          type: string
+        tier:
+          type: string
+        tier_display:
+          type: string
+        status:
+          type: string
+        status_display:
+          type: string
+        currency:
+          type: string
+        monthly_price_usd:
+          type: number
+          format: double
+          nullable: true
+        monthly_price_ngn:
+          type: number
+          format: double
+          nullable: true
+        current_period_end:
+          type: string
+          format: date-time
+          nullable: true
+        active_students_count:
+          type: integer
+        student_cap:
+          type: integer
+          nullable: true
+        teachers_count:
+          type: integer
+        paystack_customer_code:
+          type: string
+        paystack_subscription_code:
+          type: string
+        paystack_subaccount_code:
+          type: string
+        is_active:
+          type: boolean
+        onboarding_email_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - active_students_count
+      - created_at
+      - currency
+      - current_period_end
+      - id
+      - is_active
+      - monthly_price_ngn
+      - monthly_price_usd
+      - name
+      - onboarding_email_sent_at
+      - owner_email
+      - owner_id
+      - owner_name
+      - owner_username
+      - paystack_customer_code
+      - paystack_subaccount_code
+      - paystack_subscription_code
+      - slug
+      - status
+      - status_display
+      - student_cap
+      - teachers_count
+      - tier
+      - tier_display
+    SubscriberOnboardingDispatch:
+      type: object
+      description: Model serializer for sent onboarding emails.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        organization:
+          type: integer
+          description: The academy whose subscriber/owner was notified.
+        organization_name:
+          type: string
+          readOnly: true
+        recipient_email:
+          type: string
+          format: email
+          description: Email address the onboarding guide was sent to.
+          maxLength: 254
+        subject:
+          type: string
+          maxLength: 255
+        sent_by:
+          type: integer
+          nullable: true
+          description: Platform admin or creator who initiated the onboarding dispatch.
+        sent_by_username:
+          type: string
+          readOnly: true
+        video_links:
+          description: List of guide video objects included in this dispatch.
+        custom_message:
+          type: string
+          description: Personalized note or instructions from the platform creator.
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - organization
+      - organization_name
+      - recipient_email
+      - sent_by_username
+    SubscriberSubscriptionManage:
+      type: object
+      description: Payload to update an academy's platform subscription.
+      properties:
+        action:
+          $ref: '#/components/schemas/SubscriberSubscriptionManageActionEnum'
+        tier:
+          $ref: '#/components/schemas/Tier7c5Enum'
+        status:
+          $ref: '#/components/schemas/Status767Enum'
+        extension_days:
+          type: integer
+          maximum: 365
+          minimum: 1
+      required:
+      - action
+    SubscriberSubscriptionManageActionEnum:
+      enum:
+      - update_tier
+      - activate
+      - comp
+      - suspend
+      - extend_period
+      type: string
+      description: |-
+        * `update_tier` - update_tier
+        * `activate` - activate
+        * `comp` - comp
+        * `suspend` - suspend
+        * `extend_period` - extend_period
     SubscriptionInitializeResponse:
       type: object
       description: Response payload returned upon initializing platform subscription
@@ -9715,6 +10954,26 @@ components:
       - access_code
       - authorization_url
       - reference
+    SystemHealth:
+      type: object
+      description: System health metrics.
+      properties:
+        database:
+          type: string
+        paystack:
+          type: string
+        notifications:
+          type: string
+        video_service:
+          type: string
+        environment:
+          type: string
+      required:
+      - database
+      - environment
+      - notifications
+      - paystack
+      - video_service
     TeacherAssessment:
       type: object
       description: |-
@@ -9849,7 +11108,7 @@ components:
         currency:
           type: string
           readOnly: true
-          description: ISO code, snapshotted. NGN today; conversion is out of scope.
+          description: ISO code, snapshotted. Currency at payout generation time.
         status:
           allOf:
           - $ref: '#/components/schemas/PayoutStatusEnum'
@@ -9862,6 +11121,30 @@ components:
         status_display:
           type: string
           readOnly: true
+        confirmation_status:
+          allOf:
+          - $ref: '#/components/schemas/ConfirmationStatusEnum'
+          readOnly: true
+          description: |-
+            Teacher's acknowledgment: pending, confirmed, or disputed.
+
+            * `pending` - Pending Confirmation
+            * `confirmed` - Confirmed
+            * `disputed` - Disputed
+        confirmation_status_display:
+          type: string
+          readOnly: true
+        confirmation_notes:
+          type: string
+          readOnly: true
+          description: Reason or details provided by the teacher upon confirmation
+            or dispute.
+        confirmed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Timestamp when the teacher confirmed or disputed receipt.
         created_at:
           type: string
           format: date-time
@@ -9876,6 +11159,10 @@ components:
       - amount
       - booking
       - cohort
+      - confirmation_notes
+      - confirmation_status
+      - confirmation_status_display
+      - confirmed_at
       - created_at
       - currency
       - finalized_at
@@ -9885,6 +11172,21 @@ components:
       - status
       - status_display
       - teacher
+    TeacherPayoutConfirm:
+      type: object
+      description: Teacher confirms receiving payment (confirmed=True) or disputes
+        it (confirmed=False with reason).
+      properties:
+        confirmed:
+          type: boolean
+        reason:
+          type: string
+          default: ''
+          description: Required if confirmed is False, explaining why payment was
+            not received or disputed.
+          maxLength: 1000
+      required:
+      - confirmed
     TeacherProfile:
       type: object
       description: Read-only in this phase; profiles are created via the admin.
@@ -10000,6 +11302,18 @@ components:
       required:
       - track
       - user
+    Tier7c5Enum:
+      enum:
+      - starter
+      - growth
+      - professional
+      - institutional
+      type: string
+      description: |-
+        * `starter` - Starter
+        * `growth` - Growth
+        * `professional` - Professional
+        * `institutional` - Institutional
     TierDisplay:
       type: object
       description: Public display representation of a platform subscription tier.
@@ -10163,6 +11477,17 @@ components:
         is_fully_active:
           type: boolean
           readOnly: true
+        is_staff:
+          type: boolean
+          readOnly: true
+          title: Staff status
+          description: Designates whether the user can log into this admin site.
+        is_superuser:
+          type: boolean
+          readOnly: true
+          title: Superuser status
+          description: Designates that this user has all permissions without explicitly
+            assigning them.
         signup_code:
           type: string
           readOnly: true
@@ -10187,6 +11512,8 @@ components:
       - id
       - is_fully_active
       - is_minor
+      - is_staff
+      - is_superuser
       - role
       - signup_code
       - teacher_profile

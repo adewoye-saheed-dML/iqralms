@@ -3,6 +3,7 @@
 from django.urls import path
 
 from .views import (
+    BankListView,
     OrganizationPaymentListView,
     ParentChildPaymentListView,
     PaymentInitializeView,
@@ -17,6 +18,7 @@ from .views import (
 app_name = "payments"
 
 urlpatterns = [
+    path("banks/", BankListView.as_view(), name="bank_list"),
     path("subaccount/status/", SubaccountStatusView.as_view(), name="subaccount_status"),
     path("subaccount/resolve/", SubaccountResolveView.as_view(), name="subaccount_resolve"),
     path("subaccount/confirm/", SubaccountConfirmView.as_view(), name="subaccount_confirm"),

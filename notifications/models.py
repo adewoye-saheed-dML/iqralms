@@ -29,6 +29,8 @@ class EventType(models.TextChoices):
     PLACEMENT_REVIEWED = "placement_reviewed", "Placement Reviewed"
     PROGRESS_READY = "progress_ready", "Progress Ready"
     TEACHER_INVITATION = "teacher_invitation", "Teacher Invitation"
+    STUDENT_AVAILABILITY_UPDATED = "student_availability_updated", "Student Availability Updated"
+    SCHEDULE_AGREEMENT_RESPONSE = "schedule_agreement_response", "Schedule Agreement Response"
 
 
 class DeliveryChannel(models.TextChoices):

@@ -64,6 +64,7 @@ urlpatterns = [
     path("api/imports/", include("imports.urls")),
     path("api/billing/", include("billing.urls")),
     path("api/payments/", include("payments.urls")),
+    path("api/platform-admin/", include("billing.platform_admin_urls")),
     # Unified Paystack Webhook (Single canonical endpoint for all Paystack events)
     path(
         "api/webhooks/paystack/",

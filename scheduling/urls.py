@@ -23,6 +23,10 @@ from .views import (
     TeacherWaitlistListView,
     TeachingBookingListView,
     WaitlistPromoteView,
+    StudentAvailabilityListView,
+    StudentAvailabilityDetailView,
+    StudentAvailabilityAgreementView,
+    TeacherAvailabilityMatchView,
 )
 
 app_name = "scheduling"
@@ -30,6 +34,26 @@ app_name = "scheduling"
 ACADEMY = "organizations/<int:organization_pk>/"
 
 urlpatterns = [
+    path(
+        f"{ACADEMY}student-availability/",
+        StudentAvailabilityListView.as_view(),
+        name="student-availability-list",
+    ),
+    path(
+        f"{ACADEMY}student-availability/<int:pk>/",
+        StudentAvailabilityDetailView.as_view(),
+        name="student-availability-detail",
+    ),
+    path(
+        f"{ACADEMY}student-availability/<int:student_id>/agree/",
+        StudentAvailabilityAgreementView.as_view(),
+        name="student-availability-agree",
+    ),
+    path(
+        f"{ACADEMY}matching-teachers/",
+        TeacherAvailabilityMatchView.as_view(),
+        name="matching-teachers-list",
+    ),
     path(
         f"{ACADEMY}availability/",
         AvailabilityListView.as_view(),
