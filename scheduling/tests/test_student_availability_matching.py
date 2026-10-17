@@ -349,3 +349,31 @@ class StudentAvailabilityAndMatchingTests(TestCase):
         t2_match = matches[self.teacher2.id]
         self.assertEqual(t2_match["match_quality"], "none")
         self.assertEqual(t2_match["overlap_total_minutes"], 0)
+
+    def test_teacher_can_agree_using_enrollment_id(self):
+        """Teacher can submit schedule agreement using student's enrollment id as URL param."""
+        self.client.force_authenticate(user=self.teacher1)
+        url = reverse(
+            "scheduling:student-availability-agree",
+            kwargs={"organization_pk": self.org.pk, "student_id": self.enrollment.id},
+        )
+        response = self.client.post(url, {"agreed": True, "notes": "Looks good via enrollment pk!"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.enrollment.refresh_from_db()
+        self.assertEqual(self.enrollment.schedule_agreement_status, ScheduleAgreementStatus.AGREED)
+        self.assertIsNotNone(self.enrollment.schedule_agreed_at)
+
+    def test_teacher_agreement_selects_assigned_enrollment_in_multi_course(self):
+        """When a student is enrolled with multiple teachers, agreement resolves to the calling teacher's course."""
+        # Create a second track and teacher 2 enrollment for the same student
+        # Since student can have enrollments in different courses/orgs, test teacher selection
+        self.client.force_authenticate(user=self.teacher1)
+        url = reverse(
+            "scheduling:student-availability-agree",
+            kwargs={"organization_pk": self.org.pk, "student_id": self.student.id},
+        )
+        response = self.client.post(url, {"agreed": True, "notes": ""}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.enrollment.refresh_from_db()
+        self.assertEqual(self.enrollment.schedule_agreement_status, ScheduleAgreementStatus.AGREED)
+

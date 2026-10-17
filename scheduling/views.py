@@ -1328,37 +1328,45 @@ class StudentAvailabilityAgreementView(AcademyScopedView, generics.GenericAPIVie
         agreed = serializer.validated_data["agreed"]
         notes = serializer.validated_data.get("notes", "")
 
-        enrollment = StudentEnrollment.objects.filter(
+        qs = StudentEnrollment.objects.filter(
             organization=self.organization,
-            user_id=student_id,
             status=EnrollmentStatus.ACTIVE,
-        ).select_related("teacher", "track", "user").first()
+        ).filter(
+            Q(user_id=student_id) | Q(id=student_id)
+        ).select_related("teacher", "track", "user")
 
-        if not enrollment:
+        if not qs.exists():
             raise ValidationError({"student_id": ["Active student enrollment not found in this academy."]})
 
-        is_teacher = enrollment.teacher_id == caller.id
         is_admin = is_owner_or_admin(self, caller)
+        enrollment = qs.filter(teacher=caller).first() or (qs.first() if is_admin else None)
 
-        if not (is_teacher or is_admin):
+        if not enrollment:
             raise PermissionDenied("Only the allocated teacher or academy leadership can respond to schedule agreements.")
 
-        if agreed:
-            enrollment.schedule_agreement_status = ScheduleAgreementStatus.AGREED
-            enrollment.schedule_agreement_notes = notes
-            enrollment.schedule_agreed_at = dj_timezone.now()
-            enrollment.save(update_fields=["schedule_agreement_status", "schedule_agreement_notes", "schedule_agreed_at"])
-        else:
-            enrollment.schedule_agreement_status = ScheduleAgreementStatus.ALTERNATIVE_PROPOSED
-            enrollment.schedule_agreement_notes = notes
-            enrollment.save(update_fields=["schedule_agreement_status", "schedule_agreement_notes"])
+        # Update all matching active enrollments for this student with this teacher (or the target enrollment for admin)
+        target_enrollments = list(qs.filter(teacher=caller)) if enrollment.teacher_id == caller.id else [enrollment]
+        for enr in target_enrollments:
+            if agreed:
+                enr.schedule_agreement_status = ScheduleAgreementStatus.AGREED
+                enr.schedule_agreement_notes = notes
+                enr.schedule_agreed_at = dj_timezone.now()
+                enr.save(update_fields=["schedule_agreement_status", "schedule_agreement_notes", "schedule_agreed_at"])
+            else:
+                enr.schedule_agreement_status = ScheduleAgreementStatus.ALTERNATIVE_PROPOSED
+                enr.schedule_agreement_notes = notes
+                enr.save(update_fields=["schedule_agreement_status", "schedule_agreement_notes"])
 
-        notify_schedule_agreement_response(
-            enrollment=enrollment,
-            teacher=caller,
-            agreed=agreed,
-            notes=notes,
-        )
+        try:
+            notify_schedule_agreement_response(
+                enrollment=enrollment,
+                teacher=caller,
+                agreed=agreed,
+                notes=notes,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to notify schedule agreement response: %s", exc)
 
         from organizations.serializers import StudentDetailSerializer
         return Response(
