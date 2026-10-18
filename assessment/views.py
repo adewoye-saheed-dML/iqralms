@@ -1089,6 +1089,11 @@ class AssignmentDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyAPIV
     permission_classes = [IsAuthenticated, IsOrganizationMember]
     serializer_class = StudentAssignmentSerializer
 
+    def get_serializer_class(self):
+        if self.request.method in ["PUT", "PATCH"]:
+            return StudentAssignmentCreateSerializer
+        return StudentAssignmentSerializer
+
     def get_queryset(self):
         return (
             StudentAssignment.objects.in_organization(self.organization)
@@ -1123,18 +1128,34 @@ class AssignmentDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyAPIV
     def perform_update(self, serializer):
         assignment = self.get_object()
         user = self.request.user
-        membership = self.caller_membership
-        is_manager = membership and membership.role in ["owner", "admin"]
-        if assignment.created_by != user and not is_manager:
-            raise PermissionDenied("Only the creator or academy administrators can edit this assignment.")
+        if assignment.assigned_student:
+            from .services import teacher_is_attached_to_student
+
+            if not teacher_is_attached_to_student(
+                user, assignment.assigned_student, self.organization, track=assignment.track
+            ):
+                raise PermissionDenied("Only the student's assigned teacher can edit an assignment given to a student.")
+        else:
+            membership = self.caller_membership
+            is_manager = membership and membership.role in ["owner", "admin"]
+            if assignment.created_by != user and not is_manager:
+                raise PermissionDenied("Only the creator or academy administrators can edit this assignment.")
         serializer.save()
 
     def perform_destroy(self, instance):
         user = self.request.user
-        membership = self.caller_membership
-        is_manager = membership and membership.role in ["owner", "admin"]
-        if instance.created_by != user and not is_manager:
-            raise PermissionDenied("Only the creator or academy administrators can delete this assignment.")
+        if instance.assigned_student:
+            from .services import teacher_is_attached_to_student
+
+            if not teacher_is_attached_to_student(
+                user, instance.assigned_student, self.organization, track=instance.track
+            ):
+                raise PermissionDenied("Only the student's assigned teacher can delete an assignment given to a student.")
+        else:
+            membership = self.caller_membership
+            is_manager = membership and membership.role in ["owner", "admin"]
+            if instance.created_by != user and not is_manager:
+                raise PermissionDenied("Only the creator or academy administrators can delete this assignment.")
         instance.delete()
 
 
@@ -1224,15 +1245,11 @@ class SubmissionGradeView(AcademyScopedView, generics.GenericAPIView):
         if not submission:
             raise NotFound("Submission not found.")
 
-        if is_teacher and not is_manager:
-            from .services import teacher_is_attached_to_student
+        from .services import teacher_is_attached_to_student
 
-            track = submission.assignment.track
-            if not (
-                submission.assignment.created_by_id == user.id
-                or teacher_is_attached_to_student(user, submission.student, self.organization, track=track)
-            ):
-                raise PermissionDenied("You do not offer this subject to this student.")
+        track = submission.assignment.track
+        if not teacher_is_attached_to_student(user, submission.student, self.organization, track=track):
+            raise PermissionDenied("Only the student's assigned teacher can grade this submission.")
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)

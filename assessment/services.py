@@ -7,7 +7,7 @@ from django.db.models import Q
 from rest_framework.exceptions import PermissionDenied
 
 from accounts.models import ParentLink, Role, User
-from curriculum.models import Status, TeacherTrack, Track
+from curriculum.models import TeacherTrack, Track
 from organizations.models import EnrollmentStatus, Organization, OrganizationRole, StudentEnrollment, active_membership
 from scheduling.models import Booking
 
@@ -105,7 +105,7 @@ def get_teacher_organization_tracks(teacher: User, organization: Organization) -
         TeacherTrack.objects.filter(
             membership__organization=organization,
             membership__user=teacher,
-            status=Status.ACTIVE,
+            active=True,
         ).values_list("track_id", flat=True)
     )
 

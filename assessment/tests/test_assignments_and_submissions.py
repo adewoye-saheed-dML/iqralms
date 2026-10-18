@@ -41,8 +41,14 @@ class AssignmentAndSubmissionTests(APITestCase):
         )
 
         self.teacher = User.objects.create_user(username="teacher1", role=Role.SUB)
-        OrganizationMembership.objects.create(
+        self.teacher_membership = OrganizationMembership.objects.create(
             user=self.teacher, organization=self.org, role=OrganizationRole.TEACHER, status=MembershipStatus.ACTIVE
+        )
+        from curriculum.models import TeacherTrack
+        TeacherTrack.objects.create(
+            membership=self.teacher_membership,
+            track=self.track,
+            active=True,
         )
 
         self.student = User.objects.create_user(username="student1", role=Role.STUDENT)
@@ -50,7 +56,7 @@ class AssignmentAndSubmissionTests(APITestCase):
             user=self.student, organization=self.org, role=OrganizationRole.STAFF, status=MembershipStatus.ACTIVE
         )
         StudentEnrollment.objects.create(
-            user=self.student, organization=self.org, status=EnrollmentStatus.ACTIVE
+            user=self.student, organization=self.org, teacher=self.teacher, track=self.track, status=EnrollmentStatus.ACTIVE
         )
 
         self.parent = User.objects.create_user(username="parent1", role=Role.PARENT)
@@ -260,4 +266,83 @@ class AssignmentAndSubmissionTests(APITestCase):
         self.client.force_authenticate(user=self.stranger)
         self.assertEqual(self.client.get(audio_stream_url).status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(self.client.get(attachment_stream_url).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_cannot_delete_student_assignment_and_teacher_can(self):
+        assignment = StudentAssignment.objects.create(
+            organization=self.org,
+            created_by=self.teacher,
+            assigned_student=self.student,
+            track=self.track,
+            title="Assigned to student",
+            max_score=100,
+        )
+
+        # Owner cannot delete an assignment given to a student
+        self.client.force_authenticate(user=self.owner)
+        del_res = self.client.delete(f"/api/assessment/organizations/{self.org.id}/assignments/{assignment.id}/")
+        self.assertEqual(del_res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(StudentAssignment.objects.filter(id=assignment.id).exists())
+
+        # Assigned teacher CAN delete the assignment
+        self.client.force_authenticate(user=self.teacher)
+        del_res_teacher = self.client.delete(f"/api/assessment/organizations/{self.org.id}/assignments/{assignment.id}/")
+        self.assertEqual(del_res_teacher.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(StudentAssignment.objects.filter(id=assignment.id).exists())
+
+    def test_owner_cannot_grade_student_submission_when_not_assigned_teacher(self):
+        assignment = StudentAssignment.objects.create(
+            organization=self.org,
+            created_by=self.teacher,
+            assigned_student=self.student,
+            track=self.track,
+            title="Ayatul Kursi Test",
+            max_score=100,
+        )
+        submission = AssignmentSubmission.objects.create(
+            assignment=assignment,
+            student=self.student,
+            written_response="Response text",
+            status=SubmissionStatus.SUBMITTED,
+        )
+
+        # Owner cannot grade the student since they are not the assigned teacher
+        self.client.force_authenticate(user=self.owner)
+        grade_url = f"/api/assessment/organizations/{self.org.id}/submissions/{submission.id}/grade/"
+        grade_payload = {
+            "score": "95.00",
+            "teacher_feedback": "Owner grading attempt",
+        }
+        res = self.client.post(grade_url, grade_payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("Only the student's assigned teacher can grade", res.data.get("detail", ""))
+
+        # Assigned teacher can grade
+        self.client.force_authenticate(user=self.teacher)
+        res_teacher = self.client.post(grade_url, grade_payload, format="json")
+        self.assertEqual(res_teacher.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_teacher.data["status"], SubmissionStatus.GRADED)
+
+    def test_owner_cannot_edit_student_assignment(self):
+        assignment = StudentAssignment.objects.create(
+            organization=self.org,
+            created_by=self.teacher,
+            assigned_student=self.student,
+            track=self.track,
+            title="Original Title",
+            max_score=100,
+        )
+
+        # Owner cannot edit an assignment given to a student
+        self.client.force_authenticate(user=self.owner)
+        edit_url = f"/api/assessment/organizations/{self.org.id}/assignments/{assignment.id}/"
+        res = self.client.patch(edit_url, {"title": "Hacked Title"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Assigned teacher CAN edit
+        self.client.force_authenticate(user=self.teacher)
+        res_teacher = self.client.patch(edit_url, {"title": "Updated Title"}, format="json")
+        self.assertEqual(res_teacher.status_code, status.HTTP_200_OK)
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.title, "Updated Title")
+
 
