@@ -26,12 +26,15 @@ spec asked to keep this module simple.
 Every variable this file reads is documented in ``.env.example``.
 """
 
+import sys
 from decimal import Decimal
 from pathlib import Path
 
 import dj_database_url
 
 from django.core.exceptions import ImproperlyConfigured
+
+TESTING = "pytest" in sys.modules or any("test" in arg for arg in sys.argv)
 
 # The one application import this module makes, and the reason it is safe:
 # curriculum.validators holds constants and pure functions only, and touches
@@ -109,9 +112,6 @@ ALLOWED_HOSTS = env_list(
             "localhost",
             "127.0.0.1",
             "[::1]",
-            "testserver",
-            ".ngrok-free.dev",
-            "evaluator-feeble-unchain.ngrok-free.dev",
         ]
     ),
 )
@@ -467,8 +467,18 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [] if TESTING else [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": env_str("DJANGO_THROTTLE_ANON", default="100/min"),
+        "user": env_str("DJANGO_THROTTLE_USER", default="1000/min"),
+    },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
+
+SILENCED_SYSTEM_CHECKS = ["drf_spectacular.W001"]
 
 REST_AUTH = {
     "USE_JWT": False,

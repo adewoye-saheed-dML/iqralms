@@ -797,7 +797,7 @@ class TeachingProgressView(ProgressView):
 
             track = requested_track(request, organization=self.organization)
             if not teacher_is_attached_to_student(request.user, student, self.organization, track=track):
-                raise PermissionDenied("You do not offer this subject to this student.")
+                raise PermissionDenied("You do not have an active teaching relationship or offer this subject to this student.")
         return student
 
     @extend_schema(

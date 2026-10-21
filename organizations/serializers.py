@@ -230,7 +230,9 @@ class StudentListSerializer(serializers.ModelSerializer):
     is_minor = serializers.BooleanField(source="user.is_minor", read_only=True)
     enrollment_status = serializers.CharField(source="status", read_only=True)
     track_id = serializers.IntegerField(source="track.id", read_only=True, allow_null=True)
+    track_name = serializers.CharField(source="track.name", read_only=True, allow_null=True)
     level_id = serializers.IntegerField(source="level.id", read_only=True, allow_null=True)
+    level_name = serializers.CharField(source="level.name", read_only=True, allow_null=True)
     teacher_id = serializers.IntegerField(source="teacher.id", read_only=True, allow_null=True)
     teacher_name = serializers.SerializerMethodField(read_only=True)
     schedule_agreement_status = serializers.CharField(read_only=True)
@@ -262,7 +264,9 @@ class StudentListSerializer(serializers.ModelSerializer):
 
             "enrollment_status",
             "track_id",
+            "track_name",
             "level_id",
+            "level_name",
             "teacher_id",
             "teacher_name",
 
@@ -283,7 +287,7 @@ class StudentDetailSerializer(StudentListSerializer):
 
 
 class StudentEnrollmentCreateSerializer(serializers.Serializer):
-    """Enrolling an existing student user into an academy."""
+    """Enrolling an existing student user into an academy, or allocating an additional subject track."""
 
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
     from curriculum.models import Track, Level
@@ -299,38 +303,95 @@ class StudentEnrollmentCreateSerializer(serializers.Serializer):
 
     def validate_user(self, user):
         from accounts.models import Role
-        from .models import StudentEnrollment
-
-        organization = self.context["organization"]
 
         if user.role != Role.STUDENT:
             raise serializers.ValidationError("Only users with role 'student' can be enrolled.")
 
-        if StudentEnrollment.objects.filter(organization=organization, user=user).exists():
-            raise serializers.ValidationError("This student is already enrolled in this organization.")
-
-        from billing.services import can_add_student, get_student_cap_error_message
-        if not can_add_student(organization):
-            raise serializers.ValidationError(get_student_cap_error_message(organization))
-
         return user
 
-    def create(self, validated_data):
-        from .models import StudentEnrollment, EnrollmentStatus
+    def validate(self, attrs):
+        from .models import OrganizationMembership, StudentEnrollment
+        from billing.services import can_add_student, get_student_cap_error_message
 
-        enrollment = StudentEnrollment(
-            organization=self.context["organization"],
-            user=validated_data["user"],
-            track=validated_data.get("track"),
-            level=validated_data.get("level"),
-            teacher=validated_data.get("teacher"),
-            status=EnrollmentStatus.ACTIVE,
+        organization = self.context["organization"]
+        user = attrs["user"]
+        track = attrs.get("track")
+        level = attrs.get("level")
+
+        # Cap check: only if student is not already participating in this academy
+        has_existing_participation = (
+            StudentEnrollment.objects.filter(organization=organization, user=user).exists()
+            or OrganizationMembership.objects.filter(organization=organization, user=user).exists()
+        )
+        if not has_existing_participation and not can_add_student(organization):
+            raise serializers.ValidationError(get_student_cap_error_message(organization))
+
+        # Check track duplication for student
+        if track:
+            if track.organization_id != organization.id:
+                raise serializers.ValidationError({"track_id": ["This track belongs to a different academy."]})
+            if StudentEnrollment.objects.filter(organization=organization, user=user, track=track).exists():
+                raise serializers.ValidationError({"track_id": [f"This student is already enrolled in the '{track.name}' subject."]})
+        else:
+            # When track is not specified (unallocated enrollment): check if student already has an unallocated enrollment
+            if StudentEnrollment.objects.filter(organization=organization, user=user).exists():
+                raise serializers.ValidationError("This student is already enrolled in this organization.")
+
+        if level:
+            if not track:
+                raise serializers.ValidationError({"level_id": ["Cannot allocate a level without specifying a subject track."]})
+            if level.track_id != track.id:
+                raise serializers.ValidationError({"level_id": ["The level belongs to a different track."]})
+
+        return attrs
+
+    def create(self, validated_data):
+        from .models import EnrollmentStatus, MembershipStatus, OrganizationMembership, OrganizationRole, StudentEnrollment
+
+        organization = self.context["organization"]
+        user = validated_data["user"]
+        track = validated_data.get("track")
+        level = validated_data.get("level")
+        teacher = validated_data.get("teacher")
+
+        # If the student currently has an unallocated enrollment and is now selecting a track, update that enrollment
+        unallocated = StudentEnrollment.objects.filter(
+            organization=organization,
+            user=user,
+            track__isnull=True,
+        ).first()
+
+        if unallocated and track:
+            unallocated.track = track
+            unallocated.level = level
+            unallocated.teacher = teacher
+            unallocated.status = EnrollmentStatus.ACTIVE
+            try:
+                unallocated.save()
+            except DjangoValidationError as exc:
+                raise as_drf_error(exc) from exc
+            enrollment = unallocated
+        else:
+            enrollment = StudentEnrollment(
+                organization=organization,
+                user=user,
+                track=track,
+                level=level,
+                teacher=teacher,
+                status=EnrollmentStatus.ACTIVE,
+            )
+            try:
+                enrollment.save()
+            except DjangoValidationError as exc:
+                raise as_drf_error(exc) from exc
+
+        # Ensure student holds OrganizationMembership
+        OrganizationMembership.objects.get_or_create(
+            organization=organization,
+            user=user,
+            defaults={"role": OrganizationRole.STUDENT, "status": MembershipStatus.ACTIVE},
         )
 
-        try:
-            enrollment.save()
-        except DjangoValidationError as exc:
-            raise as_drf_error(exc) from exc
         return enrollment
 
 
@@ -360,7 +421,14 @@ class StudentEnrollmentUpdateSerializer(serializers.Serializer):
         if "status" in validated_data:
             enrollment.status = validated_data["status"]
         if "track" in validated_data:
-            enrollment.track = validated_data["track"]
+            new_track = validated_data["track"]
+            if new_track and new_track != enrollment.track:
+                from .models import StudentEnrollment
+                if StudentEnrollment.objects.filter(
+                    organization=enrollment.organization, user=enrollment.user, track=new_track
+                ).exclude(pk=enrollment.pk).exists():
+                    raise serializers.ValidationError({"track_id": ["Student is already enrolled in this subject/track."]})
+            enrollment.track = new_track
         if "level" in validated_data:
             enrollment.level = validated_data["level"]
         if "teacher" in validated_data:

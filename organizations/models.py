@@ -506,12 +506,21 @@ class StudentEnrollment(models.Model):
         ordering = ["organization_id", "pk"]
         constraints = [
             models.UniqueConstraint(
-                fields=["organization", "user"],
-                name="unique_student_enrollment",
+                fields=["organization", "user", "track"],
+                condition=models.Q(track__isnull=False),
+                name="unique_student_enrollment_track",
                 violation_error_message=(
-                    "This student is already enrolled in this organization."
+                    "This student is already enrolled in this subject/track in this organization."
                 ),
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "user"],
+                condition=models.Q(track__isnull=True),
+                name="unique_student_unallocated_enrollment",
+                violation_error_message=(
+                    "This student already has an unallocated enrollment in this organization."
+                ),
+            ),
         ]
 
     @property

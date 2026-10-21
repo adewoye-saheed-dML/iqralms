@@ -345,4 +345,36 @@ class AssignmentAndSubmissionTests(APITestCase):
         assignment.refresh_from_db()
         self.assertEqual(assignment.title, "Updated Title")
 
+    def test_teacher_cannot_assign_assignment_to_student_taught_by_another_teacher_in_same_track(self):
+        from accounts.models import Role
+        from accounts.tests.factories import UserFactory
+        from curriculum.models import TeacherTrack
+        from organizations.models import OrganizationRole
+        from organizations.tests.factories import OrganizationMembershipFactory
+
+        teacher2 = UserFactory(role=Role.SUB, first_name="Other", last_name="Teacher")
+        t2_mem = OrganizationMembershipFactory(
+            organization=self.org, user=teacher2, role=OrganizationRole.TEACHER
+        )
+        # teacher2 also teaches self.track in this academy
+        TeacherTrack.objects.create(membership=t2_mem, track=self.track, active=True)
+
+        # teacher2 attempts to assign an assignment specifically targeting self.student
+        # (who is taught in self.track by self.teacher, not teacher2)
+        self.client.force_authenticate(user=teacher2)
+        create_url = f"/api/assessment/organizations/{self.org.id}/assignments/"
+        payload = {
+            "title": "Unauthorized Targeted Homework",
+            "track": self.track.id,
+            "assigned_student": self.student.id,
+            "submission_type": "audio_recitation",
+            "max_score": "100.00",
+        }
+        res = self.client.post(create_url, payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        # Must complain that teacher2 does not have an assigned teaching relationship with this student
+        error_keys = list(res.data.keys())
+        self.assertTrue("assigned_student" in error_keys or "track" in error_keys)
+
+
 

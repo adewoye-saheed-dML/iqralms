@@ -579,13 +579,20 @@ class RouteRequestSerializer(AcademyScopedSerializerMixin, serializers.Serialize
         if not attrs.get("preferred_teacher") and student and organization:
             from organizations.models import StudentEnrollment
 
-            enrollment = StudentEnrollment.objects.filter(
+            enrollment_qs = StudentEnrollment.objects.filter(
                 organization=organization,
                 user=student,
                 status="active",
-            ).select_related("teacher").first()
-            if enrollment and enrollment.teacher_id:
-                attrs["preferred_teacher"] = enrollment.teacher
+            )
+            level = attrs.get("level")
+            if level and getattr(level, "track_id", None):
+                track_enr = enrollment_qs.filter(track_id=level.track_id).select_related("teacher").first()
+                if track_enr and track_enr.teacher_id:
+                    attrs["preferred_teacher"] = track_enr.teacher
+            if not attrs.get("preferred_teacher"):
+                first_enr = enrollment_qs.select_related("teacher").first()
+                if first_enr and first_enr.teacher_id:
+                    attrs["preferred_teacher"] = first_enr.teacher
 
         return attrs
 

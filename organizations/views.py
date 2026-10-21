@@ -474,16 +474,37 @@ class MyStudentEnrollmentListView(OrganizationScopedMixin, generics.ListAPIView)
             .order_by("-created_at")
         )
 
+        track_id = self.request.query_params.get("track_id")
+        if track_id:
+            try:
+                base_qs = base_qs.filter(track_id=int(track_id))
+            except (ValueError, TypeError):
+                pass
+
         if is_owner_or_admin(self, user):
             return base_qs
 
         if is_teacher(self, user):
-            from django.db.models import Q
-            student_ids = Booking.objects.filter(
+            from django.db.models import Exists, OuterRef, Q
+
+            booking_exists = Booking.objects.filter(
                 level__track__organization_id=self.organization_id,
                 teacher=user,
-            ).values_list("student_id", flat=True).distinct()
-            return base_qs.filter(Q(user_id__in=student_ids) | Q(teacher=user))
+                student_id=OuterRef("user_id"),
+            ).filter(
+                Q(level__track_id=OuterRef("track_id")) | Q(level__track__isnull=True)
+            )
+
+            booking_student_ids = Booking.objects.filter(
+                level__track__organization_id=self.organization_id,
+                teacher=user,
+            ).values_list("student_id", flat=True)
+
+            return base_qs.filter(
+                Q(teacher=user)
+                | Exists(booking_exists)
+                | Q(track__isnull=True, user_id__in=booking_student_ids)
+            )
 
         if membership.role == OrganizationRole.PARENT or getattr(user, "role", None) == Role.PARENT:
             child_ids = ParentLink.objects.filter(parent=user).values_list("student_id", flat=True)

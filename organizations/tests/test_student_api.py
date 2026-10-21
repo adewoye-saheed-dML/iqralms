@@ -224,3 +224,137 @@ class StudentEnrollmentAPITests(APITestCase):
         self.assertEqual(results[0]["user_id"], student.id)
         self.assertEqual(results[0]["teacher_id"], teacher.id)
         self.assertEqual(results[0]["teacher_name"], "Bilal Khan")
+
+    def test_student_can_enroll_in_multiple_subjects_with_different_teachers(self):
+        from curriculum.tests.factories import TrackFactory, LevelFactory
+        from curriculum.models import TeacherTrack
+
+        # Setup 2 subjects / tracks
+        quran_track = TrackFactory(organization=self.org, name="Quran Recitation", slug="quran-recitation")
+        quran_level = LevelFactory(track=quran_track, name="Juz Amma", order=1)
+
+        arabic_track = TrackFactory(organization=self.org, name="Arabic Language", slug="arabic-language")
+        arabic_level = LevelFactory(track=arabic_track, name="Madinah Book 1", order=1)
+
+        # Setup 2 teachers authorized for their respective tracks
+        teacher_quran = UserFactory(role=Role.SUB, first_name="Ahmad", last_name="Reciter")
+        tq_mem = OrganizationMembershipFactory(organization=self.org, user=teacher_quran, role=OrganizationRole.TEACHER)
+        TeacherTrack.objects.create(membership=tq_mem, track=quran_track, active=True)
+
+        teacher_arabic = UserFactory(role=Role.SUB, first_name="Fatima", last_name="Linguist")
+        ta_mem = OrganizationMembershipFactory(organization=self.org, user=teacher_arabic, role=OrganizationRole.TEACHER)
+        TeacherTrack.objects.create(membership=ta_mem, track=arabic_track, active=True)
+
+        student = UserFactory(role=Role.STUDENT, username="zayd_learner")
+
+        self.client.force_authenticate(user=self.owner)
+        url = reverse("organizations:student-list", kwargs={"organization_pk": self.org.pk})
+
+        # 1. Enroll in Subject 1 (Quran)
+        resp1 = self.client.post(
+            url,
+            data={
+                "user": student.id,
+                "track_id": quran_track.id,
+                "level_id": quran_level.id,
+                "teacher_id": teacher_quran.id,
+            },
+        )
+        self.assertEqual(resp1.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp1.data["track_id"], quran_track.id)
+        self.assertEqual(resp1.data["teacher_name"], "Ahmad Reciter")
+
+        # 2. Enroll in Subject 2 (Arabic) with Teacher 2
+        resp2 = self.client.post(
+            url,
+            data={
+                "user": student.id,
+                "track_id": arabic_track.id,
+                "level_id": arabic_level.id,
+                "teacher_id": teacher_arabic.id,
+            },
+        )
+        self.assertEqual(resp2.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp2.data["track_id"], arabic_track.id)
+        self.assertEqual(resp2.data["teacher_name"], "Fatima Linguist")
+
+        # Verify DB has 2 active enrollments for this student
+        student_enrollments = StudentEnrollment.objects.filter(organization=self.org, user=student)
+        self.assertEqual(student_enrollments.count(), 2)
+
+        # 3. Attempting to enroll in Quran track AGAIN should fail with 400
+        resp_dup = self.client.post(
+            url,
+            data={
+                "user": student.id,
+                "track_id": quran_track.id,
+                "level_id": quran_level.id,
+            },
+        )
+        self.assertEqual(resp_dup.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 4. Student sees both enrollments when listing their enrollments
+        self.client.force_authenticate(user=student)
+        mine_url = reverse("organizations:student-mine-list", args=[self.org.pk])
+        resp_mine = self.client.get(mine_url)
+        self.assertEqual(resp_mine.status_code, status.HTTP_200_OK)
+        mine_results = resp_mine.data["results"] if "results" in resp_mine.data else resp_mine.data
+        self.assertEqual(len(mine_results), 2)
+        track_ids = {r["track_id"] for r in mine_results}
+        self.assertEqual(track_ids, {quran_track.id, arabic_track.id})
+
+        # 5. Teacher 1 (teacher_quran) ONLY sees the Quran enrollment, not the Arabic enrollment
+        self.client.force_authenticate(user=teacher_quran)
+        resp_t1 = self.client.get(mine_url)
+        self.assertEqual(resp_t1.status_code, status.HTTP_200_OK)
+        t1_results = resp_t1.data["results"] if "results" in resp_t1.data else resp_t1.data
+        self.assertEqual(len(t1_results), 1)
+        self.assertEqual(t1_results[0]["track_id"], quran_track.id)
+        self.assertEqual(t1_results[0]["user_id"], student.id)
+
+        # 6. Teacher 2 (teacher_arabic) ONLY sees the Arabic enrollment, not the Quran enrollment
+        self.client.force_authenticate(user=teacher_arabic)
+        resp_t2 = self.client.get(mine_url)
+        self.assertEqual(resp_t2.status_code, status.HTTP_200_OK)
+        t2_results = resp_t2.data["results"] if "results" in resp_t2.data else resp_t2.data
+        self.assertEqual(len(t2_results), 1)
+        self.assertEqual(t2_results[0]["track_id"], arabic_track.id)
+        self.assertEqual(t2_results[0]["user_id"], student.id)
+
+        # 7. Multiple teachers in same track isolation:
+        # Create student 2 in Quran track assigned to teacher_quran_2
+        teacher_quran_2 = UserFactory(role=Role.SUB, first_name="Bilal", last_name="Teacher")
+        tq2_mem = OrganizationMembershipFactory(
+            user=teacher_quran_2, organization=self.org, role=OrganizationRole.TEACHER
+        )
+        TeacherTrack.objects.create(membership=tq2_mem, track=quran_track, active=True)
+        student2 = UserFactory(role=Role.STUDENT, first_name="Zayd", last_name="Learner")
+        self.client.force_authenticate(user=self.owner)
+        resp_s2 = self.client.post(
+            url,
+            data={
+                "user": student2.id,
+                "track_id": quran_track.id,
+                "level_id": quran_level.id,
+                "teacher_id": teacher_quran_2.id,
+            },
+        )
+        self.assertEqual(resp_s2.status_code, status.HTTP_201_CREATED)
+
+        # Teacher 1 (teacher_quran) in Quran track must ONLY see student 1, NEVER student 2
+        self.client.force_authenticate(user=teacher_quran)
+        resp_t1_quran = self.client.get(f"{mine_url}?track_id={quran_track.id}")
+        self.assertEqual(resp_t1_quran.status_code, status.HTTP_200_OK)
+        t1_quran_results = resp_t1_quran.data["results"] if "results" in resp_t1_quran.data else resp_t1_quran.data
+        self.assertEqual(len(t1_quran_results), 1)
+        self.assertEqual(t1_quran_results[0]["user_id"], student.id)
+        self.assertNotEqual(t1_quran_results[0]["user_id"], student2.id)
+
+        # Teacher 2 (teacher_quran_2) in Quran track must ONLY see student 2, NEVER student 1
+        self.client.force_authenticate(user=teacher_quran_2)
+        resp_t2_quran = self.client.get(f"{mine_url}?track_id={quran_track.id}")
+        self.assertEqual(resp_t2_quran.status_code, status.HTTP_200_OK)
+        t2_quran_results = resp_t2_quran.data["results"] if "results" in resp_t2_quran.data else resp_t2_quran.data
+        self.assertEqual(len(t2_quran_results), 1)
+        self.assertEqual(t2_quran_results[0]["user_id"], student2.id)
+        self.assertNotEqual(t2_quran_results[0]["user_id"], student.id)

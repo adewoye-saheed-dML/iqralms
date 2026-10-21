@@ -450,20 +450,10 @@ class UnifiedPaystackWebhookView(APIView):
         raw_body = request.body
         signature = request.META.get("HTTP_X_PAYSTACK_SIGNATURE")
 
-        from django.conf import settings as django_settings
         sig_valid = verify_paystack_signature(raw_body, signature)
         if not sig_valid:
-            if getattr(django_settings, "DEBUG", False):
-                # In DEBUG mode, log the mismatch but allow the webhook through
-                # so local development with ngrok works even if keys are mismatched
-                logger.warning(
-                    "Paystack signature mismatch in DEBUG mode — processing anyway. "
-                    "Signature header present: %s",
-                    bool(signature),
-                )
-            else:
-                logger.warning("Invalid Paystack signature on webhook.")
-                return Response({"error": "Invalid signature."}, status=status.HTTP_400_BAD_REQUEST)
+            logger.warning("Invalid Paystack signature on webhook.")
+            return Response({"error": "Invalid signature."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             payload = json.loads(raw_body.decode("utf-8"))

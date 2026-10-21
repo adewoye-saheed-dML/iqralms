@@ -482,6 +482,11 @@ class OrganizationTeacherConfigurationUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "Send at least one field to change."
             )
+        bank_fields = {"bank_code", "bank_name", "account_number", "account_name"}
+        if bank_fields.intersection(attrs.keys()):
+            raise serializers.ValidationError(
+                "Academy owners and administrators cannot edit teacher payout bank details. Only teachers may update their own payout accounts."
+            )
         return attrs
 
     def update(self, configuration, validated_data):
@@ -493,10 +498,6 @@ class OrganizationTeacherConfigurationUpdateSerializer(serializers.Serializer):
             "fixed_period_amount",
             "fixed_period_cadence",
             "approved",
-            "bank_code",
-            "bank_name",
-            "account_number",
-            "account_name",
         ):
             if field in validated_data:
                 setattr(configuration, field, validated_data[field])
