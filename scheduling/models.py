@@ -804,6 +804,26 @@ class Cohort(models.Model):
         self.students.add(student)
         return self
 
+    @property
+    def bookings(self):
+        return self.seat_bookings
+
+    def remove_student(self, student, cancelled_by=None, reason=""):
+        """Remove a student from this cohort and cancel their associated booking."""
+        if self.students.filter(pk=student.pk).exists():
+            self.students.remove(student)
+        from scheduling.models import BookingStatus
+        for b in self.seat_bookings.filter(student=student, status=BookingStatus.SCHEDULED):
+            b.cancel()
+        return self
+
+    def cancel(self, cancelled_by=None, reason=""):
+        """Cancel this cohort and all active seat bookings."""
+        from scheduling.models import BookingStatus
+        for b in self.seat_bookings.filter(status=BookingStatus.SCHEDULED):
+            b.cancel()
+        return self
+
     # --- Validation ---------------------------------------------------------
 
     def clean(self):

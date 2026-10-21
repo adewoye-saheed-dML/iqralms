@@ -24,6 +24,7 @@ only while a booking is ``scheduled``, precisely so history stays saveable.
 """
 
 from datetime import timedelta
+from decimal import Decimal
 
 import factory
 from django.utils import timezone as dj_timezone
@@ -34,8 +35,16 @@ from assessment.models import (
     AssessmentRubric,
     ProgressSnapshot,
     SessionAssessment,
+    SessionalExam,
+    SessionalExamQuestion,
+    SessionalExamSubmission,
+    ExamQuestionAnswer,
+    SessionalExamStatus,
+    QuestionType,
+    SubmissionStatus,
 )
 from curriculum.tests.factories import LevelFactory, TrackFactory, admit
+from organizations.tests.factories import OrganizationFactory
 from scheduling.tests.factories import (
     AvailabilityFactory,
     BookableTeacherFactory,
@@ -283,3 +292,51 @@ def assessed_teacher_world(*, level=None, weeks_ago=1, student=None):
         **({"student": student} if student is not None else {}),
     )
     return SessionAssessmentFactory(booking=booking), booking
+
+
+class SessionalExamFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = SessionalExam
+
+    organization = factory.SubFactory(OrganizationFactory)
+    created_by = factory.SubFactory(BookableTeacherFactory)
+    title = factory.Sequence(lambda n: f"Sessional Exam {n}")
+    academic_session = "2026/2027 First Term"
+    total_marks = Decimal("100.00")
+    passing_marks = Decimal("50.00")
+    duration_minutes = 60
+    status = SessionalExamStatus.PUBLISHED
+
+
+class SessionalExamQuestionFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = SessionalExamQuestion
+
+    exam = factory.SubFactory(SessionalExamFactory)
+    question_number = 1
+    question_text = "Recite Surah Al-Fatihah with proper tajweed"
+    marks_allotted = Decimal("25.00")
+    question_type = QuestionType.ORAL_RECITATION
+    surah_number = 1
+    ayah_start = 1
+    ayah_end = 7
+
+
+class SessionalExamSubmissionFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = SessionalExamSubmission
+
+    exam = factory.SubFactory(SessionalExamFactory)
+    student = factory.SubFactory(StudentFactory)
+    status = SubmissionStatus.SUBMITTED
+
+
+class ExamQuestionAnswerFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ExamQuestionAnswer
+
+    submission = factory.SubFactory(SessionalExamSubmissionFactory)
+    question = factory.SubFactory(SessionalExamQuestionFactory)
+    written_response = "Sample student response"
+    marks_awarded = Decimal("20.00")
+

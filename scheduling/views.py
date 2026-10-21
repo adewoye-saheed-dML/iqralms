@@ -15,13 +15,17 @@ family read it through.
 """
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
-from rest_framework import generics, serializers, status
+from rest_framework import generics, serializers, status, views
+from rest_framework.views import APIView
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from accounts.models import ParentLink, Role, User
 from organizations.permissions import IsOrganizationMember, IsOwnerOrAdmin
 from organizations.views import OrganizationScopedMixin
 
@@ -32,8 +36,10 @@ from .exceptions import (
 from .models import (
     Availability,
     Booking,
+    BookingStatus,
     ClassSessionRecording,
     Cohort,
+    RoutedReason,
     StudentAvailability,
     TeacherWaitlist,
 )
@@ -55,7 +61,10 @@ from .serializers import (
     BookingSerializer,
     ClassSessionRecordingSerializer,
     CohortCreateSerializer,
+    CohortDetailSerializer,
     CohortSerializer,
+    CohortStudentActionSerializer,
+    CohortUpdateSerializer,
     MatchingTeacherSerializer,
     NoCapacitySerializer,
     RouteRequestSerializer,
@@ -749,19 +758,29 @@ class CohortListCreateView(AcademyScopedView, generics.ListCreateAPIView):
     def get_serializer_class(self):
         if self.request.method == "POST":
             return CohortCreateSerializer
-        return CohortSerializer
+        return CohortDetailSerializer
 
     def get_queryset(self):
-        return (
+        qs = (
             Cohort.objects.filter(level__track__organization=self.organization)
             .select_related("level", "level__track", "teacher")
-            .prefetch_related("memberships")
+            .prefetch_related("students", "seat_bookings")
         )
+        level_id = self.request.query_params.get("level_id")
+        if level_id:
+            qs = qs.filter(level_id=level_id)
+        track_id = self.request.query_params.get("track_id")
+        if track_id:
+            qs = qs.filter(level__track_id=track_id)
+        teacher_id = self.request.query_params.get("teacher_id")
+        if teacher_id:
+            qs = qs.filter(teacher_id=teacher_id)
+        return qs
 
     @extend_schema(
         responses={
-            200: OpenApiResponse(response=CohortSerializer(many=True)),
-            201: OpenApiResponse(response=CohortSerializer),
+            200: OpenApiResponse(response=CohortDetailSerializer(many=True)),
+            201: OpenApiResponse(response=CohortDetailSerializer),
             400: OpenApiResponse(
                 description=(
                     "Level is not group-eligible, the teacher is unapproved, or "
@@ -781,21 +800,329 @@ class CohortListCreateView(AcademyScopedView, generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         cohort = serializer.save()
-        body = CohortSerializer(cohort, context=self.get_serializer_context()).data
+        try:
+            from audit_logs.services import record_event
+            from audit_logs.models import AuditAction
+            record_event(
+                organization=self.organization,
+                actor=request.user,
+                action=AuditAction.COHORT_CREATED,
+                target=cohort,
+                metadata={
+                    "teacher_id": cohort.teacher_id,
+                    "level_id": cohort.level_id,
+                    "max_students": cohort.max_students,
+                    "schedule_start_utc": cohort.schedule_start_utc.isoformat(),
+                },
+            )
+        except Exception:
+            pass
+        body = CohortDetailSerializer(cohort, context=self.get_serializer_context()).data
         return Response(body, status=status.HTTP_201_CREATED)
 
 
-class CohortDetailView(AcademyScopedView, generics.RetrieveAPIView):
-    """GET /api/scheduling/organizations/{id}/cohorts/{pk}/ — retrieve a cohort."""
+class CohortDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyAPIView):
+    """GET /api/scheduling/organizations/{id}/cohorts/{pk}/ — retrieve a cohort.
+    PATCH/PUT /api/scheduling/organizations/{id}/cohorts/{pk}/ — update cohort details.
+    DELETE /api/scheduling/organizations/{id}/cohorts/{pk}/ — cancel cohort and seats.
+    """
 
-    serializer_class = CohortSerializer
+    serializer_class = CohortDetailSerializer
     permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
 
     def get_queryset(self):
         return (
             Cohort.objects.filter(level__track__organization=self.organization)
             .select_related("level", "level__track", "teacher")
-            .prefetch_related("memberships")
+            .prefetch_related("students", "seat_bookings")
+        )
+
+    def patch(self, request, *args, **kwargs):
+        cohort = self.get_object()
+        serializer = CohortUpdateSerializer(
+            cohort,
+            data=request.data,
+            partial=True,
+            context=self.get_serializer_context(),
+        )
+        serializer.is_valid(raise_exception=True)
+        cohort = serializer.save()
+        try:
+            from audit_logs.services import record_event
+            from audit_logs.models import AuditAction
+            record_event(
+                organization=self.organization,
+                actor=request.user,
+                action=AuditAction.COHORT_UPDATED,
+                target=cohort,
+                metadata={"updated_fields": list(request.data.keys())},
+            )
+        except Exception:
+            pass
+        return Response(
+            CohortDetailSerializer(cohort, context=self.get_serializer_context()).data
+        )
+
+    def delete(self, request, *args, **kwargs):
+        cohort = self.get_object()
+        seats_count = cohort.seats_taken
+        cohort.cancel(
+            cancelled_by=request.user,
+            reason="Cohort cancelled by academy administration",
+        )
+        try:
+            from audit_logs.services import record_event
+            from audit_logs.models import AuditAction
+            record_event(
+                organization=self.organization,
+                actor=request.user,
+                action=AuditAction.COHORT_CANCELLED,
+                target=cohort,
+                metadata={"seats_cancelled": seats_count},
+            )
+        except Exception:
+            pass
+        if not cohort.seat_bookings.exists():
+            cohort.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CohortStudentManageView(AcademyScopedView, APIView):
+    """POST /api/scheduling/organizations/{id}/cohorts/{pk}/students/ — add a student to cohort.
+    DELETE /api/scheduling/organizations/{id}/cohorts/{pk}/students/<student_id>/ — remove student.
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
+
+    @extend_schema(
+        request=CohortStudentActionSerializer,
+        responses={
+            201: CohortDetailSerializer,
+            400: OpenApiResponse(description="Invalid student role, not in academy, or cohort full"),
+            404: OpenApiResponse(description="Cohort or student not found"),
+        },
+    )
+    def post(self, request, pk, *args, **kwargs):
+        cohort = get_object_or_404(
+            Cohort.objects.filter(level__track__organization=self.organization),
+            pk=pk,
+        )
+        student_id = request.data.get("student_id")
+        if not student_id:
+            return Response(
+                {"detail": "student_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        student = get_object_or_404(User, pk=student_id)
+        if student.role != Role.STUDENT:
+            return Response(
+                {"detail": f"User is not a student (role: '{student.role}')."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from accounts.tenancy import is_active_student_participant
+        if not is_active_student_participant(user=student, organization=self.organization):
+            return Response(
+                {"detail": "Student is not an active participant in this academy."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not cohort.has_space:
+            return Response(
+                {"detail": f"Cohort is full: {cohort.seats_taken} of {cohort.max_students} seats taken."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if cohort.students.filter(pk=student.pk).exists():
+            return Response(
+                {"detail": "Student already enrolled in this cohort."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            duration = getattr(cohort.level, "duration_minutes", None) or 60
+            booking = Booking.objects.create(
+                student=student,
+                teacher=cohort.teacher,
+                level=cohort.level,
+                start_time_utc=cohort.schedule_start_utc,
+                duration_minutes=duration,
+                cohort=cohort,
+                status=BookingStatus.SCHEDULED,
+                routed_reason=RoutedReason.COHORT_ASSIGNED,
+            )
+            cohort.add_student(student)
+
+            try:
+                from audit_logs.services import record_event
+                from audit_logs.models import AuditAction
+                record_event(
+                    organization=self.organization,
+                    actor=request.user,
+                    action=AuditAction.COHORT_ASSIGNMENT_CHANGED,
+                    target=cohort,
+                    metadata={"action": "add_student", "student_id": student.id, "booking_id": booking.id},
+                )
+            except Exception:
+                pass
+
+        return Response(
+            CohortDetailSerializer(cohort, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        responses={
+            200: CohortDetailSerializer,
+            400: OpenApiResponse(description="Student not enrolled in cohort or missing student_id"),
+            404: OpenApiResponse(description="Cohort or student not found"),
+        },
+    )
+    def delete(self, request, pk, student_id=None, *args, **kwargs):
+        cohort = get_object_or_404(
+            Cohort.objects.filter(level__track__organization=self.organization),
+            pk=pk,
+        )
+        if not student_id:
+            student_id = request.data.get("student_id") or request.query_params.get("student_id")
+        if not student_id:
+            return Response(
+                {"detail": "student_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        student = get_object_or_404(User, pk=student_id)
+        if not cohort.students.filter(pk=student.pk).exists():
+            return Response(
+                {"detail": "Student is not enrolled in this cohort."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            cohort.remove_student(
+                student,
+                cancelled_by=request.user,
+                reason="Removed from cohort by academy administration",
+            )
+            try:
+                from audit_logs.services import record_event
+                from audit_logs.models import AuditAction
+                record_event(
+                    organization=self.organization,
+                    actor=request.user,
+                    action=AuditAction.COHORT_ASSIGNMENT_CHANGED,
+                    target=cohort,
+                    metadata={"action": "remove_student", "student_id": student.id},
+                )
+            except Exception:
+                pass
+
+        return Response(
+            CohortDetailSerializer(cohort, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class CohortSelfEnrollView(AcademyScopedView, APIView):
+    """POST /api/scheduling/organizations/{id}/cohorts/{pk}/enroll/ — student or parent enrolls in an open cohort."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsStudentOrParent]
+
+    @extend_schema(
+        request=CohortStudentActionSerializer,
+        responses={
+            201: OpenApiResponse(description="Successfully enrolled in group cohort session"),
+            400: OpenApiResponse(description="Cohort is full or student not in academy"),
+            403: OpenApiResponse(description="Permission denied"),
+        },
+    )
+    def post(self, request, pk, *args, **kwargs):
+        cohort = get_object_or_404(
+            Cohort.objects.filter(level__track__organization=self.organization),
+            pk=pk,
+        )
+
+        target_student = None
+        if request.user.role == Role.STUDENT:
+            target_student = request.user
+        elif request.user.role == Role.PARENT:
+            child_id = request.data.get("student_id")
+            if not child_id:
+                return Response(
+                    {"detail": "student_id is required for parent enrollment."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            from accounts.models import ParentLink
+            link_exists = ParentLink.objects.filter(
+                parent=request.user,
+                student_id=child_id,
+            ).exists()
+            if not link_exists:
+                return Response(
+                    {"detail": "You do not have a verified link to this student."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            target_student = get_object_or_404(User, pk=child_id)
+        else:
+            return Response(
+                {"detail": "Only students or parents can enroll via this endpoint."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from accounts.tenancy import is_active_student_participant
+        if not is_active_student_participant(user=target_student, organization=self.organization):
+            return Response(
+                {"detail": "Student is not an active participant in this academy."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not cohort.has_space:
+            return Response(
+                {"detail": "This cohort is full. Please choose another group session."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if cohort.students.filter(pk=target_student.pk).exists():
+            return Response(
+                {"detail": "Student is already enrolled in this cohort."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            duration = getattr(cohort.level, "duration_minutes", None) or 60
+            booking = Booking.objects.create(
+                student=target_student,
+                teacher=cohort.teacher,
+                level=cohort.level,
+                start_time_utc=cohort.schedule_start_utc,
+                duration_minutes=duration,
+                cohort=cohort,
+                status=BookingStatus.SCHEDULED,
+                routed_reason=RoutedReason.COHORT_ASSIGNED,
+            )
+            cohort.add_student(target_student)
+
+            try:
+                from audit_logs.services import record_event
+                from audit_logs.models import AuditAction
+                record_event(
+                    organization=self.organization,
+                    actor=request.user,
+                    action=AuditAction.COHORT_ASSIGNMENT_CHANGED,
+                    target=cohort,
+                    metadata={"action": "self_enroll", "student_id": target_student.id, "booking_id": booking.id},
+                )
+            except Exception:
+                pass
+
+        return Response(
+            {
+                "message": "Successfully enrolled in group cohort session",
+                "cohort": CohortSerializer(cohort, context={"request": request}).data,
+                "booking_id": booking.id,
+            },
+            status=status.HTTP_201_CREATED,
         )
 
 

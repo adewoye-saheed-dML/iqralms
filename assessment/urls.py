@@ -35,6 +35,13 @@ from .views import (
     TeacherAssessmentListView,
     TeacherQualityReportView,
     TeachingProgressView,
+    SessionalExamListCreateView,
+    SessionalExamDetailView,
+    SessionalExamQuestionManageView,
+    SessionalExamSubmissionsListView,
+    SessionalExamTakeSubmitView,
+    SessionalExamGradeView,
+    ParentWardSessionalExamsView,
 )
 
 app_name = "assessment"
@@ -175,6 +182,53 @@ urlpatterns = [
         ChildSnapshotListView.as_view(),
         name="snapshot-child",
     ),
+    # Sessional Examinations & Question-by-Question Grading
+    path(
+        f"{ACADEMY}sessional-exams/",
+        SessionalExamListCreateView.as_view(),
+        name="sessional-exam-list",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/",
+        SessionalExamDetailView.as_view(),
+        name="sessional-exam-detail",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/questions/",
+        SessionalExamQuestionManageView.as_view(),
+        name="sessional-exam-questions",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/questions/<int:question_pk>/",
+        SessionalExamQuestionManageView.as_view(),
+        name="sessional-exam-question-detail",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/submissions/",
+        SessionalExamSubmissionsListView.as_view(),
+        name="sessional-exam-submissions",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/submit/",
+        SessionalExamTakeSubmitView.as_view(),
+        name="sessional-exam-take-submit",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/my-submission/",
+        SessionalExamTakeSubmitView.as_view(),
+        name="sessional-exam-my-submission",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/submissions/<int:submission_pk>/grade/",
+        SessionalExamGradeView.as_view(),
+        name="sessional-exam-grade",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/ward/<int:student_id>/",
+        ParentWardSessionalExamsView.as_view(),
+        name="sessional-exam-ward",
+    ),
+
     # Numeric routes last: they would otherwise shadow the literals above.
     path(
         f"{ACADEMY}<int:pk>/review/",

@@ -1526,3 +1526,343 @@ class AssignmentSubmission(models.Model):
     def __str__(self):
         return f"Submission by {self.student.username} for {self.assignment.title}"
 
+
+# --- Sessional Examinations & Question-by-Question Grading -------------------
+
+class SessionalExamStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    PUBLISHED = "published", "Published"
+    CLOSED = "closed", "Closed"
+
+
+class QuestionType(models.TextChoices):
+    ORAL_RECITATION = "oral_recitation", "Oral Recitation"
+    WRITTEN = "written", "Written Answer"
+    TAJWEED_RULES = "tajweed_rules", "Tajweed Rules / Theory"
+    MEMORIZATION = "memorization", "Hifz / Memorization"
+
+
+def exam_audio_path(instance, filename):
+    return f"exams/submissions/{instance.submission.student_id}/audio/{filename}"
+
+
+class SessionalExamQuerySet(models.QuerySet):
+    def in_organization(self, organization):
+        if organization is None:
+            return self.none()
+        org_id = getattr(organization, "pk", organization)
+        return self.filter(organization_id=org_id)
+
+
+class SessionalExam(models.Model):
+    """Sessional Exam Setting: Scoped to an academy, an academic session/term,
+    and optionally a track and level. Holds overarching exam configuration,
+    passing criteria, schedule dates, and duration.
+    """
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="sessional_exams",
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_sessional_exams",
+    )
+    title = models.CharField(max_length=200, help_text="e.g. 2026/2027 First Term Tajweed Examination")
+    academic_session = models.CharField(max_length=100, help_text="Academic session / term identifier, e.g. 2026/2027 - First Term")
+    track = models.ForeignKey(
+        Track,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sessional_exams",
+    )
+    level = models.ForeignKey(
+        Level,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sessional_exams",
+    )
+    description = models.TextField(blank=True)
+    instructions = models.TextField(blank=True, help_text="Exam rules, recitation standards, and guidelines for candidates")
+    start_date = models.DateTimeField(null=True, blank=True)
+    end_date = models.DateTimeField(null=True, blank=True)
+    duration_minutes = models.PositiveIntegerField(default=60, help_text="Time allowed for the examination in minutes")
+    total_marks = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=Decimal("100.00"),
+        validators=[MinValueValidator(Decimal("1.00"))],
+        help_text="Total maximum marks allotted across all questions",
+    )
+    passing_marks = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=Decimal("50.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Minimum marks required to pass",
+    )
+    weight_percentage = models.PositiveSmallIntegerField(
+        default=40,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text="Weight percentage towards final term grade (e.g. 40%)",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=SessionalExamStatus.choices,
+        default=SessionalExamStatus.DRAFT,
+    )
+    created_at = models.DateTimeField(default=dj_timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SessionalExamQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+    @property
+    def question_count(self) -> int:
+        return self.questions.count()
+
+    @property
+    def computed_total_marks(self) -> Decimal:
+        agg = self.questions.aggregate(models.Sum("marks_allotted"))["marks_allotted__sum"]
+        return agg if agg is not None else Decimal("0.00")
+
+    def recalculate_total_marks(self):
+        computed = self.computed_total_marks
+        if computed > Decimal("0.00"):
+            self.total_marks = computed
+            self.save(update_fields=["total_marks", "updated_at"])
+
+    def clean(self):
+        errors = {}
+        if self.track_id and self.track.organization_id != self.organization_id:
+            errors["track"] = ValidationError("Track must belong to this academy.")
+        if self.level_id and self.level.track.organization_id != self.organization_id:
+            errors["level"] = ValidationError("Level must belong to this academy.")
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            errors["end_date"] = ValidationError("Exam end date cannot precede start date.")
+        if self.passing_marks is not None and self.total_marks is not None:
+            if self.passing_marks > self.total_marks:
+                errors["passing_marks"] = ValidationError("Passing marks cannot exceed total marks.")
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.title} ({self.academic_session}) - {self.organization.name}"
+
+
+class SessionalExamQuestion(models.Model):
+    """An individual question or task on a Sessional Exam with explicit mark allotted."""
+
+    exam = models.ForeignKey(
+        SessionalExam,
+        on_delete=models.CASCADE,
+        related_name="questions",
+    )
+    question_number = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
+    question_text = models.TextField(help_text="The prompt, recitation instruction, or question text")
+    marks_allotted = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.50"))],
+        help_text="Mark allotted to this question (e.g. 20.00, 15.00, 10.00)",
+    )
+    question_type = models.CharField(
+        max_length=30,
+        choices=QuestionType.choices,
+        default=QuestionType.ORAL_RECITATION,
+    )
+    surah_number = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(114)],
+        help_text="Optional Quran Surah number (1-114)",
+    )
+    ayah_start = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+        help_text="Optional starting Ayah number",
+    )
+    ayah_end = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+        help_text="Optional ending Ayah number",
+    )
+    model_answer = models.TextField(
+        blank=True,
+        help_text="Optional grading guide, sample recitation standard, or model answer",
+    )
+    created_at = models.DateTimeField(default=dj_timezone.now)
+
+    class Meta:
+        ordering = ["exam", "question_number", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["exam", "question_number"],
+                name="unique_question_number_per_sessional_exam",
+            )
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.ayah_start and self.ayah_end and self.ayah_end < self.ayah_start:
+            errors["ayah_end"] = ValidationError("Ending ayah cannot precede starting ayah.")
+        if self.marks_allotted is not None and self.marks_allotted <= Decimal("0.00"):
+            errors["marks_allotted"] = ValidationError("Mark allotted must be greater than zero.")
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Q{self.question_number} ({self.marks_allotted} marks) - {self.exam.title}"
+
+
+class SessionalExamSubmission(models.Model):
+    """A student's attempt / submission for a Sessional Exam."""
+
+    exam = models.ForeignKey(
+        SessionalExam,
+        on_delete=models.CASCADE,
+        related_name="submissions",
+    )
+    student = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="sessional_exam_submissions",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=SubmissionStatus.choices,
+        default=SubmissionStatus.SUBMITTED,
+    )
+    started_at = models.DateTimeField(default=dj_timezone.now)
+    submitted_at = models.DateTimeField(default=dj_timezone.now)
+    graded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="graded_sessional_exams",
+    )
+    graded_at = models.DateTimeField(null=True, blank=True)
+    total_score = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    passed = models.BooleanField(null=True, blank=True)
+    general_feedback = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-submitted_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["exam", "student"],
+                name="unique_student_submission_per_sessional_exam",
+            )
+        ]
+
+    @property
+    def organization(self):
+        return self.exam.organization if self.exam_id else None
+
+    def calculate_results(self):
+        total = Decimal("0.00")
+        for ans in ExamQuestionAnswer.objects.filter(submission=self):
+            if ans.marks_awarded is not None:
+                total += ans.marks_awarded
+        self.total_score = total
+        if self.exam.total_marks and self.exam.total_marks > Decimal("0.00"):
+            self.percentage = (total / self.exam.total_marks) * Decimal("100.00")
+        else:
+            self.percentage = Decimal("0.00")
+        self.passed = total >= self.exam.passing_marks
+        self.status = SubmissionStatus.GRADED
+        self.save()
+
+    def __str__(self):
+        return f"{self.student.username}'s submission for {self.exam.title}"
+
+
+class ExamQuestionAnswer(models.Model):
+    """A student's answer to a specific question on a sessional exam,
+    including the marks awarded against the marks allotted."""
+
+    submission = models.ForeignKey(
+        SessionalExamSubmission,
+        on_delete=models.CASCADE,
+        related_name="answers",
+    )
+    question = models.ForeignKey(
+        SessionalExamQuestion,
+        on_delete=models.CASCADE,
+        related_name="answers",
+    )
+    written_response = models.TextField(blank=True)
+    audio_recording = models.FileField(
+        upload_to=exam_audio_path,
+        null=True,
+        blank=True,
+        validators=[validate_placement_audio],
+    )
+    marks_awarded = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Marks awarded by teacher out of question.marks_allotted",
+    )
+    teacher_comment = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["question__question_number", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["submission", "question"],
+                name="unique_answer_per_question_in_submission",
+            )
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.marks_awarded is not None and self.question_id:
+            if self.marks_awarded > self.question.marks_allotted:
+                errors["marks_awarded"] = ValidationError(
+                    f"Marks awarded ({self.marks_awarded}) cannot exceed mark allotted ({self.question.marks_allotted})."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Answer for Q{self.question.question_number} ({self.marks_awarded}/{self.question.marks_allotted})"
+

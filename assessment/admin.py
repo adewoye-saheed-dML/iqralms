@@ -23,6 +23,10 @@ from .models import (
     AssessmentScore,
     ProgressSnapshot,
     SessionAssessment,
+    SessionalExam,
+    SessionalExamQuestion,
+    SessionalExamSubmission,
+    ExamQuestionAnswer,
 )
 
 
@@ -135,3 +139,34 @@ class ProgressSnapshotAdmin(admin.ModelAdmin):
         # Snapshots are computed, never typed in: every number would otherwise be
         # a claim rather than a measurement.
         return False
+
+
+class SessionalExamQuestionInline(admin.TabularInline):
+    model = SessionalExamQuestion
+    extra = 1
+    fields = ("question_number", "question_type", "marks_allotted", "question_text", "surah_number", "ayah_start", "ayah_end")
+
+
+@admin.register(SessionalExam)
+class SessionalExamAdmin(admin.ModelAdmin):
+    list_display = ("title", "academic_session", "organization", "track", "level", "total_marks", "passing_marks", "status")
+    list_filter = ("status", "academic_session", "organization", "track")
+    search_fields = ("title", "academic_session", "description")
+    inlines = [SessionalExamQuestionInline]
+
+
+class ExamQuestionAnswerInline(admin.TabularInline):
+    model = ExamQuestionAnswer
+    extra = 0
+    readonly_fields = ("question", "written_response", "audio_recording", "marks_awarded", "teacher_comment")
+    can_delete = False
+
+
+@admin.register(SessionalExamSubmission)
+class SessionalExamSubmissionAdmin(admin.ModelAdmin):
+    list_display = ("student", "exam", "status", "total_score", "percentage", "passed", "graded_by", "graded_at")
+    list_filter = ("status", "passed", "exam__academic_session")
+    search_fields = ("student__username", "exam__title")
+    inlines = [ExamQuestionAnswerInline]
+    readonly_fields = ("started_at", "submitted_at")
+

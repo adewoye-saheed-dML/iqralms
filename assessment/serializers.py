@@ -45,6 +45,12 @@ from .models import (
     StudentAssignment,
     SubmissionStatus,
     SubmissionType,
+    SessionalExam,
+    SessionalExamQuestion,
+    SessionalExamSubmission,
+    ExamQuestionAnswer,
+    SessionalExamStatus,
+    QuestionType,
 )
 
 
@@ -1043,6 +1049,259 @@ class StudentLearningSpaceSerializer(serializers.Serializer):
     overall_session_average = serializers.DecimalField(max_digits=4, decimal_places=2, allow_null=True)
     recent_session_assessments = StudentLearningSpaceSessionAssessmentSerializer(many=True)
     tracks_progress = StudentTrackProgressSerializer(many=True)
+
+
+# --- Sessional Examination Serializers ---------------------------------------
+
+class SessionalExamQuestionSerializer(serializers.ModelSerializer):
+    """Serializer for an exam question with explicit mark allotted."""
+
+    class Meta:
+        model = SessionalExamQuestion
+        fields = [
+            "id",
+            "exam_id",
+            "question_number",
+            "question_text",
+            "marks_allotted",
+            "question_type",
+            "surah_number",
+            "ayah_start",
+            "ayah_end",
+            "model_answer",
+            "created_at",
+        ]
+        read_only_fields = ["id", "exam_id", "created_at"]
+
+
+class SessionalExamQuestionNestedCreateSerializer(serializers.ModelSerializer):
+    """Nested question serializer for bulk creation with exam."""
+
+    class Meta:
+        model = SessionalExamQuestion
+        fields = [
+            "question_number",
+            "question_text",
+            "marks_allotted",
+            "question_type",
+            "surah_number",
+            "ayah_start",
+            "ayah_end",
+            "model_answer",
+        ]
+
+
+class SessionalExamSerializer(serializers.ModelSerializer):
+    """Read serializer for Sessional Exam Setting."""
+
+    track_name = serializers.CharField(source="track.name", read_only=True, allow_null=True)
+    level_name = serializers.CharField(source="level.name", read_only=True, allow_null=True)
+    created_by_name = serializers.CharField(source="created_by.get_full_name", read_only=True)
+    questions = SessionalExamQuestionSerializer(many=True, read_only=True)
+    question_count = serializers.IntegerField(read_only=True)
+    computed_total_marks = serializers.DecimalField(max_digits=6, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = SessionalExam
+        fields = [
+            "id",
+            "organization_id",
+            "title",
+            "academic_session",
+            "track",
+            "track_name",
+            "level",
+            "level_name",
+            "description",
+            "instructions",
+            "start_date",
+            "end_date",
+            "duration_minutes",
+            "total_marks",
+            "passing_marks",
+            "weight_percentage",
+            "status",
+            "created_by",
+            "created_by_name",
+            "question_count",
+            "computed_total_marks",
+            "questions",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "organization_id",
+            "created_by",
+            "created_by_name",
+            "question_count",
+            "computed_total_marks",
+            "questions",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class SessionalExamCreateUpdateSerializer(serializers.ModelSerializer):
+    """Write serializer for Sessional Exam Setting with optional nested questions."""
+
+    questions = SessionalExamQuestionNestedCreateSerializer(many=True, required=False)
+
+    class Meta:
+        model = SessionalExam
+        fields = [
+            "title",
+            "academic_session",
+            "track",
+            "level",
+            "description",
+            "instructions",
+            "start_date",
+            "end_date",
+            "duration_minutes",
+            "total_marks",
+            "passing_marks",
+            "weight_percentage",
+            "status",
+            "questions",
+        ]
+
+    def create(self, validated_data):
+        questions_data = validated_data.pop("questions", None)
+        request = self.context.get("request")
+        organization = self.context.get("organization")
+        validated_data["organization"] = organization
+        validated_data["created_by"] = request.user if request else validated_data.get("created_by")
+
+        with transaction.atomic():
+            exam = SessionalExam(**validated_data)
+            try:
+                exam.save()
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
+
+            if questions_data:
+                for q_data in questions_data:
+                    SessionalExamQuestion.objects.create(exam=exam, **q_data)
+                exam.recalculate_total_marks()
+
+        return exam
+
+    def update(self, instance, validated_data):
+        questions_data = validated_data.pop("questions", None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        try:
+            instance.save()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
+
+        if questions_data is not None:
+            with transaction.atomic():
+                instance.questions.all().delete()
+                for q_data in questions_data:
+                    SessionalExamQuestion.objects.create(exam=instance, **q_data)
+                instance.recalculate_total_marks()
+
+        return instance
+
+
+class ExamQuestionAnswerSerializer(serializers.ModelSerializer):
+    """Read representation of student answer and teacher mark awarded."""
+
+    question_number = serializers.IntegerField(source="question.question_number", read_only=True)
+    question_text = serializers.CharField(source="question.question_text", read_only=True)
+    marks_allotted = serializers.DecimalField(source="question.marks_allotted", max_digits=5, decimal_places=2, read_only=True)
+    question_type = serializers.CharField(source="question.question_type", read_only=True)
+    surah_number = serializers.IntegerField(source="question.surah_number", read_only=True)
+    ayah_start = serializers.IntegerField(source="question.ayah_start", read_only=True)
+    ayah_end = serializers.IntegerField(source="question.ayah_end", read_only=True)
+    audio_recording_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExamQuestionAnswer
+        fields = [
+            "id",
+            "question_id",
+            "question_number",
+            "question_text",
+            "marks_allotted",
+            "question_type",
+            "surah_number",
+            "ayah_start",
+            "ayah_end",
+            "written_response",
+            "audio_recording",
+            "audio_recording_url",
+            "marks_awarded",
+            "teacher_comment",
+        ]
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_audio_recording_url(self, obj):
+        if obj.audio_recording:
+            return obj.audio_recording.url
+        return None
+
+
+class SessionalExamSubmissionSerializer(serializers.ModelSerializer):
+    """Full detail of student exam submission."""
+
+    student_name = serializers.CharField(source="student.get_full_name", read_only=True)
+    student_username = serializers.CharField(source="student.username", read_only=True)
+    exam_title = serializers.CharField(source="exam.title", read_only=True)
+    academic_session = serializers.CharField(source="exam.academic_session", read_only=True)
+    total_marks = serializers.DecimalField(source="exam.total_marks", max_digits=6, decimal_places=2, read_only=True)
+    passing_marks = serializers.DecimalField(source="exam.passing_marks", max_digits=6, decimal_places=2, read_only=True)
+    graded_by_name = serializers.CharField(source="graded_by.get_full_name", read_only=True, allow_null=True)
+    answers = ExamQuestionAnswerSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = SessionalExamSubmission
+        fields = [
+            "id",
+            "exam_id",
+            "exam_title",
+            "academic_session",
+            "student_id",
+            "student_name",
+            "student_username",
+            "status",
+            "started_at",
+            "submitted_at",
+            "graded_by",
+            "graded_by_name",
+            "graded_at",
+            "total_score",
+            "total_marks",
+            "passing_marks",
+            "percentage",
+            "passed",
+            "general_feedback",
+            "answers",
+        ]
+
+
+class SingleQuestionAnswerSubmitSerializer(serializers.Serializer):
+    question_id = serializers.IntegerField()
+    written_response = serializers.CharField(required=False, allow_blank=True, default="")
+    audio_recording = serializers.FileField(required=False, allow_null=True, default=None)
+
+
+class SessionalExamSubmitAnswersSerializer(serializers.Serializer):
+    answers = SingleQuestionAnswerSubmitSerializer(many=True)
+
+
+class QuestionGradeItemSerializer(serializers.Serializer):
+    question_id = serializers.IntegerField()
+    marks_awarded = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=0)
+    teacher_comment = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class SessionalExamGradeSubmissionSerializer(serializers.Serializer):
+    grades = QuestionGradeItemSerializer(many=True)
+    general_feedback = serializers.CharField(required=False, allow_blank=True, default="")
+
 
 
 

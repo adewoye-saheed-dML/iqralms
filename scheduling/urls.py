@@ -16,6 +16,8 @@ from .views import (
     CohortCreateView,
     CohortDetailView,
     CohortListCreateView,
+    CohortStudentManageView,
+    CohortSelfEnrollView,
     MyBookingListView,
     MyWaitlistListView,
     OpenCohortListView,
@@ -125,6 +127,21 @@ urlpatterns = [
         f"{ACADEMY}cohorts/<int:pk>/",
         CohortDetailView.as_view(),
         name="cohort-detail",
+    ),
+    path(
+        f"{ACADEMY}cohorts/<int:pk>/students/",
+        CohortStudentManageView.as_view(),
+        name="cohort-students",
+    ),
+    path(
+        f"{ACADEMY}cohorts/<int:pk>/students/<int:student_id>/",
+        CohortStudentManageView.as_view(),
+        name="cohort-student-remove",
+    ),
+    path(
+        f"{ACADEMY}cohorts/<int:pk>/enroll/",
+        CohortSelfEnrollView.as_view(),
+        name="cohort-enroll",
     ),
     path(
         f"{ACADEMY}cohorts/open/",

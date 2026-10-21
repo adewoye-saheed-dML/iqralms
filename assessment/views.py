@@ -15,9 +15,11 @@ nothing else — CLAUDE.md's Phase 7 boundary, and the tests assert it.
 
 import os
 
+from django.db import transaction
 from django.db.models import Q
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
+from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -49,6 +51,12 @@ from .models import (
     StudentAssignment,
     SubmissionStatus,
     SubmissionType,
+    SessionalExam,
+    SessionalExamQuestion,
+    SessionalExamSubmission,
+    ExamQuestionAnswer,
+    SessionalExamStatus,
+    QuestionType,
 )
 from .permissions import (
     AssessmentReviewer,
@@ -78,6 +86,12 @@ from .serializers import (
     StudentProgressSerializer,
     TeacherAssessmentSerializer,
     TeacherReportSerializer,
+    SessionalExamSerializer,
+    SessionalExamCreateUpdateSerializer,
+    SessionalExamQuestionSerializer,
+    SessionalExamSubmissionSerializer,
+    SessionalExamSubmitAnswersSerializer,
+    SessionalExamGradeSubmissionSerializer,
 )
 
 #: One query for an assessment plus everything the read serializers touch.
@@ -1558,6 +1572,376 @@ class AssignmentResourceFileView(AcademyScopedView, APIView):
             )
         except FileNotFoundError:
             raise Http404("Resource file not found on disk.")
+
+
+# --- Sessional Examination Views ----------------------------------------------
+
+class SessionalExamListCreateView(AcademyScopedView, generics.ListCreateAPIView):
+    """GET /api/assessment/organizations/{org_id}/sessional-exams/ — list sessional exams.
+    POST /api/assessment/organizations/{org_id}/sessional-exams/ — create exam setting with questions.
+    """
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return SessionalExamCreateUpdateSerializer
+        return SessionalExamSerializer
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), IsOrganizationMember(), IsOwnerAdminOrLeadTeacher()]
+        return [IsAuthenticated(), IsOrganizationMember()]
+
+    def get_queryset(self):
+        qs = (
+            SessionalExam.objects.in_organization(self.organization)
+            .select_related("track", "level", "created_by")
+            .prefetch_related("questions")
+        )
+        # Students only see published exams
+        user = self.request.user
+        if getattr(user, "role", None) == Role.STUDENT:
+            qs = qs.filter(status=SessionalExamStatus.PUBLISHED)
+
+        track_id = self.request.query_params.get("track_id")
+        if track_id:
+            qs = qs.filter(track_id=track_id)
+        level_id = self.request.query_params.get("level_id")
+        if level_id:
+            qs = qs.filter(level_id=level_id)
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(status=status_param)
+        academic_session = self.request.query_params.get("academic_session")
+        if academic_session:
+            qs = qs.filter(academic_session__icontains=academic_session)
+
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        serializer = SessionalExamCreateUpdateSerializer(
+            data=request.data,
+            context={"request": request, "organization": self.organization},
+        )
+        serializer.is_valid(raise_exception=True)
+        exam = serializer.save()
+        return Response(
+            SessionalExamSerializer(exam, context=self.get_serializer_context()).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SessionalExamDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyAPIView):
+    """GET /api/assessment/organizations/{org_id}/sessional-exams/{pk}/ — retrieve sessional exam.
+    PATCH/PUT /api/assessment/organizations/{org_id}/sessional-exams/{pk}/ — update exam setting.
+    DELETE /api/assessment/organizations/{org_id}/sessional-exams/{pk}/ — delete exam.
+    """
+
+    serializer_class = SessionalExamSerializer
+
+    def get_permissions(self):
+        if self.request.method in ["PATCH", "PUT", "DELETE"]:
+            return [IsAuthenticated(), IsOrganizationMember(), IsOwnerAdminOrLeadTeacher()]
+        return [IsAuthenticated(), IsOrganizationMember()]
+
+    def get_queryset(self):
+        return (
+            SessionalExam.objects.in_organization(self.organization)
+            .select_related("track", "level", "created_by")
+            .prefetch_related("questions")
+        )
+
+    def patch(self, request, *args, **kwargs):
+        exam = self.get_object()
+        serializer = SessionalExamCreateUpdateSerializer(
+            exam,
+            data=request.data,
+            partial=True,
+            context={"request": request, "organization": self.organization},
+        )
+        serializer.is_valid(raise_exception=True)
+        exam = serializer.save()
+        return Response(
+            SessionalExamSerializer(exam, context=self.get_serializer_context()).data
+        )
+
+    def put(self, request, *args, **kwargs):
+        return self.patch(request, *args, **kwargs)
+
+
+class SessionalExamQuestionManageView(AcademyScopedView, APIView):
+    """Manage individual questions and their mark allotted for a Sessional Exam."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
+
+    @extend_schema(
+        request=SessionalExamQuestionSerializer,
+        responses={201: SessionalExamQuestionSerializer},
+    )
+    def post(self, request, pk, *args, **kwargs):
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=pk,
+        )
+        serializer = SessionalExamQuestionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        question = serializer.save(exam=exam)
+        exam.recalculate_total_marks()
+        return Response(
+            SessionalExamQuestionSerializer(question).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        request=SessionalExamQuestionSerializer,
+        responses={200: SessionalExamQuestionSerializer},
+    )
+    def patch(self, request, pk, question_pk, *args, **kwargs):
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=pk,
+        )
+        question = get_object_or_404(exam.questions.all(), pk=question_pk)
+        serializer = SessionalExamQuestionSerializer(question, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        question = serializer.save()
+        exam.recalculate_total_marks()
+        return Response(SessionalExamQuestionSerializer(question).data)
+
+    @extend_schema(
+        responses={204: OpenApiResponse(description="Question deleted")},
+    )
+    def delete(self, request, pk, question_pk, *args, **kwargs):
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=pk,
+        )
+        question = get_object_or_404(exam.questions.all(), pk=question_pk)
+        question.delete()
+        exam.recalculate_total_marks()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SessionalExamSubmissionsListView(AcademyScopedView, generics.ListAPIView):
+    """GET /api/assessment/organizations/{org_id}/sessional-exams/{pk}/submissions/ — list submissions."""
+
+    serializer_class = SessionalExamSubmissionSerializer
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsTeacherMember]
+
+    def get_queryset(self):
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=self.kwargs["pk"],
+        )
+        return (
+            exam.submissions.all()
+            .select_related("student", "graded_by", "exam")
+            .prefetch_related("answers", "answers__question")
+        )
+
+
+class SessionalExamTakeSubmitView(AcademyScopedView, APIView):
+    """Student exam submission and review endpoints."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsStudent]
+
+    @extend_schema(
+        responses={200: SessionalExamSubmissionSerializer},
+    )
+    def get(self, request, pk, *args, **kwargs):
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=pk,
+        )
+        submission = (
+            SessionalExamSubmission.objects.filter(exam=exam, student=request.user)
+            .select_related("student", "graded_by", "exam")
+            .prefetch_related("answers", "answers__question")
+            .first()
+        )
+        if not submission:
+            raise Http404("No submission found for this exam.")
+        return Response(SessionalExamSubmissionSerializer(submission).data)
+
+    @extend_schema(
+        request=SessionalExamSubmitAnswersSerializer,
+        responses={201: SessionalExamSubmissionSerializer},
+    )
+    def post(self, request, pk, *args, **kwargs):
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=pk,
+        )
+        if exam.status != SessionalExamStatus.PUBLISHED:
+            return Response(
+                {"detail": "This exam is not currently open for submissions."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = SessionalExamSubmission.objects.filter(exam=exam, student=request.user).first()
+        if existing and existing.status in [SubmissionStatus.SUBMITTED, SubmissionStatus.GRADED]:
+            return Response(
+                {"detail": "You have already submitted this examination."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = request.data
+        if hasattr(data, "dict"):
+            # QueryDict or multipart form data
+            data_dict = {}
+            if "answers" in data:
+                raw_answers = data.get("answers")
+                if isinstance(raw_answers, str):
+                    import json
+                    try:
+                        data_dict["answers"] = json.loads(raw_answers)
+                    except Exception:
+                        data_dict["answers"] = raw_answers
+                else:
+                    data_dict["answers"] = raw_answers
+            data = data_dict
+
+        serializer = SessionalExamSubmitAnswersSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        answers_data = serializer.validated_data["answers"]
+
+        with transaction.atomic():
+            if not existing:
+                submission = SessionalExamSubmission.objects.create(
+                    exam=exam,
+                    student=request.user,
+                    status=SubmissionStatus.SUBMITTED,
+                )
+            else:
+                submission = existing
+                submission.status = SubmissionStatus.SUBMITTED
+                submission.submitted_at = dj_timezone.now()
+                submission.save()
+
+            for ans_item in answers_data:
+                question = get_object_or_404(exam.questions.all(), pk=ans_item["question_id"])
+                audio_file = ans_item.get("audio_recording")
+                if not audio_file and request.FILES:
+                    audio_file = (
+                        request.FILES.get(f"audio_question_{question.pk}")
+                        or request.FILES.get(f"audio_{question.pk}")
+                    )
+                ExamQuestionAnswer.objects.update_or_create(
+                    submission=submission,
+                    question=question,
+                    defaults={
+                        "written_response": ans_item.get("written_response", ""),
+                        "audio_recording": audio_file,
+                    },
+                )
+
+        submission.refresh_from_db()
+        return Response(
+            SessionalExamSubmissionSerializer(submission).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SessionalExamGradeView(AcademyScopedView, APIView):
+    """Teacher grades a student's Sessional Exam question-by-question,
+    assigning marks awarded against marks allotted for each question."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsTeacherMember]
+
+    @extend_schema(
+        request=SessionalExamGradeSubmissionSerializer,
+        responses={200: SessionalExamSubmissionSerializer},
+    )
+    def post(self, request, pk, submission_pk, *args, **kwargs):
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=pk,
+        )
+        submission = get_object_or_404(
+            exam.submissions.all().select_related("student", "exam").prefetch_related("answers", "answers__question"),
+            pk=submission_pk,
+        )
+
+        serializer = SessionalExamGradeSubmissionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        grades_data = serializer.validated_data["grades"]
+        general_feedback = serializer.validated_data.get("general_feedback", "")
+
+        with transaction.atomic():
+            for g_item in grades_data:
+                q_id = g_item["question_id"]
+                marks_awarded = g_item["marks_awarded"]
+                comment = g_item.get("teacher_comment", "")
+
+                question = get_object_or_404(exam.questions.all(), pk=q_id)
+                if marks_awarded > question.marks_allotted:
+                    return Response(
+                        {
+                            "detail": f"Marks awarded ({marks_awarded}) for Question {question.question_number} cannot exceed mark allotted ({question.marks_allotted})."
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                ans, _ = ExamQuestionAnswer.objects.get_or_create(
+                    submission=submission,
+                    question=question,
+                )
+                ans.marks_awarded = marks_awarded
+                ans.teacher_comment = comment
+                ans.save()
+
+            submission.graded_by = request.user
+            submission.graded_at = dj_timezone.now()
+            submission.general_feedback = general_feedback
+            submission.calculate_results()
+
+        submission = (
+            SessionalExamSubmission.objects.filter(pk=submission.pk)
+            .select_related("student", "graded_by", "exam")
+            .prefetch_related("answers", "answers__question")
+            .first()
+        )
+        return Response(
+            SessionalExamSubmissionSerializer(submission).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class ParentWardSessionalExamsView(AcademyScopedView, APIView):
+    """GET /api/assessment/organizations/{org_id}/sessional-exams/ward/{student_id}/ — parent views child exam results."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember, IsParent]
+
+    @extend_schema(
+        responses={200: SessionalExamSubmissionSerializer(many=True)},
+    )
+    def get(self, request, student_id, *args, **kwargs):
+        from accounts.models import ParentLink
+        link_exists = ParentLink.objects.filter(
+            parent=request.user,
+            student_id=student_id,
+        ).exists()
+        if not link_exists:
+            return Response(
+                {"detail": "You do not have a verified parent link to this student."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        student = get_object_or_404(User, pk=student_id)
+        submissions = (
+            SessionalExamSubmission.objects.filter(
+                exam__organization=self.organization,
+                student=student,
+            )
+            .select_related("student", "graded_by", "exam")
+            .prefetch_related("answers", "answers__question")
+        )
+
+        return Response(
+            SessionalExamSubmissionSerializer(submissions, many=True).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 

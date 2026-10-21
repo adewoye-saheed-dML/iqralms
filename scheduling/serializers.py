@@ -456,6 +456,80 @@ class CohortSerializer(serializers.ModelSerializer):
         return local.isoformat() if local else None
 
 
+class CohortRosterMemberSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    username = serializers.CharField()
+    email = serializers.EmailField()
+    first_name = serializers.CharField(allow_blank=True)
+    last_name = serializers.CharField(allow_blank=True)
+    booking_id = serializers.IntegerField(allow_null=True)
+    booking_status = serializers.CharField(allow_null=True)
+    meeting_url = serializers.CharField(allow_null=True)
+
+
+class CohortDetailSerializer(CohortSerializer):
+    """Detailed cohort representation including enrolled students roster."""
+
+    students_roster = serializers.SerializerMethodField()
+
+    class Meta(CohortSerializer.Meta):
+        fields = CohortSerializer.Meta.fields + ["students_roster"]
+
+    @extend_schema_field(CohortRosterMemberSerializer(many=True))
+    def get_students_roster(self, obj):
+        bookings = {
+            b.student_id: b
+            for b in obj.seat_bookings.all()
+        }
+        roster = []
+        org_slug = obj.organization.slug if obj.organization else "academy"
+        for student in obj.students.all():
+            booking = bookings.get(student.id)
+            meeting_url = (
+                booking.video_meeting_url
+                if booking and getattr(booking, "video_meeting_url", None)
+                else f"https://meet.jit.si/iqralms-cohort-{org_slug}-{obj.id}"
+            )
+            roster.append({
+                "id": student.id,
+                "username": student.username,
+                "email": student.email,
+                "first_name": student.first_name,
+                "last_name": student.last_name,
+                "booking_id": booking.id if booking else None,
+                "booking_status": booking.status if booking else None,
+                "meeting_url": meeting_url,
+            })
+        return roster
+
+
+class CohortUpdateSerializer(AcademyScopedSerializerMixin, serializers.ModelSerializer):
+    scoped_querysets = {
+        "teacher": teachers_in,
+    }
+
+    teacher = serializers.PrimaryKeyRelatedField(queryset=User.objects.none(), required=False)
+    max_students = serializers.IntegerField(required=False, min_value=1)
+    schedule_start_utc = serializers.DateTimeField(required=False)
+
+    class Meta:
+        model = Cohort
+        fields = ["teacher", "max_students", "schedule_start_utc"]
+
+    def update(self, instance, validated_data):
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        try:
+            instance.save()
+        except DjangoValidationError as exc:
+            raise as_drf_error(exc) from exc
+        return instance
+
+
+class CohortStudentActionSerializer(serializers.Serializer):
+    student_id = serializers.IntegerField(required=True)
+
+
 class CohortCreateSerializer(AcademyScopedSerializerMixin, serializers.ModelSerializer):
     """The lead teacher opens a group class.
 

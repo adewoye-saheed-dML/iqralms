@@ -112,6 +112,7 @@ ALLOWED_HOSTS = env_list(
             "localhost",
             "127.0.0.1",
             "[::1]",
+             ".ngrok-free.dev",
         ]
     ),
 )
@@ -530,6 +531,9 @@ SPECTACULAR_SETTINGS = {
             "organizations.serializers.INVITABLE_ORGANIZATION_ROLES"
         ),
         "MembershipStatusEnum": "organizations.models.MembershipStatus.choices",
+        "AssignmentSubmissionStatusEnum": "assessment.models.SubmissionStatus.choices",
+        "SessionalExamStatusEnum": "assessment.models.SessionalExamStatus.choices",
+        "QuestionTypeEnum": "assessment.models.QuestionType.choices",
     },
 }
 
