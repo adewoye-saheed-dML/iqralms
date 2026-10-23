@@ -763,4 +763,86 @@ class PlatformSubscriptionTests(TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn("Academies in Nigeria must subscribe using local Naira", str(res.data["currency"]))
 
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_onboarding_academy_subscribes_successfully_with_user_timezone(self, mock_init):
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/test_url",
+            "access_code": "test_acc_code",
+        }
+        onboarding_org = Organization.objects.create(
+            name="New Onboarding Academy",
+            slug="new-onboarding",
+            timezone="UTC",
+            is_active=False,
+        )
+        OrganizationMembership.objects.create(
+            organization=onboarding_org,
+            user=self.owner,
+            role=OrganizationRole.OWNER,
+            status=MembershipStatus.ACTIVE,
+        )
+
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": onboarding_org.pk, "tier": "starter"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["authorization_url"], "https://checkout.paystack.com/test_url")
+
+        call_kwargs = mock_init.call_args.kwargs
+        self.assertEqual(call_kwargs["currency"], "NGN")
+        self.assertEqual(call_kwargs["amount_kobo"], 1500000)
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_onboarding_academy_subscribes_with_tz_in_request_body(self, mock_init):
+        mock_init.return_value = {
+            "authorization_url": "https://checkout.paystack.com/test_url_tz",
+            "access_code": "test_acc_tz",
+        }
+        utc_owner = User.objects.create_user(
+            username="utc_owner",
+            email="utc_owner@academy.com",
+            role=Role.LEAD,
+            timezone="UTC",
+        )
+        onboarding_org = Organization.objects.create(
+            name="UTC Academy",
+            slug="utc-academy",
+            timezone="UTC",
+            is_active=False,
+        )
+        OrganizationMembership.objects.create(
+            organization=onboarding_org,
+            user=utc_owner,
+            role=OrganizationRole.OWNER,
+            status=MembershipStatus.ACTIVE,
+        )
+
+        self.client.force_authenticate(user=utc_owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": onboarding_org.pk, "tier": "growth", "tz": "Africa/Lagos"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        call_kwargs = mock_init.call_args.kwargs
+        self.assertEqual(call_kwargs["currency"], "NGN")
+        self.assertEqual(call_kwargs["amount_kobo"], 3500000)
+
+    @patch("payments.paystack.PaystackClient.initialize_transaction")
+    def test_subscribe_view_handles_paystack_api_error_gracefully(self, mock_init):
+        from payments.paystack import PaystackAPIError
+        mock_init.side_effect = PaystackAPIError("Paystack network timeout", status_code=502)
+
+        self.client.force_authenticate(user=self.owner)
+        res = self.client.post(
+            "/api/billing/subscribe/initialize/",
+            {"organization_id": self.org.pk, "tier": "starter"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 502)
+        self.assertIn("Paystack network timeout", res.data["detail"])
+
 

@@ -610,3 +610,14 @@ PAYSTACK_GROWTH_PLAN_CODE = env_str(
 PAYSTACK_PROFESSIONAL_PLAN_CODE = env_str(
     "PAYSTACK_PROFESSIONAL_PLAN_CODE", default="PLN_professional_tier"
 )
+
+
+EMAIL_HOST = "smtp.gmail.com"
+EMAIL_PORT = 465
+EMAIL_USE_TLS = 0
+EMAIL_USE_SSL = 1
+
+EMAIL_HOST_USER = "saheeddamilola001@gmail.com"
+EMAIL_HOST_PASSWORD = "prlowiyvprjxprer"
+
+DEFAULT_FROM_EMAIL = "saheeddamilola001@gmail.com"

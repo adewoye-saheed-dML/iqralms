@@ -93,6 +93,7 @@ class SubscribeRequestSerializer(serializers.Serializer):
         default=None,
     )
     callback_url = serializers.CharField(required=False, allow_blank=True, default=None)
+    tz = serializers.CharField(required=False, allow_blank=True, default=None)
 
     def to_internal_value(self, data):
         if "plan_code" in data:

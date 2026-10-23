@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from organizations.models import MembershipStatus, Organization, OrganizationRole
-from payments.paystack import verify_paystack_signature
+from payments.paystack import PaystackAPIError, verify_paystack_signature
 from payments.serializers import PaystackWebhookPayloadSerializer
 from .constants import get_tiers_display
 from .geo import get_client_country, is_nigerian_client
@@ -115,13 +115,24 @@ class SubscribeView(APIView):
         else:
             currency = "NGN" if is_ng else "USD"
 
-        subscription, init_data = initialize_platform_subscription(
-            organization=organization,
-            user=request.user,
-            tier=tier,
-            currency=currency,
-            callback_url=callback_url,
-        )
+        try:
+            subscription, init_data = initialize_platform_subscription(
+                organization=organization,
+                user=request.user,
+                tier=tier,
+                currency=currency,
+                callback_url=callback_url,
+            )
+        except PaystackAPIError as exc:
+            logger.error("Paystack subscription initialization failed for org %s: %s", org_id, exc)
+            return Response(
+                {
+                    "detail": str(exc),
+                    "paystack_error": exc.data,
+                },
+                status=exc.status_code if 400 <= exc.status_code < 600 else status.HTTP_502_BAD_GATEWAY,
+            )
+
         return Response(
             {
                 "authorization_url": init_data.get("authorization_url", ""),
@@ -232,6 +243,10 @@ class SubscriptionStatusView(APIView):
                     )
                     if sub_code:
                         subscription.paystack_subscription_code = sub_code
+                    if not subscription.current_period_end:
+                        from datetime import timedelta
+                        from django.utils import timezone as dj_tz
+                        subscription.current_period_end = dj_tz.now() + timedelta(days=30)
                     subscription.save()
                     if not organization.is_active:
                         organization.is_active = True

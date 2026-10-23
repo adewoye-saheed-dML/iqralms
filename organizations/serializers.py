@@ -111,6 +111,10 @@ class OrganizationSerializer(serializers.ModelSerializer):
             # explicit, and the same lesson learnings.md records from the Phase 7
             # rubric write and the Phase 8 payroll run.
             with transaction.atomic():
+                if "currency" not in validated_data or not validated_data["currency"]:
+                    tz = validated_data.get("timezone", "")
+                    if tz.lower() in ("africa/lagos", "lagos") or (creator and getattr(creator, "timezone", "").lower() in ("africa/lagos", "lagos")):
+                        validated_data["currency"] = "NGN"
                 organization = Organization.objects.create(**validated_data)
                 OrganizationMembership.objects.create(
                     organization=organization,

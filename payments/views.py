@@ -465,25 +465,37 @@ class UnifiedPaystackWebhookView(APIView):
 
         if event in TUITION_EVENTS:
             # Check if this charge event is actually a platform subscription first payment
-            if data.get("metadata", {}).get("type") == "platform_subscription":
-                from billing.services import process_billing_webhook as process_billing
+            raw_meta = data.get("metadata", {})
+            if isinstance(raw_meta, str):
+                try:
+                    metadata = json.loads(raw_meta)
+                except Exception:
+                    metadata = {}
+            elif isinstance(raw_meta, dict):
+                metadata = raw_meta
+            else:
+                metadata = {}
+
+            if metadata.get("type") == "platform_subscription":
+                from datetime import timedelta
+                from django.utils import timezone as dj_tz
                 from billing.models import PlatformSubscription, SubscriptionStatus
+                from billing.services import _find_subscription_for_event
 
                 # Activate the subscription on charge.success for the initial plan payment
                 if event == "charge.success":
-                    ref = data.get("reference", "")
-                    sub = PlatformSubscription.objects.filter(
-                        paystack_initialization_reference=ref
-                    ).first()
+                    sub = _find_subscription_for_event(data)
                     if sub and sub.status != SubscriptionStatus.ACTIVE:
                         sub.status = SubscriptionStatus.ACTIVE
                         customer_code = data.get("customer", {}).get("customer_code", "")
                         if customer_code:
                             sub.paystack_customer_code = customer_code
+                        if not sub.current_period_end:
+                            sub.current_period_end = dj_tz.now() + timedelta(days=30)
                         sub.save()
                         logger.info(
                             "Platform subscription %s activated via charge.success (ref=%s).",
-                            sub.pk, ref,
+                            sub.pk, data.get("reference"),
                         )
                         if not sub.organization.is_active:
                             sub.organization.is_active = True
