@@ -232,3 +232,53 @@ class PlatformAdminTests(TestCase):
         resp_list = self.client.get("/api/platform-admin/announcements/")
         self.assertEqual(resp_list.status_code, status.HTTP_200_OK)
         self.assertEqual(len(resp_list.json()), 1)
+
+    def test_superadmin_can_get_and_update_video_provider_config(self):
+        self.client.force_authenticate(user=self.superadmin)
+
+        # 1. Get default video provider config
+        resp = self.client.get("/api/platform-admin/video-provider/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        data = resp.json()
+        self.assertIn("video_provider", data)
+        self.assertIn("jitsi_domain", data)
+        self.assertIn("daily_enable_recording", data)
+
+        # 2. Platform owner switches provider to Jitsi with custom self-hosted domain
+        update_resp = self.client.post(
+            "/api/platform-admin/video-provider/",
+            {
+                "video_provider": "jitsi",
+                "jitsi_domain": "meet.quranvps.com",
+            },
+            format="json",
+        )
+        self.assertEqual(update_resp.status_code, status.HTTP_200_OK)
+        updated_data = update_resp.json()
+        self.assertEqual(updated_data["video_provider"], "jitsi")
+        self.assertEqual(updated_data["jitsi_domain"], "meet.quranvps.com")
+
+        # 3. Switching back to Daily.co with cloud recording enabled
+        update_resp2 = self.client.post(
+            "/api/platform-admin/video-provider/",
+            {
+                "video_provider": "daily",
+                "daily_enable_recording": True,
+            },
+            format="json",
+        )
+        self.assertEqual(update_resp2.status_code, status.HTTP_200_OK)
+        self.assertEqual(update_resp2.json()["video_provider"], "daily")
+        self.assertTrue(update_resp2.json()["daily_enable_recording"])
+
+    def test_regular_owner_cannot_access_platform_video_provider_config(self):
+        self.client.force_authenticate(user=self.regular_owner)
+        resp = self.client.get("/api/platform-admin/video-provider/")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+        post_resp = self.client.post(
+            "/api/platform-admin/video-provider/",
+            {"video_provider": "jitsi"},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_403_FORBIDDEN)

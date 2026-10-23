@@ -465,8 +465,8 @@ class VideoRoomTests(TestCase):
         self.assertNotEqual(first.video_provider_meeting_id, second.video_provider_meeting_id)
 
     def test_the_join_url_is_built_from_the_room_name(self):
-        booking = BookingFactory()
-        with self.settings(JITSI_DOMAIN="meet.jit.si"):
+        with self.settings(VIDEO_PROVIDER="jitsi", JITSI_DOMAIN="meet.jit.si"):
+            booking = BookingFactory()
             self.assertEqual(
                 booking.video_join_url,
                 f"https://meet.jit.si/{booking.video_provider_meeting_id}",

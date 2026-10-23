@@ -10,10 +10,12 @@ from .platform_admin_views import (
     PlatformAdminSendOnboardingEmailView,
     PlatformAdminDispatchesView,
     PlatformAdminAnnouncementsView,
+    PlatformAdminVideoProviderView,
 )
 
 urlpatterns = [
     path("overview/", PlatformAdminOverviewView.as_view(), name="platform_admin_overview"),
+    path("video-provider/", PlatformAdminVideoProviderView.as_view(), name="platform_admin_video_provider"),
     path("subscribers/", PlatformAdminSubscribersView.as_view(), name="platform_admin_subscribers"),
     path("subscribers/<int:pk>/manage/", PlatformAdminSubscriberManageView.as_view(), name="platform_admin_subscriber_manage"),
     path("activities/", PlatformAdminActivitiesView.as_view(), name="platform_admin_activities"),

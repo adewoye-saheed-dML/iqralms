@@ -19,9 +19,10 @@ class JitsiProvider(MeetingProvider):
     def create_meeting(self, identity: str, **kwargs) -> MeetingResult:
         # Jitsi room names exist just by making the URL
         # We hash the identity to make it idempotent and stable for the same session.
+        jitsi_domain = kwargs.get("jitsi_domain") or getattr(settings, "JITSI_DOMAIN", "meet.jit.si")
         hash_hex = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]
         room_name = f"quranacademy-{hash_hex}"
-        join_url = f"https://{settings.JITSI_DOMAIN}/{room_name}"
+        join_url = f"https://{jitsi_domain}/{room_name}"
         return MeetingResult(
             provider="jitsi",
             provider_meeting_id=room_name,
@@ -32,8 +33,13 @@ class DailyProvider(MeetingProvider):
     def create_meeting(self, identity: str, **kwargs) -> MeetingResult:
         hash_hex = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]
         room_name = f"iqralms-{hash_hex}"
-        daily_domain = getattr(settings, "DAILY_DOMAIN", "iqralms.daily.co")
-        api_key = getattr(settings, "DAILY_API_KEY", "")
+        daily_domain = kwargs.get("daily_domain") or getattr(settings, "DAILY_DOMAIN", "iqralms.daily.co")
+        api_key = kwargs.get("daily_api_key") or getattr(settings, "DAILY_API_KEY", "")
+        recording_enabled = (
+            kwargs.get("recording_enabled")
+            if kwargs.get("recording_enabled") is not None
+            else getattr(settings, "DAILY_ENABLE_RECORDING", True)
+        )
 
         join_url = f"https://{daily_domain}/{room_name}"
 
@@ -47,7 +53,7 @@ class DailyProvider(MeetingProvider):
                         "enable_chat": True,
                         "enable_screenshare": True,
                         "enable_knocking": False,
-                        "enable_recording": "cloud" if getattr(settings, "DAILY_ENABLE_RECORDING", True) else "off",
+                        "enable_recording": "cloud" if recording_enabled else "off",
                         "start_video_off": False,
                         "start_audio_off": False,
                     },

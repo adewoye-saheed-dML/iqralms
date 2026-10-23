@@ -45,6 +45,7 @@ from .platform_admin_serializers import (
     SubscriberDetailSerializer,
     SubscriberOnboardingDispatchSerializer,
     SubscriberSubscriptionManageSerializer,
+    PlatformVideoConfigSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -188,11 +189,15 @@ class PlatformAdminOverviewView(APIView):
 
         paystack_configured = bool(getattr(settings, "PAYSTACK_SECRET_KEY", ""))
 
+        from .models import PlatformSystemConfig
+        video_cfg = PlatformSystemConfig.get_current()
+
         system_health = {
             "database": "operational" if db_healthy else "degraded",
             "paystack": "connected" if paystack_configured else "not_configured",
             "notifications": "operational",
             "video_service": "operational",
+            "video_provider": video_cfg.video_provider,
             "environment": "production" if getattr(settings, "PRODUCTION", False) else "development",
         }
 
@@ -633,3 +638,80 @@ class PlatformAdminAnnouncementsView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save(created_by=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(
+    summary="Platform Video Classroom Provider Configuration",
+    request=PlatformVideoConfigSerializer,
+    responses={200: PlatformVideoConfigSerializer},
+    tags=["platform-admin"],
+)
+class PlatformAdminVideoProviderView(APIView):
+    """Retrieve or update platform-wide live classroom video provider settings."""
+
+    permission_classes = [permissions.IsAuthenticated, IsPlatformAdmin]
+
+    def _get_data(self, config):
+        from scheduling.models import Booking, ClassSessionRecording
+        active_sessions = Booking.objects.filter(status="scheduled").count()
+        total_recordings = ClassSessionRecording.objects.count()
+
+        return {
+            "video_provider": config.video_provider,
+            "video_provider_display": (
+                "Daily.co (In-App Video & Cloud Recording)"
+                if config.video_provider == "daily"
+                else "Jitsi Meet (Self-Hosted VPS / Open-Source)"
+            ),
+            "jitsi_domain": config.jitsi_domain,
+            "daily_domain": config.daily_domain,
+            "daily_api_key_configured": bool(config.daily_api_key or getattr(settings, "DAILY_API_KEY", "")),
+            "daily_enable_recording": config.daily_enable_recording,
+            "active_classroom_sessions_count": active_sessions,
+            "total_recorded_sessions_count": total_recordings,
+            "updated_at": config.updated_at,
+            "updated_by": config.updated_by.username if config.updated_by else "System Default",
+        }
+
+    def get(self, request, *args, **kwargs):
+        from .models import PlatformSystemConfig
+        config = PlatformSystemConfig.get_current()
+        return Response(self._get_data(config), status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        from .models import PlatformSystemConfig
+        serializer = PlatformVideoConfigSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        config = PlatformSystemConfig.get_current()
+        config.video_provider = data["video_provider"]
+        if "jitsi_domain" in data and data["jitsi_domain"]:
+            config.jitsi_domain = data["jitsi_domain"].strip()
+        if "daily_domain" in data and data["daily_domain"]:
+            config.daily_domain = data["daily_domain"].strip()
+        if "daily_api_key" in data and data["daily_api_key"]:
+            config.daily_api_key = data["daily_api_key"].strip()
+        if "daily_enable_recording" in data:
+            config.daily_enable_recording = data["daily_enable_recording"]
+
+        config.updated_by = request.user
+        config.save()
+
+        # Record audit log
+        try:
+            from audit_logs.models import AuditAction, AuditLog
+            AuditLog.objects.create(
+                action=getattr(AuditAction, "VIDEO_PROVIDER_UPDATED", "video.provider_updated"),
+                actor_id=request.user.id,
+                actor_email=request.user.email or request.user.username,
+                metadata={
+                    "video_provider": config.video_provider,
+                    "jitsi_domain": config.jitsi_domain,
+                    "daily_enable_recording": config.daily_enable_recording,
+                },
+            )
+        except Exception:
+            pass
+
+        return Response(self._get_data(config), status=status.HTTP_200_OK)

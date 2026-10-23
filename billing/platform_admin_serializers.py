@@ -35,6 +35,7 @@ class SystemHealthSerializer(serializers.Serializer):
     paystack = serializers.CharField()
     notifications = serializers.CharField()
     video_service = serializers.CharField()
+    video_provider = serializers.CharField(required=False, default="daily")
     environment = serializers.CharField()
 
 
@@ -177,3 +178,39 @@ class PlatformAnnouncementSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "created_by", "created_at"]
+
+
+class PlatformVideoConfigSerializer(serializers.Serializer):
+    """Serializer for platform-wide live video classroom provider configuration."""
+
+    video_provider = serializers.ChoiceField(
+        choices=["daily", "jitsi"],
+        help_text="Active video provider across all academies (daily or jitsi).",
+    )
+    video_provider_display = serializers.CharField(read_only=True)
+    jitsi_domain = serializers.CharField(
+        required=False,
+        default="meet.jit.si",
+        max_length=255,
+        help_text="Custom Jitsi VPS domain, e.g. meet.yourvps.com",
+    )
+    daily_domain = serializers.CharField(
+        required=False,
+        default="api.daily.co",
+        max_length=255,
+    )
+    daily_api_key = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        write_only=True,
+    )
+    daily_api_key_configured = serializers.BooleanField(read_only=True)
+    daily_enable_recording = serializers.BooleanField(
+        required=False,
+        default=True,
+    )
+    active_classroom_sessions_count = serializers.IntegerField(read_only=True)
+    total_recorded_sessions_count = serializers.IntegerField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+    updated_by = serializers.CharField(read_only=True)

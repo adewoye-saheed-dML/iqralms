@@ -1305,12 +1305,30 @@ class Booking(models.Model):
 
             if not self.video_join_url:
                 from scheduling.providers import create_meeting
+                from billing.models import PlatformSystemConfig
                 org = getattr(self, "organization", None)
+                platform_config = None
+                try:
+                    platform_config = PlatformSystemConfig.get_current()
+                except Exception:
+                    pass
+
                 platform_provider = getattr(settings, "VIDEO_PROVIDER", "")
-                provider_name = platform_provider or getattr(org, "video_provider", None) or getattr(settings, "DEFAULT_VIDEO_PROVIDER", "daily")
+                provider_name = (
+                    platform_provider
+                    or (platform_config.video_provider if platform_config else None)
+                    or getattr(settings, "DEFAULT_VIDEO_PROVIDER", "daily")
+                )
                 # Idempotency key based on organization and booking identity
                 identity = f"org_{org.pk if org else 0}_booking_{self.pk}"
-                meeting = create_meeting(provider_name, identity)
+                meeting = create_meeting(
+                    provider_name,
+                    identity,
+                    jitsi_domain=platform_config.jitsi_domain if platform_config else getattr(settings, "JITSI_DOMAIN", "meet.jit.si"),
+                    daily_domain=platform_config.daily_domain if platform_config else getattr(settings, "DAILY_DOMAIN", "iqralms.daily.co"),
+                    daily_api_key=platform_config.daily_api_key if (platform_config and platform_config.daily_api_key) else getattr(settings, "DAILY_API_KEY", ""),
+                    recording_enabled=platform_config.daily_enable_recording if platform_config else getattr(settings, "DAILY_ENABLE_RECORDING", True),
+                )
                 self.video_provider = meeting.provider
                 self.video_provider_meeting_id = meeting.provider_meeting_id
                 self.video_join_url = meeting.join_url

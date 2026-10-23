@@ -206,3 +206,65 @@ class PlatformAnnouncement(models.Model):
 
     def __str__(self):
         return f"Announcement: {self.title} ({'Active' if self.is_active else 'Inactive'})"
+
+
+class PlatformSystemConfig(models.Model):
+    """Global platform-wide infrastructure and provider configuration managed by the Platform Owner."""
+
+    video_provider = models.CharField(
+        max_length=32,
+        choices=[
+            ("daily", "Daily.co (In-App Video & Cloud Recording)"),
+            ("jitsi", "Jitsi Meet (Self-Hosted VPS / Open-Source)"),
+        ],
+        default="daily",
+        help_text="Active live classroom video provider across all academies.",
+    )
+    jitsi_domain = models.CharField(
+        max_length=255,
+        default="meet.jit.si",
+        help_text="Custom domain for self-hosted Jitsi Meet VPS, e.g. meet.yourvps.com or jitsi.iqralms.com",
+    )
+    daily_domain = models.CharField(
+        max_length=255,
+        default="api.daily.co",
+        help_text="Daily.co API domain endpoint.",
+    )
+    daily_api_key = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional custom Daily.co API key override.",
+    )
+    daily_enable_recording = models.BooleanField(
+        default=True,
+        help_text="Enable cloud recording for Daily.co rooms to drop in academy owner dashboards.",
+    )
+    updated_by = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="platform_configs_updated",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Platform System Config"
+        verbose_name_plural = "Platform System Config"
+
+    @classmethod
+    def get_current(cls):
+        config = cls.objects.first()
+        if not config:
+            from django.conf import settings
+            config = cls.objects.create(
+                video_provider=getattr(settings, "DEFAULT_VIDEO_PROVIDER", "daily"),
+                jitsi_domain=getattr(settings, "JITSI_DOMAIN", "meet.jit.si"),
+                daily_domain=getattr(settings, "DAILY_API_DOMAIN", "api.daily.co"),
+                daily_enable_recording=getattr(settings, "DAILY_ENABLE_RECORDING", True),
+            )
+        return config
+
+    def __str__(self):
+        return f"Platform System Config (Provider: {self.video_provider})"
