@@ -449,11 +449,15 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 TEST_RUNNER = "config.test_runner.QuranAcademyTestRunner"
 
 
-# --- Video (Jitsi) ----------------------------------------------------------
-# Each booking gets its own unguessable room name; the room comes into existence
-# when the first participant joins it, so there is no API call and no key. The
-# managed free tier is deliberate for now — self-hosting is a later
-# optimisation, once volume justifies running a server (see docs/mvp-spec.md).
+# --- Video Conferencing (Daily.co & Jitsi) ----------------------------------
+# Supported options: 'daily', 'jitsi'
+# To use Daily.co for testing: set DEFAULT_VIDEO_PROVIDER="daily"
+# To switch to your self-hosted Jitsi VPS later: set DEFAULT_VIDEO_PROVIDER="jitsi" and JITSI_DOMAIN="meet.yourvps.com"
+DEFAULT_VIDEO_PROVIDER = env_str("DEFAULT_VIDEO_PROVIDER", default="daily")
+VIDEO_PROVIDER = env_str("VIDEO_PROVIDER", default="")  # Optional hard override across all tenants
+DAILY_API_KEY = env_str("DAILY_API_KEY", default="")
+DAILY_DOMAIN = env_str("DAILY_DOMAIN", default="iqralms.daily.co")
+DAILY_ENABLE_RECORDING = env_bool("DAILY_ENABLE_RECORDING", default=True)
 
 JITSI_DOMAIN = env_str("JITSI_DOMAIN", default="meet.jit.si")
 

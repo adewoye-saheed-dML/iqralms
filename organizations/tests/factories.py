@@ -36,6 +36,7 @@ class OrganizationFactory(factory.django.DjangoModelFactory):
     name = factory.Sequence(lambda n: f"Academy {n}")
     slug = factory.LazyAttribute(lambda o: slugify(o.name))
     timezone = "Africa/Lagos"
+    video_provider = "jitsi"
 
 
 class OrganizationMembershipFactory(factory.django.DjangoModelFactory):

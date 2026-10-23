@@ -132,12 +132,13 @@ class Organization(models.Model):
         ),
     )
     VIDEO_PROVIDER_CHOICES = [
+        ("daily", "Daily.co"),
         ("jitsi", "Jitsi"),
     ]
     video_provider = models.CharField(
         max_length=32,
         choices=VIDEO_PROVIDER_CHOICES,
-        default="jitsi",
+        default="daily",
         help_text="The preferred video provider for this academy."
     )
     paystack_subaccount_code = models.CharField(

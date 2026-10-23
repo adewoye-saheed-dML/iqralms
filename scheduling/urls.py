@@ -29,6 +29,7 @@ from .views import (
     StudentAvailabilityDetailView,
     StudentAvailabilityAgreementView,
     TeacherAvailabilityMatchView,
+    DailyWebhookView,
 )
 
 app_name = "scheduling"
@@ -168,5 +169,10 @@ urlpatterns = [
         f"{ACADEMY}waitlist/<int:pk>/promote/",
         WaitlistPromoteView.as_view(),
         name="waitlist-promote",
+    ),
+    path(
+        "webhooks/daily/",
+        DailyWebhookView.as_view(),
+        name="daily-webhook",
     ),
 ]

@@ -22,7 +22,7 @@ from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_sche
 from rest_framework import generics, serializers, status, views
 from rest_framework.views import APIView
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 
 from accounts.models import ParentLink, Role, User
@@ -1883,4 +1883,74 @@ class TeacherAvailabilityMatchView(AcademyScopedView, generics.GenericAPIView):
             results, many=True, context=self.get_serializer_context()
         )
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class DailyWebhookView(APIView):
+    """POST /api/scheduling/webhooks/daily/
+    
+    Webhook receiver for Daily.co recording and room events.
+    When a class recording finishes processing, Daily notifies this endpoint
+    with 'recording.ready-to-download' and download_link, automatically updating
+    the academy's ClassSessionRecording for owner review.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        payload = request.data or {}
+        event = payload.get("event") or payload.get("type", "")
+
+        # Room name and download link can be at root or under 'recording'
+        room_name = (
+            payload.get("room_name")
+            or payload.get("recording", {}).get("room_name")
+            or payload.get("room", {}).get("name")
+        )
+        download_link = (
+            payload.get("download_link")
+            or payload.get("recording", {}).get("download_link")
+            or payload.get("url")
+            or payload.get("download_url")
+        )
+        duration_secs = (
+            payload.get("duration")
+            or payload.get("recording", {}).get("duration")
+            or 0
+        )
+
+        if room_name and download_link:
+            booking = Booking.objects.filter(video_provider_meeting_id=room_name).first()
+            if booking:
+                duration_minutes = (
+                    max(1, round(duration_secs / 60))
+                    if duration_secs
+                    else booking.duration_minutes
+                )
+                from datetime import timedelta
+                from django.utils import timezone as dj_timezone
+
+                student_name = booking.student.get_full_name() or booking.student.username
+                teacher_name = booking.teacher.get_full_name() or booking.teacher.username
+                level_name = booking.level.name if booking.level else "Quran Lesson"
+
+                ClassSessionRecording.objects.update_or_create(
+                    video_room_name=room_name,
+                    defaults={
+                        "booking": booking,
+                        "organization": booking.organization,
+                        "title": f"{level_name} — Ustadh {teacher_name} with {student_name}",
+                        "recording_url": download_link,
+                        "duration_minutes": duration_minutes,
+                        "recorded_at": dj_timezone.now(),
+                        "expires_at": dj_timezone.now() + timedelta(days=60),
+                        "status": "ready",
+                        "metadata": payload,
+                    },
+                )
+                return Response(
+                    {"status": "ok", "message": f"Recording saved for room {room_name}"},
+                    status=status.HTTP_200_OK,
+                )
+
+        return Response({"status": "ignored", "event": event}, status=status.HTTP_200_OK)
 

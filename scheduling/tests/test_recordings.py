@@ -199,3 +199,59 @@ class SessionRecordingAPITests(APITestCase):
         # Active recording remains intact
         self.assertTrue(ClassSessionRecording.objects.filter(pk=active_rec.pk).exists())
         self.assertIn("Successfully purged 1 expired class session recordings", out.getvalue())
+
+    def test_daily_webhook_updates_recording_and_duration(self):
+        webhook_url = reverse("scheduling:daily-webhook")
+        payload = {
+            "version": "1.0",
+            "event": "recording.ready-to-download",
+            "recording_id": "rec-daily-999",
+            "room_name": "darul-quran-room-123",
+            "download_link": "https://api.daily.co/v1/recordings/rec-daily-999/download",
+            "duration": 3600,
+        }
+        response = self.client.post(webhook_url, payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "ok")
+
+        recording = ClassSessionRecording.objects.filter(video_room_name="darul-quran-room-123").first()
+        self.assertIsNotNone(recording)
+        self.assertEqual(recording.recording_url, "https://api.daily.co/v1/recordings/rec-daily-999/download")
+        self.assertEqual(recording.duration_minutes, 60)
+        self.assertEqual(recording.booking, self.booking)
+        self.assertEqual(recording.organization, self.org)
+
+    def test_daily_webhook_ignores_unknown_rooms(self):
+        webhook_url = reverse("scheduling:daily-webhook")
+        payload = {
+            "version": "1.0",
+            "event": "recording.ready-to-download",
+            "room_name": "unknown-nonexistent-room",
+            "download_link": "https://api.daily.co/v1/recordings/none/download",
+        }
+        response = self.client.post(webhook_url, payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "ignored")
+
+    def test_daily_provider_generates_idempotent_url(self):
+        from scheduling.providers import get_provider, DailyProvider
+        provider = get_provider("daily")
+        self.assertIsInstance(provider, DailyProvider)
+
+        res1 = provider.create_meeting("session-test-identity-1")
+        res2 = provider.create_meeting("session-test-identity-1")
+
+        self.assertEqual(res1.provider, "daily")
+        self.assertEqual(res1.provider_meeting_id, res2.provider_meeting_id)
+        self.assertEqual(res1.join_url, res2.join_url)
+        self.assertIn("iqralms-", res1.provider_meeting_id)
+
+    def test_daily_provider_uses_daily_domain_setting(self):
+        from django.test import override_settings
+        from scheduling.providers import get_provider
+
+        with override_settings(DAILY_DOMAIN="custom-academy.daily.co"):
+            provider = get_provider("daily")
+            res = provider.create_meeting("session-unique-2")
+            self.assertEqual(res.provider, "daily")
+            self.assertTrue(res.join_url.startswith("https://custom-academy.daily.co/"))

@@ -87,6 +87,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
             "slug",
             "timezone",
             "currency",
+            "video_provider",
             "paystack_subaccount_code",
             "paystack_subaccount_usd_code",
             "is_active",

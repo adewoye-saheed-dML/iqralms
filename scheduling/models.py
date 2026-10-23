@@ -1306,7 +1306,8 @@ class Booking(models.Model):
             if not self.video_join_url:
                 from scheduling.providers import create_meeting
                 org = getattr(self, "organization", None)
-                provider_name = getattr(org, "video_provider", "jitsi") if org else "jitsi"
+                platform_provider = getattr(settings, "VIDEO_PROVIDER", "")
+                provider_name = platform_provider or getattr(org, "video_provider", None) or getattr(settings, "DEFAULT_VIDEO_PROVIDER", "daily")
                 # Idempotency key based on organization and booking identity
                 identity = f"org_{org.pk if org else 0}_booking_{self.pk}"
                 meeting = create_meeting(provider_name, identity)
