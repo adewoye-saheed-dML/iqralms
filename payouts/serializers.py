@@ -105,6 +105,10 @@ class MyTeacherPayoutSerializer(serializers.ModelSerializer):
             "currency",
             "status",
             "status_display",
+            "payment_method",
+            "payment_reference",
+            "payment_proof_url",
+            "payment_notes",
             "confirmation_status",
             "confirmation_status_display",
             "confirmation_notes",
@@ -261,6 +265,37 @@ class StatementSerializer(MyStatementSerializer):
     payouts = TeacherPayoutSerializer(many=True, read_only=True)
 
 
+class PayoutFinalizeSerializer(serializers.Serializer):
+    """Owner marks payout as paid / finalized, optionally providing payment reference and evidence."""
+
+    payment_method = serializers.CharField(
+        required=False,
+        default="bank_transfer",
+        max_length=32,
+    )
+    payment_reference = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=128,
+        help_text="Bank transfer reference, transaction ID, or receipt number.",
+    )
+    payment_proof_url = serializers.URLField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=1024,
+        help_text="Link or URL to uploaded payment receipt or transfer proof.",
+    )
+    payment_notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=2000,
+        help_text="Owner's transfer details or evidence notes forwarded to the teacher.",
+    )
+
+
 class PayoutBulkFinalizeSerializer(serializers.Serializer):
     """Request payload for bulk finalization."""
 
@@ -272,6 +307,29 @@ class PayoutBulkFinalizeSerializer(serializers.Serializer):
     period_start = serializers.DateTimeField(required=False, default_timezone=dt_timezone.utc)
     period_end = serializers.DateTimeField(required=False, default_timezone=dt_timezone.utc)
     teacher_id = serializers.IntegerField(required=False, allow_null=True)
+    payment_method = serializers.CharField(
+        required=False,
+        default="bank_transfer",
+        max_length=32,
+    )
+    payment_reference = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=128,
+    )
+    payment_proof_url = serializers.URLField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=1024,
+    )
+    payment_notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=2000,
+    )
 
 
 class BulkFinalizationResultSerializer(serializers.Serializer):

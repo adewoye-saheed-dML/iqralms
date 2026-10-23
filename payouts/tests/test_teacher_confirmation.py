@@ -147,3 +147,71 @@ class TeacherPayoutConfirmationTests(PayoutWorld):
         self.assertEqual(
             lead_item["confirmation_notes"], "Payment missing 500 NGN fee"
         )
+
+    def test_owner_finalizes_with_payment_evidence_and_notifies_teacher(self):
+        """Owner records bank transfer reference & proof URL, which notifies the teacher."""
+        from notifications.models import Notification
+
+        self.client.force_authenticate(user=self.lead)
+        url = reverse(
+            "payouts:payout-finalize",
+            kwargs={"organization_pk": self.organization.pk, "pk": self.payout.pk},
+        )
+        res = self.client.post(
+            url,
+            {
+                "payment_method": "manual_transfer",
+                "payment_reference": "TXN-987654321",
+                "payment_proof_url": "https://receipts.example.com/tx987.pdf",
+                "payment_notes": "Sent via GTBank mobile app at 14:00.",
+            },
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.payout.refresh_from_db()
+        self.assertEqual(self.payout.status, PayoutStatus.FINALIZED)
+        self.assertEqual(self.payout.payment_method, "manual_transfer")
+        self.assertEqual(self.payout.payment_reference, "TXN-987654321")
+        self.assertEqual(self.payout.payment_proof_url, "https://receipts.example.com/tx987.pdf")
+        self.assertEqual(self.payout.payment_notes, "Sent via GTBank mobile app at 14:00.")
+
+        # Notification exists for teacher
+        notif = Notification.objects.filter(
+            recipient=self.teacher,
+            organization=self.organization,
+            event_type="payout_disbursed",
+        ).first()
+        self.assertIsNotNone(notif)
+        self.assertIn("TXN-987654321", notif.payload["payment_reference"])
+
+        # Teacher sees evidence in my-payouts
+        self.client.force_authenticate(user=self.teacher)
+        my_res = self.client.get(
+            reverse(
+                "payouts:payout-mine",
+                kwargs={"organization_pk": self.organization.pk},
+            )
+        )
+        item = [p for p in my_res.data if p["id"] == self.payout.pk][0]
+        self.assertEqual(item["payment_reference"], "TXN-987654321")
+        self.assertEqual(item["payment_proof_url"], "https://receipts.example.com/tx987.pdf")
+        self.assertEqual(item["payment_notes"], "Sent via GTBank mobile app at 14:00.")
+
+    def test_teacher_dispute_notifies_owner(self):
+        """When teacher disputes receipt, the academy owner is notified."""
+        from notifications.models import Notification
+
+        self.payout.finalize(payment_reference="REF-001")
+        self.client.force_authenticate(user=self.teacher)
+        res = self.client.post(
+            self._confirm_url(self.payout.pk),
+            {"confirmed": False, "reason": "Did not reflect in Zenith Bank."},
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        notif = Notification.objects.filter(
+            recipient=self.lead,
+            organization=self.organization,
+            event_type="payout_disputed",
+        ).first()
+        self.assertIsNotNone(notif)
+        self.assertEqual(notif.payload["dispute_reason"], "Did not reflect in Zenith Bank.")

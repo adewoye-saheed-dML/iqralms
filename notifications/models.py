@@ -31,6 +31,8 @@ class EventType(models.TextChoices):
     TEACHER_INVITATION = "teacher_invitation", "Teacher Invitation"
     STUDENT_AVAILABILITY_UPDATED = "student_availability_updated", "Student Availability Updated"
     SCHEDULE_AGREEMENT_RESPONSE = "schedule_agreement_response", "Schedule Agreement Response"
+    PAYOUT_DISBURSED = "payout_disbursed", "Payout Disbursed"
+    PAYOUT_DISPUTED = "payout_disputed", "Payout Disputed"
 
 
 class DeliveryChannel(models.TextChoices):

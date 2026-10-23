@@ -451,6 +451,10 @@ def bulk_finalize_payouts(
     period_start=None,
     period_end=None,
     teacher=None,
+    payment_method="bank_transfer",
+    payment_reference="",
+    payment_proof_url="",
+    payment_notes="",
 ):
     """Finalize multiple generated payouts atomically for batch bank reconciliation.
 
@@ -480,6 +484,14 @@ def bulk_finalize_payouts(
     for payout in locked_payouts:
         payout.status = PayoutStatus.FINALIZED
         payout.finalized_at = now
+        if payment_reference:
+            payout.payment_reference = payment_reference.strip()
+        if payment_method:
+            payout.payment_method = payment_method.strip()
+        if payment_proof_url:
+            payout.payment_proof_url = payment_proof_url.strip()
+        if payment_notes:
+            payout.payment_notes = payment_notes.strip()
         payout.save()
         finalized_ids.append(payout.pk)
         total_amount += payout.amount

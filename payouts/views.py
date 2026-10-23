@@ -44,6 +44,7 @@ from .serializers import (
     MyStatementSerializer,
     MyTeacherPayoutSerializer,
     PayoutBulkFinalizeSerializer,
+    PayoutFinalizeSerializer,
     PayoutGenerateSerializer,
     StatementSerializer,
     TeacherPayoutConfirmSerializer,
@@ -314,6 +315,38 @@ class TeacherPayoutConfirmView(AcademyScopedView, generics.GenericAPIView):
             notes=data.get("reason", ""),
         )
 
+        if not data["confirmed"]:
+            try:
+                from notifications.models import DeliveryChannel, EventType
+                from notifications.services import create_notification
+                from organizations.models import OrganizationRole
+                owner_membership = self.organization.memberships.filter(
+                    role=OrganizationRole.OWNER, status="active"
+                ).first()
+                if owner_membership:
+                    teacher_name = payout.teacher.get_full_name() or payout.teacher.username
+                    create_notification(
+                        organization=self.organization,
+                        event_type=getattr(EventType, "PAYOUT_DISPUTED", "payout_disputed"),
+                        recipient=owner_membership.user,
+                        title=f"Payment Issue Logged by {teacher_name}",
+                        summary=(
+                            f"Teacher {teacher_name} reported an issue with payout #{payout.pk} "
+                            f"({payout.amount} {payout.currency}): {data.get('reason', '')}"
+                        ),
+                        payload={
+                            "payout_id": payout.pk,
+                            "teacher_id": payout.teacher_id,
+                            "teacher_name": teacher_name,
+                            "dispute_reason": data.get("reason", ""),
+                            "amount_display": f"{payout.amount} {payout.currency}",
+                        },
+                        idempotency_key=f"payout:{payout.pk}:dispute:{payout.confirmed_at.timestamp() if payout.confirmed_at else 'now'}",
+                        channels=[DeliveryChannel.IN_APP],
+                    )
+            except Exception:
+                pass
+
         return Response(
             MyTeacherPayoutSerializer(payout, context=self.get_serializer_context()).data,
             status=status.HTTP_200_OK,
@@ -474,7 +507,7 @@ class PayoutFinalizeView(AcademyScopedView, generics.GenericAPIView):
     on a stale copy of a financial record.
     """
 
-    serializer_class = TeacherPayoutSerializer
+    serializer_class = PayoutFinalizeSerializer
     permission_classes = [IsAuthenticated, IsOrganizationMember, IsLeadTeacher]
 
     def get_queryset(self):
@@ -484,12 +517,13 @@ class PayoutFinalizeView(AcademyScopedView, generics.GenericAPIView):
         )
 
     @extend_schema(
-        request=None,
+        request=PayoutFinalizeSerializer,
         responses={
             200: OpenApiResponse(
                 response=TeacherPayoutSerializer,
                 description="Finalized. The record is now immutable.",
             ),
+            400: OpenApiResponse(description="Invalid finalize parameters."),
             403: OpenApiResponse(description="Not an organization owner or administrator."),
             404: OpenApiResponse(description="No such payout."),
             409: OpenApiResponse(description="Already finalized."),
@@ -497,11 +531,47 @@ class PayoutFinalizeView(AcademyScopedView, generics.GenericAPIView):
     )
     def post(self, request, *args, **kwargs):
         payout = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
         try:
-            payout.finalize()
+            payout.finalize(
+                payment_reference=data.get("payment_reference", ""),
+                payment_method=data.get("payment_method", "bank_transfer"),
+                payment_proof_url=data.get("payment_proof_url", ""),
+                payment_notes=data.get("payment_notes", ""),
+            )
         except PayoutAlreadyFinalized as exc:
             raise Conflict(str(exc)) from exc
-        body = self.get_serializer(payout).data
+
+        # Notify the teacher that their payout has been marked as disbursed/paid
+        try:
+            from notifications.models import DeliveryChannel, EventType
+            from notifications.services import create_notification
+            create_notification(
+                organization=self.organization,
+                event_type=getattr(EventType, "PAYOUT_DISBURSED", "payout_disbursed"),
+                recipient=payout.teacher,
+                title=f"Payout Disbursed: #{payout.pk}",
+                summary=(
+                    f"Your payout of {payout.amount} {payout.currency} has been marked as paid by the academy "
+                    f"via {payout.payment_method}. Please confirm receipt on your dashboard."
+                ),
+                payload={
+                    "payout_id": payout.pk,
+                    "amount_display": f"{payout.amount} {payout.currency}",
+                    "payment_method": payout.payment_method,
+                    "payment_reference": payout.payment_reference,
+                    "payment_proof_url": payout.payment_proof_url,
+                },
+                idempotency_key=f"payout:{payout.pk}:disbursed",
+                channels=[DeliveryChannel.IN_APP],
+            )
+        except Exception:
+            pass
+
+        body = TeacherPayoutSerializer(payout, context=self.get_serializer_context()).data
         return Response(body, status=status.HTTP_200_OK)
 
 
@@ -668,6 +738,11 @@ class PayoutBulkFinalizeView(AcademyScopedView, generics.GenericAPIView):
         period_end = data.get("period_end")
         teacher_id = data.get("teacher_id")
 
+        payment_method = data.get("payment_method", "bank_transfer")
+        payment_reference = data.get("payment_reference", "")
+        payment_proof_url = data.get("payment_proof_url", "")
+        payment_notes = data.get("payment_notes", "")
+
         teacher = None
         if teacher_id is not None:
             teacher = requested_teacher(request, organization=self.organization, name="teacher_id")
@@ -678,5 +753,9 @@ class PayoutBulkFinalizeView(AcademyScopedView, generics.GenericAPIView):
             period_start=period_start,
             period_end=period_end,
             teacher=teacher,
+            payment_method=payment_method,
+            payment_reference=payment_reference,
+            payment_proof_url=payment_proof_url,
+            payment_notes=payment_notes,
         )
         return Response(result, status=status.HTTP_200_OK)

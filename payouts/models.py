@@ -254,6 +254,29 @@ class TeacherPayout(models.Model):
         blank=True,
         help_text="Timestamp when the teacher confirmed or disputed receipt.",
     )
+    payment_method = models.CharField(
+        max_length=32,
+        blank=True,
+        default="bank_transfer",
+        help_text="e.g. bank_transfer, cash, manual_transfer, cheque",
+    )
+    payment_reference = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Bank transfer reference, transaction ID, or receipt number.",
+    )
+    payment_proof_url = models.URLField(
+        max_length=1024,
+        blank=True,
+        default="",
+        help_text="Link or URL to uploaded payment receipt or transfer proof.",
+    )
+    payment_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Owner's transfer details or evidence notes forwarded to the teacher.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     finalized_at = models.DateTimeField(
         null=True,
@@ -321,8 +344,16 @@ class TeacherPayout(models.Model):
         """
         return self.booking.start_time_utc
 
-    def finalize(self, *, when=None):
-        """Move ``generated`` → ``finalized``, stamping the moment. Lead-only.
+    def finalize(
+        self,
+        *,
+        payment_reference: str = "",
+        payment_method: str = "bank_transfer",
+        payment_proof_url: str = "",
+        payment_notes: str = "",
+        when=None,
+    ):
+        """Move ``generated`` → ``finalized``, stamping the moment and recording payment evidence. Lead-only.
 
         The one transition this model supports, and the point at which the record
         stops being editable at all — ``clean()`` refuses every later write. A
@@ -335,6 +366,14 @@ class TeacherPayout(models.Model):
             )
         self.status = PayoutStatus.FINALIZED
         self.finalized_at = when or dj_timezone.now()
+        if payment_reference:
+            self.payment_reference = payment_reference.strip()
+        if payment_method:
+            self.payment_method = payment_method.strip()
+        if payment_proof_url:
+            self.payment_proof_url = payment_proof_url.strip()
+        if payment_notes:
+            self.payment_notes = payment_notes.strip()
         self.save()
         return self
 
@@ -584,6 +623,45 @@ class TeacherFixedPeriodPayout(models.Model):
         default=PayoutStatus.GENERATED,
         help_text="generated → finalized.",
     )
+    confirmation_status = models.CharField(
+        max_length=20,
+        choices=TeacherConfirmationStatus.choices,
+        default=TeacherConfirmationStatus.PENDING,
+        help_text="Teacher's acknowledgement of receiving payment.",
+    )
+    confirmation_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional teacher reason if disputed or notes upon confirmation.",
+    )
+    confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the teacher confirmed or disputed receipt.",
+    )
+    payment_method = models.CharField(
+        max_length=32,
+        blank=True,
+        default="bank_transfer",
+        help_text="e.g. bank_transfer, cash, manual_transfer, cheque",
+    )
+    payment_reference = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Bank transfer reference, transaction ID, or receipt number.",
+    )
+    payment_proof_url = models.URLField(
+        max_length=1024,
+        blank=True,
+        default="",
+        help_text="Link or URL to uploaded payment receipt or transfer proof.",
+    )
+    payment_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Owner's transfer details or evidence notes forwarded to the teacher.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     finalized_at = models.DateTimeField(null=True, blank=True)
 
@@ -609,13 +687,44 @@ class TeacherFixedPeriodPayout(models.Model):
     def is_finalized(self) -> bool:
         return self.status == PayoutStatus.FINALIZED
 
-    def finalize(self, *, when=None):
+    def finalize(
+        self,
+        *,
+        payment_reference: str = "",
+        payment_method: str = "bank_transfer",
+        payment_proof_url: str = "",
+        payment_notes: str = "",
+        when=None,
+    ):
         if self.is_finalized:
             raise PayoutAlreadyFinalized(
                 f"Fixed period payout {self.pk} was already finalized at {self.finalized_at}."
             )
         self.status = PayoutStatus.FINALIZED
         self.finalized_at = when or dj_timezone.now()
+        if payment_reference:
+            self.payment_reference = payment_reference.strip()
+        if payment_method:
+            self.payment_method = payment_method.strip()
+        if payment_proof_url:
+            self.payment_proof_url = payment_proof_url.strip()
+        if payment_notes:
+            self.payment_notes = payment_notes.strip()
+        self.save()
+        return self
+
+    def confirm_receipt(self, *, confirmed: bool, notes: str = "", when=None):
+        """Teacher confirms (True) or disputes (False with reason) receiving the finalized payout."""
+        if not self.is_finalized:
+            raise ValidationError(
+                "Only finalized payouts can be confirmed by teachers.",
+                code="payout_not_finalized",
+            )
+        self.confirmation_status = (
+            TeacherConfirmationStatus.CONFIRMED if confirmed else TeacherConfirmationStatus.DISPUTED
+        )
+        self.confirmation_notes = notes.strip() if notes else ""
+        self.confirmed_at = when or dj_timezone.now()
         self.save()
         return self
 
@@ -625,11 +734,13 @@ class TeacherFixedPeriodPayout(models.Model):
             stored = type(self).objects.filter(pk=self.pk).first()
             if stored is not None:
                 if stored.status == PayoutStatus.FINALIZED:
-                    errors[NON_FIELD_ERRORS] = ValidationError(
-                        "Fixed payout %(pk)s was finalized on %(when)s and cannot be changed.",
-                        code="payout_finalized",
-                        params={"pk": self.pk, "when": stored.finalized_at},
-                    )
+                    disallowed_fields = FIXED_PERIOD_IMMUTABLE_FIELDS + ("status", "finalized_at")
+                    if any(getattr(self, f) != getattr(stored, f) for f in disallowed_fields):
+                        errors[NON_FIELD_ERRORS] = ValidationError(
+                            "Fixed payout %(pk)s was finalized on %(when)s and cannot be changed.",
+                            code="payout_finalized",
+                            params={"pk": self.pk, "when": stored.finalized_at},
+                        )
                 else:
                     for field in FIXED_PERIOD_IMMUTABLE_FIELDS:
                         if getattr(self, field) != getattr(stored, field):
