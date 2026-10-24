@@ -1,9 +1,10 @@
 """Views for Platform Creator / Super Admin Command Center."""
 
 import logging
+from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -152,7 +153,21 @@ class PlatformAdminOverviewView(APIView):
         past_due_subscribers = subs.filter(status=SubscriptionStatus.PAST_DUE).count()
         disabled_subscribers = subs.filter(status=SubscriptionStatus.DISABLED).count()
 
-        total_students = StudentEnrollment.objects.filter(status="active").count()
+        # Count distinct active student placements across all tenant academies
+        # (combines active student memberships and active student enrollments)
+        active_member_students = set(
+            OrganizationMembership.objects.filter(
+                role=OrganizationRole.STUDENT,
+                status=MembershipStatus.ACTIVE,
+            ).values_list("organization_id", "user_id")
+        )
+        active_enrolled_students = set(
+            StudentEnrollment.objects.filter(
+                status="active",
+            ).values_list("organization_id", "user_id")
+        )
+        total_students = len(active_member_students.union(active_enrolled_students))
+
         total_teachers = OrganizationMembership.objects.filter(
             role=OrganizationRole.TEACHER, status=MembershipStatus.ACTIVE
         ).values("user").distinct().count()
@@ -259,7 +274,28 @@ class PlatformAdminSubscribersView(APIView):
             qs = qs.filter(platform_subscription__tier=tier_filter)
 
         subscribers_data = []
-        for org in qs:
+        org_list = list(qs)
+        org_ids = [org.id for org in org_list]
+
+        # Batch query active student memberships and enrollments across listed academies
+        member_students = OrganizationMembership.objects.filter(
+            organization_id__in=org_ids,
+            role=OrganizationRole.STUDENT,
+            status=MembershipStatus.ACTIVE,
+        ).values_list("organization_id", "user_id")
+
+        enrolled_students = StudentEnrollment.objects.filter(
+            organization_id__in=org_ids,
+            status="active",
+        ).values_list("organization_id", "user_id")
+
+        org_students_map: Dict[int, Set[int]] = defaultdict(set)
+        for o_id, u_id in member_students:
+            org_students_map[o_id].add(u_id)
+        for o_id, u_id in enrolled_students:
+            org_students_map[o_id].add(u_id)
+
+        for org in org_list:
             owner = org.owner_membership.user if org.owner_membership else None
             sub = getattr(org, "platform_subscription", None)
 
@@ -267,7 +303,7 @@ class PlatformAdminSubscribersView(APIView):
             tier_info = SUBSCRIPTION_TIERS.get(tier, {})
             sub_status = sub.status if sub else "pending"
 
-            active_students = org.student_enrollments.filter(status="active").count()
+            active_students = len(org_students_map[org.id])
             teachers_count = org.memberships.filter(
                 role=OrganizationRole.TEACHER, status=MembershipStatus.ACTIVE
             ).count()

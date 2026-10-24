@@ -35,13 +35,25 @@ def get_student_cap(organization) -> Optional[int]:
 
 
 def get_active_student_count(organization) -> int:
-    """Return the count of active students in the organization."""
-    from organizations.models import MembershipStatus, OrganizationMembership, OrganizationRole
-    return OrganizationMembership.objects.filter(
+    """Return the count of distinct active students in the organization."""
+    from organizations.models import (
+        EnrollmentStatus,
+        MembershipStatus,
+        OrganizationMembership,
+        OrganizationRole,
+        StudentEnrollment,
+    )
+
+    membership_student_ids = OrganizationMembership.objects.filter(
         organization=organization,
         role=OrganizationRole.STUDENT,
         status=MembershipStatus.ACTIVE,
-    ).count()
+    ).values_list("user_id", flat=True)
+    enrollment_student_ids = StudentEnrollment.objects.filter(
+        organization=organization,
+        status=EnrollmentStatus.ACTIVE,
+    ).values_list("user_id", flat=True)
+    return len(set(membership_student_ids).union(set(enrollment_student_ids)))
 
 
 def can_add_student(organization, additional_count: int = 1) -> bool:

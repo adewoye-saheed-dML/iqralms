@@ -282,3 +282,69 @@ class PlatformAdminTests(TestCase):
             format="json",
         )
         self.assertEqual(post_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_student_counting_combines_memberships_and_enrollments_without_duplicates(self):
+        """Verify platform overview and subscribers list count registered/enrolled students accurately."""
+        self.client.force_authenticate(user=self.superadmin)
+
+        # In setUp:
+        # org1 has self.student_user in StudentEnrollment (no membership). Count org1 = 1.
+        # org2 has 0 students.
+        # Overview total_students = 1.
+
+        # 1. Add a student to org2 via OrganizationMembership only (e.g. invited / accepted invite)
+        student_member_only = User.objects.create_user(
+            username="stud_member_only",
+            email="stud_member@academy.com",
+            password="StrongPassword123!",
+            role=Role.STUDENT,
+            timezone="UTC",
+        )
+        OrganizationMembership.objects.create(
+            organization=self.org2,
+            user=student_member_only,
+            role=OrganizationRole.STUDENT,
+            status=MembershipStatus.ACTIVE,
+        )
+
+        resp = self.client.get("/api/platform-admin/overview/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        # Should now count 2 students (1 in org1 via enrollment, 1 in org2 via membership)
+        self.assertEqual(resp.json()["total_students"], 2)
+
+        # 2. Add OrganizationMembership for student_user in org1 (now in both StudentEnrollment and OrganizationMembership)
+        OrganizationMembership.objects.create(
+            organization=self.org1,
+            user=self.student_user,
+            role=OrganizationRole.STUDENT,
+            status=MembershipStatus.ACTIVE,
+        )
+
+        resp = self.client.get("/api/platform-admin/overview/")
+        # Still exactly 2: student_user must not be double-counted in org1
+        self.assertEqual(resp.json()["total_students"], 2)
+
+        # 3. Add second track enrollment for student_user in org1
+        from curriculum.models import Track
+        track2 = Track.objects.create(
+            organization=self.org1,
+            name="Tajweed Advanced",
+            slug="tajweed-adv",
+        )
+        StudentEnrollment.objects.create(
+            organization=self.org1,
+            user=self.student_user,
+            track=track2,
+            status="active",
+        )
+
+        resp = self.client.get("/api/platform-admin/overview/")
+        # Still exactly 2: multiple subject enrollments for one student in an academy must not duplicate count
+        self.assertEqual(resp.json()["total_students"], 2)
+
+        # 4. Check subscribers list endpoint reflects exact active student counts per subscriber
+        resp_subscribers = self.client.get("/api/platform-admin/subscribers/")
+        self.assertEqual(resp_subscribers.status_code, status.HTTP_200_OK)
+        subs = {s["slug"]: s for s in resp_subscribers.json()}
+        self.assertEqual(subs["al-noor"]["active_students_count"], 1)
+        self.assertEqual(subs["al-hikmah"]["active_students_count"], 1)
