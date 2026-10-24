@@ -445,7 +445,7 @@ class UnifiedPaystackWebhookView(APIView):
 
     def post(self, request, *args, **kwargs):
         raw_body = request.body
-        signature = request.META.get("HTTP_X_PAYSTACK_SIGNATURE")
+        signature = request.headers.get("x-paystack-signature") or request.META.get("HTTP_X_PAYSTACK_SIGNATURE")
 
         sig_valid = verify_paystack_signature(raw_body, signature)
         if not sig_valid:

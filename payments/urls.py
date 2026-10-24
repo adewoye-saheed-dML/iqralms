@@ -27,4 +27,5 @@ urlpatterns = [
     path("mine/", StudentPaymentListView.as_view(), name="mine"),
     path("children/", ParentChildPaymentListView.as_view(), name="children"),
     path("organization/", OrganizationPaymentListView.as_view(), name="organization"),
+    path("webhook/", PaystackTuitionWebhookView.as_view(), name="webhook"),
 ]

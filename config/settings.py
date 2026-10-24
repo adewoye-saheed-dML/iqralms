@@ -132,7 +132,10 @@ CORS_ALLOWED_ORIGINS = env_list(
 FRONTEND_BASE_URL = env_str(
     "FRONTEND_BASE_URL",
     default="http://localhost:3000",
-)
+).rstrip("/")
+
+if FRONTEND_BASE_URL and FRONTEND_BASE_URL not in CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS = list(CORS_ALLOWED_ORIGINS) + [FRONTEND_BASE_URL]
 
 
 # --- Applications -----------------------------------------------------------
@@ -563,6 +566,13 @@ if PRODUCTION:
     #: Scheme-qualified origins, e.g. 'https://app.example.com'. Needed for any
     #: browser client on a different host from the API.
     CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS", default=[])
+    if (
+        FRONTEND_BASE_URL
+        and FRONTEND_BASE_URL not in CSRF_TRUSTED_ORIGINS
+        and not FRONTEND_BASE_URL.startswith("http://localhost")
+        and not FRONTEND_BASE_URL.startswith("http://127.0.0.1")
+    ):
+        CSRF_TRUSTED_ORIGINS = list(CSRF_TRUSTED_ORIGINS) + [FRONTEND_BASE_URL]
 
     #: One year, with subdomains and preload. Long values are hard to walk back
     #: — a browser that has seen this header refuses plain HTTP for the whole
@@ -609,4 +619,13 @@ PAYSTACK_GROWTH_PLAN_CODE = env_str(
 )
 PAYSTACK_PROFESSIONAL_PLAN_CODE = env_str(
     "PAYSTACK_PROFESSIONAL_PLAN_CODE", default="PLN_professional_tier"
+)
+PAYSTACK_STARTER_PLAN_CODE_USD = env_str(
+    "PAYSTACK_STARTER_PLAN_CODE_USD", default="PLN_starter_tier_usd"
+)
+PAYSTACK_GROWTH_PLAN_CODE_USD = env_str(
+    "PAYSTACK_GROWTH_PLAN_CODE_USD", default="PLN_growth_tier_usd"
+)
+PAYSTACK_PROFESSIONAL_PLAN_CODE_USD = env_str(
+    "PAYSTACK_PROFESSIONAL_PLAN_CODE_USD", default="PLN_professional_tier_usd"
 )

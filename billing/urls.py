@@ -18,5 +18,6 @@ urlpatterns = [
     path("subscribe/initialize/", SubscribeView.as_view(), name="subscribe_initialize"),
     path("subscribe/", SubscribeView.as_view(), name="subscribe"),
     path("status/", SubscriptionStatusView.as_view(), name="status"),
+    path("webhook/", PaystackBillingWebhookView.as_view(), name="webhook"),
 ]
 
