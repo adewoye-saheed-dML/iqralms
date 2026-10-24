@@ -25,6 +25,7 @@ and are surfaced from there, so the API and a direct ORM write cannot disagree.
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.utils import timezone as dj_timezone
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
@@ -1097,6 +1098,7 @@ class SessionalExamSerializer(serializers.ModelSerializer):
     track_name = serializers.CharField(source="track.name", read_only=True, allow_null=True)
     level_name = serializers.CharField(source="level.name", read_only=True, allow_null=True)
     created_by_name = serializers.CharField(source="created_by.get_full_name", read_only=True)
+    reviewed_by_name = serializers.CharField(source="reviewed_by.get_full_name", read_only=True, allow_null=True)
     questions = SessionalExamQuestionSerializer(many=True, read_only=True)
     question_count = serializers.IntegerField(read_only=True)
     computed_total_marks = serializers.DecimalField(max_digits=6, decimal_places=2, read_only=True)
@@ -1123,6 +1125,10 @@ class SessionalExamSerializer(serializers.ModelSerializer):
             "status",
             "created_by",
             "created_by_name",
+            "reviewed_by",
+            "reviewed_by_name",
+            "reviewed_at",
+            "review_comments",
             "question_count",
             "computed_total_marks",
             "questions",
@@ -1134,6 +1140,10 @@ class SessionalExamSerializer(serializers.ModelSerializer):
             "organization_id",
             "created_by",
             "created_by_name",
+            "reviewed_by",
+            "reviewed_by_name",
+            "reviewed_at",
+            "review_comments",
             "question_count",
             "computed_total_marks",
             "questions",
@@ -1166,12 +1176,38 @@ class SessionalExamCreateUpdateSerializer(serializers.ModelSerializer):
             "questions",
         ]
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        status_val = attrs.get("status")
+        if status_val == SessionalExamStatus.PUBLISHED:
+            is_manager = False
+            if request and request.user:
+                from organizations.models import OrganizationRole, active_membership
+                organization = self.context.get("organization") or (self.instance.organization if self.instance else None)
+                membership = None
+                if organization:
+                    membership = active_membership(user=request.user, organization=organization)
+                is_manager = bool(
+                    (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN])
+                    or getattr(request.user, "role", None) == Role.LEAD
+                )
+            if not is_manager:
+                raise serializers.ValidationError({
+                    "status": "Only the academy owner or administrator can approve and publish a sessional exam for students. Set status to 'pending_approval' to submit for owner review."
+                })
+        return attrs
+
     def create(self, validated_data):
         questions_data = validated_data.pop("questions", None)
         request = self.context.get("request")
         organization = self.context.get("organization")
         validated_data["organization"] = organization
         validated_data["created_by"] = request.user if request else validated_data.get("created_by")
+
+        if validated_data.get("status") == SessionalExamStatus.PUBLISHED and request and request.user:
+            validated_data["reviewed_by"] = request.user
+            validated_data["reviewed_at"] = dj_timezone.now()
+            validated_data["review_comments"] = "Approved and published by academy owner."
 
         with transaction.atomic():
             exam = SessionalExam(**validated_data)
@@ -1189,6 +1225,13 @@ class SessionalExamCreateUpdateSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         questions_data = validated_data.pop("questions", None)
+        request = self.context.get("request")
+        if validated_data.get("status") == SessionalExamStatus.PUBLISHED and instance.status != SessionalExamStatus.PUBLISHED:
+            if request and request.user:
+                instance.reviewed_by = request.user
+                instance.reviewed_at = dj_timezone.now()
+                instance.review_comments = "Approved and published by academy owner."
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         try:
@@ -1204,6 +1247,13 @@ class SessionalExamCreateUpdateSerializer(serializers.ModelSerializer):
                 instance.recalculate_total_marks()
 
         return instance
+
+
+class SessionalExamReviewSerializer(serializers.Serializer):
+    """Payload for academy owner/admin to approve or reject an exam set by a teacher."""
+
+    action = serializers.ChoiceField(choices=["approve", "reject"])
+    review_comments = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class ExamQuestionAnswerSerializer(serializers.ModelSerializer):

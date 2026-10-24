@@ -92,6 +92,7 @@ from .serializers import (
     SessionalExamSubmissionSerializer,
     SessionalExamSubmitAnswersSerializer,
     SessionalExamGradeSubmissionSerializer,
+    SessionalExamReviewSerializer,
 )
 
 #: One query for an assessment plus everything the read serializers touch.
@@ -1594,15 +1595,10 @@ class SessionalExamListCreateView(AcademyScopedView, generics.ListCreateAPIView)
             return SessionalExamCreateUpdateSerializer
         return SessionalExamSerializer
 
-    def get_permissions(self):
-        if self.request.method == "POST":
-            return [IsAuthenticated(), IsOrganizationMember(), IsOwnerAdminOrLeadTeacher()]
-        return [IsAuthenticated(), IsOrganizationMember()]
-
     def get_queryset(self):
         qs = (
             SessionalExam.objects.in_organization(self.organization)
-            .select_related("track", "level", "created_by")
+            .select_related("track", "level", "created_by", "reviewed_by")
             .prefetch_related("questions")
         )
         # Students only see published exams
@@ -1626,9 +1622,16 @@ class SessionalExamListCreateView(AcademyScopedView, generics.ListCreateAPIView)
         return qs
 
     def create(self, request, *args, **kwargs):
+        membership = self.caller_membership
+        user = request.user
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        if not (is_manager or is_teacher):
+            raise PermissionDenied("Only teachers and academy managers can set sessional exams.")
+
         serializer = SessionalExamCreateUpdateSerializer(
             data=request.data,
-            context={"request": request, "organization": self.organization},
+            context={"request": request, "organization": self.organization, "view": self},
         )
         serializer.is_valid(raise_exception=True)
         exam = serializer.save()
@@ -1645,26 +1648,34 @@ class SessionalExamDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyA
     """
 
     serializer_class = SessionalExamSerializer
-
-    def get_permissions(self):
-        if self.request.method in ["PATCH", "PUT", "DELETE"]:
-            return [IsAuthenticated(), IsOrganizationMember(), IsOwnerAdminOrLeadTeacher()]
-        return [IsAuthenticated(), IsOrganizationMember()]
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
 
     def get_queryset(self):
         return (
             SessionalExam.objects.in_organization(self.organization)
-            .select_related("track", "level", "created_by")
+            .select_related("track", "level", "created_by", "reviewed_by")
             .prefetch_related("questions")
         )
 
     def patch(self, request, *args, **kwargs):
         exam = self.get_object()
+        membership = self.caller_membership
+        user = request.user
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_creator = exam.created_by_id == user.id
+
+        if not (is_manager or (is_teacher and is_creator)):
+            raise PermissionDenied("You do not have permission to modify this examination.")
+
+        if not is_manager and exam.status in [SessionalExamStatus.PUBLISHED, SessionalExamStatus.CLOSED]:
+            raise PermissionDenied("Published or closed examinations can only be modified by the academy owner or administrator.")
+
         serializer = SessionalExamCreateUpdateSerializer(
             exam,
             data=request.data,
             partial=True,
-            context={"request": request, "organization": self.organization},
+            context={"request": request, "organization": self.organization, "view": self},
         )
         serializer.is_valid(raise_exception=True)
         exam = serializer.save()
@@ -1675,11 +1686,80 @@ class SessionalExamDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyA
     def put(self, request, *args, **kwargs):
         return self.patch(request, *args, **kwargs)
 
+    def delete(self, request, *args, **kwargs):
+        exam = self.get_object()
+        membership = self.caller_membership
+        user = request.user
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_creator = exam.created_by_id == user.id
+
+        if not (is_manager or is_creator):
+            raise PermissionDenied("You do not have permission to delete this examination.")
+        return super().delete(request, *args, **kwargs)
+
+
+@extend_schema(
+    request=SessionalExamReviewSerializer,
+    responses={200: SessionalExamSerializer},
+)
+class SessionalExamReviewView(AcademyScopedView, APIView):
+    """POST /api/assessment/organizations/{org_id}/sessional-exams/{pk}/review/
+    Academy owner or admin reviews an exam set by a teacher and approves (publishes) or requests changes."""
+
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def post(self, request, pk, *args, **kwargs):
+        membership = self.caller_membership
+        user = request.user
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        if not is_manager:
+            raise PermissionDenied("Only the academy owner or administrator can review and approve sessional exams.")
+
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=pk,
+        )
+        serializer = SessionalExamReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        action = serializer.validated_data["action"]
+        comments = serializer.validated_data.get("review_comments", "").strip()
+
+        if action == "approve":
+            exam.status = SessionalExamStatus.PUBLISHED
+            exam.reviewed_by = request.user
+            exam.reviewed_at = dj_timezone.now()
+            exam.review_comments = comments or "Approved by academy owner."
+            exam.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comments", "updated_at"])
+        elif action == "reject":
+            exam.status = SessionalExamStatus.REJECTED
+            exam.reviewed_by = request.user
+            exam.reviewed_at = dj_timezone.now()
+            exam.review_comments = comments
+            exam.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comments", "updated_at"])
+
+        return Response(
+            SessionalExamSerializer(exam, context={"request": request, "view": self}).data,
+            status=status.HTTP_200_OK,
+        )
+
 
 class SessionalExamQuestionManageView(AcademyScopedView, APIView):
     """Manage individual questions and their mark allotted for a Sessional Exam."""
 
-    permission_classes = [IsAuthenticated, IsOrganizationMember, IsOwnerAdminOrLeadTeacher]
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def _check_modify_permission(self, request, exam):
+        membership = self.caller_membership
+        user = request.user
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_creator = exam.created_by_id == user.id
+
+        if not (is_manager or (is_teacher and is_creator)):
+            raise PermissionDenied("You do not have permission to modify questions for this examination.")
+
+        if not is_manager and exam.status in [SessionalExamStatus.PUBLISHED, SessionalExamStatus.CLOSED]:
+            raise PermissionDenied("Questions on published or closed examinations can only be modified by the academy owner.")
 
     @extend_schema(
         request=SessionalExamQuestionSerializer,
@@ -1690,6 +1770,7 @@ class SessionalExamQuestionManageView(AcademyScopedView, APIView):
             SessionalExam.objects.in_organization(self.organization),
             pk=pk,
         )
+        self._check_modify_permission(request, exam)
         serializer = SessionalExamQuestionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         question = serializer.save(exam=exam)
@@ -1708,6 +1789,7 @@ class SessionalExamQuestionManageView(AcademyScopedView, APIView):
             SessionalExam.objects.in_organization(self.organization),
             pk=pk,
         )
+        self._check_modify_permission(request, exam)
         question = get_object_or_404(exam.questions.all(), pk=question_pk)
         serializer = SessionalExamQuestionSerializer(question, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -1723,6 +1805,7 @@ class SessionalExamQuestionManageView(AcademyScopedView, APIView):
             SessionalExam.objects.in_organization(self.organization),
             pk=pk,
         )
+        self._check_modify_permission(request, exam)
         question = get_object_or_404(exam.questions.all(), pk=question_pk)
         question.delete()
         exam.recalculate_total_marks()
@@ -1760,6 +1843,11 @@ class SessionalExamTakeSubmitView(AcademyScopedView, APIView):
             SessionalExam.objects.in_organization(self.organization),
             pk=pk,
         )
+        if exam.status != SessionalExamStatus.PUBLISHED:
+            return Response(
+                {"detail": "This examination has not yet been approved and published by the academy owner."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         submission = (
             SessionalExamSubmission.objects.filter(exam=exam, student=request.user)
             .select_related("student", "graded_by", "exam")
@@ -1781,7 +1869,7 @@ class SessionalExamTakeSubmitView(AcademyScopedView, APIView):
         )
         if exam.status != SessionalExamStatus.PUBLISHED:
             return Response(
-                {"detail": "This exam is not currently open for submissions."},
+                {"detail": "This examination has not yet been approved and published by the academy owner."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

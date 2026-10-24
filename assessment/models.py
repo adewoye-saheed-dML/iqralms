@@ -1531,7 +1531,9 @@ class AssignmentSubmission(models.Model):
 
 class SessionalExamStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
+    PENDING_APPROVAL = "pending_approval", "Pending Owner Approval"
     PUBLISHED = "published", "Published"
+    REJECTED = "rejected", "Changes Requested"
     CLOSED = "closed", "Closed"
 
 
@@ -1614,6 +1616,19 @@ class SessionalExam(models.Model):
         max_length=30,
         choices=SessionalExamStatus.choices,
         default=SessionalExamStatus.DRAFT,
+    )
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_sessional_exams",
+        help_text="Academy owner or admin who reviewed and approved/rejected the exam.",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_comments = models.TextField(
+        blank=True,
+        help_text="Review feedback or change requests provided by the academy owner/admin.",
     )
     created_at = models.DateTimeField(default=dj_timezone.now)
     updated_at = models.DateTimeField(auto_now=True)

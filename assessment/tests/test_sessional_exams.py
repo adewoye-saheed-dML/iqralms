@@ -240,3 +240,119 @@ class SessionalExamFlowAPITests(APITestCase):
         self.client.force_authenticate(user=other_student)
         res_other = self.client.get(audio_url)
         self.assertEqual(res_other.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_review_and_approval_flow_for_teacher_sessional_exam(self):
+        """Verify that exams set by teachers must be reviewed and approved by the owner
+        before students can view or submit them."""
+        # 1. Teacher attempts to publish directly -> rejected
+        self.client.force_authenticate(user=self.teacher)
+        exam_list_url = f"/api/assessment/organizations/{self.org.pk}/sessional-exams/"
+        direct_publish_payload = {
+            "title": "Midterm Recitation Test",
+            "academic_session": "2026/2027 First Term",
+            "status": SessionalExamStatus.PUBLISHED,
+            "questions": [
+                {
+                    "question_number": 1,
+                    "question_text": "Recite Surah Al-Fajr",
+                    "marks_allotted": "50.00",
+                    "question_type": QuestionType.ORAL_RECITATION,
+                }
+            ],
+        }
+        res_direct = self.client.post(exam_list_url, direct_publish_payload, format="json")
+        self.assertEqual(res_direct.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Only the academy owner or administrator can approve and publish", str(res_direct.data))
+
+        # 2. Teacher sets exam with status='pending_approval'
+        pending_payload = {
+            "title": "Midterm Recitation Test",
+            "academic_session": "2026/2027 First Term",
+            "status": SessionalExamStatus.PENDING_APPROVAL,
+            "questions": [
+                {
+                    "question_number": 1,
+                    "question_text": "Recite Surah Al-Fajr",
+                    "marks_allotted": "50.00",
+                    "question_type": QuestionType.ORAL_RECITATION,
+                }
+            ],
+        }
+        res_create = self.client.post(exam_list_url, pending_payload, format="json")
+        self.assertEqual(res_create.status_code, status.HTTP_201_CREATED)
+        exam_id = res_create.data["id"]
+        self.assertEqual(res_create.data["status"], SessionalExamStatus.PENDING_APPROVAL)
+
+        # 3. Student cannot see pending exam in listing or submit to it
+        self.client.force_authenticate(user=self.student)
+        res_student_list = self.client.get(exam_list_url)
+        self.assertEqual(res_student_list.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res_student_list.data), 0)
+
+        submit_url = f"/api/assessment/organizations/{self.org.pk}/sessional-exams/{exam_id}/submit/"
+        res_student_submit = self.client.post(
+            submit_url,
+            {"answers": [{"question_id": res_create.data["questions"][0]["id"], "written_response": "done"}]},
+            format="json",
+        )
+        self.assertEqual(res_student_submit.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("has not yet been approved and published by the academy owner", res_student_submit.data["detail"])
+
+        # 4. Non-owner (teacher) cannot call the review endpoint
+        self.client.force_authenticate(user=self.teacher)
+        review_url = f"/api/assessment/organizations/{self.org.pk}/sessional-exams/{exam_id}/review/"
+        res_teacher_review = self.client.post(review_url, {"action": "approve"}, format="json")
+        self.assertEqual(res_teacher_review.status_code, status.HTTP_403_FORBIDDEN)
+
+        # 5. Owner requests changes (reject)
+        self.client.force_authenticate(user=self.lead)
+        res_owner_reject = self.client.post(
+            review_url,
+            {
+                "action": "reject",
+                "review_comments": "Please add surah ayah range for question 1.",
+            },
+            format="json",
+        )
+        self.assertEqual(res_owner_reject.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_owner_reject.data["status"], SessionalExamStatus.REJECTED)
+        self.assertEqual(res_owner_reject.data["review_comments"], "Please add surah ayah range for question 1.")
+
+        # 6. Teacher updates question and resubmits for approval
+        self.client.force_authenticate(user=self.teacher)
+        detail_url = f"/api/assessment/organizations/{self.org.pk}/sessional-exams/{exam_id}/"
+        res_update = self.client.patch(
+            detail_url,
+            {"status": SessionalExamStatus.PENDING_APPROVAL},
+            format="json",
+        )
+        self.assertEqual(res_update.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_update.data["status"], SessionalExamStatus.PENDING_APPROVAL)
+
+        # 7. Owner approves and publishes the exam
+        self.client.force_authenticate(user=self.lead)
+        res_owner_approve = self.client.post(
+            review_url,
+            {
+                "action": "approve",
+                "review_comments": "Approved. Ayah range looks good.",
+            },
+            format="json",
+        )
+        self.assertEqual(res_owner_approve.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_owner_approve.data["status"], SessionalExamStatus.PUBLISHED)
+        self.assertEqual(res_owner_approve.data["reviewed_by_name"], self.lead.get_full_name())
+        self.assertIsNotNone(res_owner_approve.data["reviewed_at"])
+
+        # 8. Student can now see and submit the published exam
+        self.client.force_authenticate(user=self.student)
+        res_student_list_after = self.client.get(exam_list_url)
+        self.assertEqual(res_student_list_after.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res_student_list_after.data), 1)
+
+        res_student_take = self.client.post(
+            submit_url,
+            {"answers": [{"question_id": res_create.data["questions"][0]["id"], "written_response": "Surah recited."}]},
+            format="json",
+        )
+        self.assertEqual(res_student_take.status_code, status.HTTP_201_CREATED)

@@ -43,6 +43,7 @@ from .views import (
     SessionalExamGradeView,
     ParentWardSessionalExamsView,
     SessionalExamAnswerAudioStreamView,
+    SessionalExamReviewView,
 )
 
 app_name = "assessment"
@@ -193,6 +194,11 @@ urlpatterns = [
         f"{ACADEMY}sessional-exams/<int:pk>/",
         SessionalExamDetailView.as_view(),
         name="sessional-exam-detail",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/review/",
+        SessionalExamReviewView.as_view(),
+        name="sessional-exam-review",
     ),
     path(
         f"{ACADEMY}sessional-exams/<int:pk>/questions/",
