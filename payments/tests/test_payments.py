@@ -215,6 +215,56 @@ class SubaccountSetupTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_other_organization_owner_cannot_modify_subaccount(self):
+        other_owner = User.objects.create_user(
+            username="other_owner",
+            email="other_owner@sub.com",
+            role=Role.OWNER,
+            timezone="Africa/Lagos",
+        )
+        other_org = Organization.objects.create(
+            name="Other Academy",
+            slug="other-academy",
+            timezone="Africa/Lagos",
+            currency="NGN",
+            is_active=True,
+        )
+        OrganizationMembership.objects.create(
+            organization=other_org,
+            user=other_owner,
+            role=OrganizationRole.OWNER,
+            status=MembershipStatus.ACTIVE,
+        )
+        self.client.force_authenticate(user=other_owner)
+        response = self.client.post(
+            "/api/payments/subaccount/confirm/",
+            {
+                "organization_id": self.org.pk,
+                "bank_code": "058",
+                "account_number": "0123456789",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+        # Also cannot resolve
+        res_resolve = self.client.post(
+            "/api/payments/subaccount/resolve/",
+            {
+                "organization_id": self.org.pk,
+                "bank_code": "058",
+                "account_number": "0123456789",
+            },
+            format="json",
+        )
+        self.assertEqual(res_resolve.status_code, 403)
+
+        # Also cannot read status
+        res_status = self.client.get(
+            f"/api/payments/subaccount/status/?organization_id={self.org.pk}",
+        )
+        self.assertEqual(res_status.status_code, 403)
+
     def test_legacy_subaccount_setup_endpoint_returns_404(self):
         self.client.force_authenticate(user=self.owner)
         response = self.client.post(

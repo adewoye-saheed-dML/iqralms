@@ -47,6 +47,8 @@ it).
 Nothing about bookings, cohorts or session assessment belongs here.
 """
 
+import os
+
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from django.core.files.uploadedfile import UploadedFile
 from django.core.validators import MinValueValidator
@@ -746,7 +748,8 @@ class MaterialType(models.TextChoices):
 
 def material_file_path(instance, filename):
     org_id = instance.organization_id or (instance.track.organization_id if instance.track_id else "common")
-    return f"materials/{org_id}/{filename}"
+    clean_filename = os.path.basename(filename)
+    return f"materials/{org_id}/{clean_filename}"
 
 
 class LearningMaterial(models.Model):

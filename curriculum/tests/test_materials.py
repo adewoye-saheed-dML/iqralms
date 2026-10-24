@@ -178,4 +178,23 @@ class LearningMaterialAPITests(APITestCase):
         response = self.client.post(self.url, {"title": "Admin Upload", "material_type": MaterialType.TEXT, "content_text": "Sample"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
+    def test_upload_dangerous_file_type_is_rejected(self):
+        self.client.force_authenticate(user=self.owner)
+        html_file = SimpleUploadedFile("malicious.html", b"<script>alert(1)</script>", content_type="text/html")
+        payload = {
+            "title": "Malicious Script",
+            "material_type": MaterialType.BOOK,
+            "track": self.track.pk,
+            "file": html_file,
+        }
+        response = self.client.post(self.url, payload, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("file", response.data)
+
+        exe_file = SimpleUploadedFile("trojan.exe", b"MZ\x90\x00", content_type="application/x-msdownload")
+        payload["file"] = exe_file
+        res_exe = self.client.post(self.url, payload, format="multipart")
+        self.assertEqual(res_exe.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("file", res_exe.data)
+
 

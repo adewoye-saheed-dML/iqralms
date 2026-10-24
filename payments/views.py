@@ -83,7 +83,6 @@ class SubaccountResolveView(APIView):
         is_authorized = (
             getattr(request.user, "is_superuser", False)
             or getattr(request.user, "is_staff", False)
-            or getattr(request.user, "role", None) in {Role.OWNER, "owner"}
             or (
                 membership
                 and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN, OrganizationRole.TEACHER}
@@ -181,7 +180,6 @@ class SubaccountConfirmView(APIView):
         is_owner_or_admin = (
             getattr(request.user, "is_superuser", False)
             or getattr(request.user, "is_staff", False)
-            or getattr(request.user, "role", None) in {Role.OWNER, "owner"}
             or (membership and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN})
         )
         if not is_owner_or_admin:
@@ -232,7 +230,6 @@ class SubaccountStatusView(APIView):
         is_owner_or_admin = (
             getattr(request.user, "is_superuser", False)
             or getattr(request.user, "is_staff", False)
-            or getattr(request.user, "role", None) in {Role.OWNER, "owner"}
             or (membership and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN})
         )
         if not is_owner_or_admin:
@@ -623,13 +620,12 @@ class OrganizationPaymentListView(APIView):
             membership = OrganizationMembership.objects.filter(
                 user=user, organization=organization, status=MembershipStatus.ACTIVE
             ).first()
-        if not membership and not (user.is_superuser or user.is_staff or getattr(user, "role", None) in {Role.OWNER, "owner"}):
+        if not membership and not (user.is_superuser or user.is_staff):
             raise PermissionDenied("You do not belong to this organization.")
 
         is_allowed = (
             getattr(user, "is_superuser", False)
             or getattr(user, "is_staff", False)
-            or getattr(user, "role", None) in {Role.OWNER, "owner"}
             or (membership and membership.role in {OrganizationRole.OWNER, OrganizationRole.ADMIN})
             or (membership and membership.role == OrganizationRole.TEACHER and getattr(user, "role", None) == Role.LEAD)
         )

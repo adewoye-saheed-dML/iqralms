@@ -1316,6 +1316,7 @@ class Booking(models.Model):
                 platform_provider = getattr(settings, "VIDEO_PROVIDER", "")
                 provider_name = (
                     platform_provider
+                    or (org.video_provider if org and getattr(org, "video_provider", None) else None)
                     or (platform_config.video_provider if platform_config else None)
                     or getattr(settings, "DEFAULT_VIDEO_PROVIDER", "daily")
                 )

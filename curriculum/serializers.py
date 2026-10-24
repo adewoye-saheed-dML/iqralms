@@ -686,6 +686,36 @@ class LearningMaterialCreateSerializer(AcademyScopedSerializer):
     content_text = serializers.CharField(required=False, allow_blank=True, default="")
     is_active = serializers.BooleanField(default=True)
 
+    MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+    ALLOWED_EXTENSIONS = frozenset({
+        ".pdf", ".epub", ".mobi",
+        ".doc", ".docx", ".txt", ".rtf",
+        ".jpg", ".jpeg", ".png", ".webp",
+        ".mp3", ".m4a", ".wav", ".ogg", ".webm", ".flac",
+    })
+    DANGEROUS_EXTENSIONS = frozenset({
+        ".html", ".htm", ".xhtml", ".svg", ".xml",
+        ".exe", ".bat", ".cmd", ".sh", ".bash", ".bin",
+        ".py", ".pyw", ".php", ".js", ".jsx", ".ts", ".tsx",
+        ".vbs", ".ps1", ".jar", ".msi", ".dll", ".so",
+    })
+
+    def validate_file(self, value):
+        if not value:
+            return value
+        if hasattr(value, "size") and value.size > self.MAX_FILE_BYTES:
+            raise serializers.ValidationError(
+                f"File size exceeds maximum permitted limit of {self.MAX_FILE_BYTES // (1024 * 1024)} MB."
+            )
+        name = getattr(value, "name", "")
+        if name:
+            ext = os.path.splitext(name)[1].lower()
+            if ext in self.DANGEROUS_EXTENSIONS or (ext and ext not in self.ALLOWED_EXTENSIONS):
+                raise serializers.ValidationError(
+                    f"File extension '{ext}' is not permitted. Allowed formats include PDF, e-books, documents, audio, and images."
+                )
+        return value
+
     def validate(self, attrs):
         track = attrs.get("track")
         level = attrs.get("level")

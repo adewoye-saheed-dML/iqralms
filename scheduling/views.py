@@ -14,6 +14,7 @@ redirect or a bare refusal — plus the three waitlist endpoints the lead and th
 family read it through.
 """
 
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
@@ -1885,6 +1886,11 @@ class TeacherAvailabilityMatchView(AcademyScopedView, generics.GenericAPIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+@extend_schema(
+    summary="Daily.co recording and room events webhook",
+    request=None,
+    responses={200: OpenApiResponse(description="Webhook event processed or ignored.")},
+)
 class DailyWebhookView(APIView):
     """POST /api/scheduling/webhooks/daily/
     
@@ -1897,6 +1903,22 @@ class DailyWebhookView(APIView):
     authentication_classes = []
 
     def post(self, request, *args, **kwargs):
+        webhook_secret = getattr(settings, "DAILY_WEBHOOK_SECRET", "")
+        if webhook_secret:
+            auth_header = request.headers.get("Authorization", "")
+            sig_header = request.headers.get("X-Webhook-Signature") or request.headers.get("X-Daily-Signature", "")
+            raw_body = request.body
+            valid = False
+            if auth_header and auth_header.replace("Bearer ", "").strip() == webhook_secret:
+                valid = True
+            elif sig_header:
+                import hashlib
+                import hmac
+                expected_sig = hmac.new(webhook_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+                valid = hmac.compare_digest(expected_sig, sig_header.strip())
+            if not valid:
+                return Response({"error": "Unauthorized webhook request."}, status=status.HTTP_401_UNAUTHORIZED)
+
         payload = request.data or {}
         event = payload.get("event") or payload.get("type", "")
 
@@ -1917,6 +1939,12 @@ class DailyWebhookView(APIView):
             or payload.get("recording", {}).get("duration")
             or 0
         )
+
+        if download_link:
+            import urllib.parse
+            parsed = urllib.parse.urlparse(download_link)
+            if parsed.scheme != "https":
+                return Response({"error": "Invalid download_link scheme; https required."}, status=status.HTTP_400_BAD_REQUEST)
 
         if room_name and download_link:
             booking = Booking.objects.filter(video_provider_meeting_id=room_name).first()

@@ -112,7 +112,6 @@ ALLOWED_HOSTS = env_list(
             "localhost",
             "127.0.0.1",
             "[::1]",
-             ".ngrok-free.dev",
         ]
     ),
 )
@@ -458,6 +457,7 @@ VIDEO_PROVIDER = env_str("VIDEO_PROVIDER", default="")  # Optional hard override
 DAILY_API_KEY = env_str("DAILY_API_KEY", default="")
 DAILY_DOMAIN = env_str("DAILY_DOMAIN", default="iqralms.daily.co")
 DAILY_ENABLE_RECORDING = env_bool("DAILY_ENABLE_RECORDING", default=True)
+DAILY_WEBHOOK_SECRET = env_str("DAILY_WEBHOOK_SECRET", default="")
 
 JITSI_DOMAIN = env_str("JITSI_DOMAIN", default="meet.jit.si")
 
@@ -595,12 +595,8 @@ DEFAULT_FROM_EMAIL = env_str(
 )
 
 # --- Paystack (Phase 9) -----------------------------------------------------
-PAYSTACK_SECRET_KEY = env_str(
-    "PAYSTACK_SECRET_KEY", default="sk_test_e2358dcd31a60d256a958db46a48387381d88fd5"
-)
-PAYSTACK_PUBLIC_KEY = env_str(
-    "PAYSTACK_PUBLIC_KEY", default="pk_test_b9006d0e2f52be58dc0a5464264012d91ce40287"
-)
+PAYSTACK_SECRET_KEY = env_str("PAYSTACK_SECRET_KEY", default="")
+PAYSTACK_PUBLIC_KEY = env_str("PAYSTACK_PUBLIC_KEY", default="")
 PAYSTACK_PLAN_CODE = env_str("PAYSTACK_PLAN_CODE", default="PLN_monthly_sub")
 
 # --- Billing & Subscriptions (Phase 9) ---------------------------------------
@@ -614,14 +610,3 @@ PAYSTACK_GROWTH_PLAN_CODE = env_str(
 PAYSTACK_PROFESSIONAL_PLAN_CODE = env_str(
     "PAYSTACK_PROFESSIONAL_PLAN_CODE", default="PLN_professional_tier"
 )
-
-
-EMAIL_HOST = "smtp.gmail.com"
-EMAIL_PORT = 465
-EMAIL_USE_TLS = 0
-EMAIL_USE_SSL = 1
-
-EMAIL_HOST_USER = "saheeddamilola001@gmail.com"
-EMAIL_HOST_PASSWORD = "prlowiyvprjxprer"
-
-DEFAULT_FROM_EMAIL = "saheeddamilola001@gmail.com"
