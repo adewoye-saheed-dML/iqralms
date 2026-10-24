@@ -18,6 +18,7 @@ another academy's rows.
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.utils import timezone as dj_timezone
 from dj_rest_auth.serializers import (
     LoginSerializer as DefaultLoginSerializer,
@@ -229,22 +230,23 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data["is_minor"] = User.minor_from_date_of_birth(
             validated_data.get("date_of_birth")
         )
-        user = User(**validated_data)
-        user.set_password(password)
-        try:
-            # signup_code is generated in User.save(), so it is blank here.
-            user.full_clean(exclude=["signup_code"])
-        except DjangoValidationError as exc:
-            raise as_drf_error(exc) from exc
-        user.save()
+        with transaction.atomic():
+            user = User(**validated_data)
+            user.set_password(password)
+            try:
+                # signup_code is generated in User.save(), so it is blank here.
+                user.full_clean(exclude=["signup_code"])
+            except DjangoValidationError as exc:
+                raise as_drf_error(exc) from exc
+            user.save()
 
-        if user.role == Role.STUDENT and user.is_minor and parent_email:
-            from accounts.services import process_minor_student_parent_email
-            process_minor_student_parent_email(student=user, parent_email=parent_email)
-            user._parent_email = parent_email
-        elif user.role == Role.PARENT:
-            from accounts.services import fulfill_pending_parent_links
-            fulfill_pending_parent_links(user)
+            if user.role == Role.STUDENT and user.is_minor and parent_email:
+                from accounts.services import process_minor_student_parent_email
+                process_minor_student_parent_email(student=user, parent_email=parent_email)
+                user._parent_email = parent_email
+            elif user.role == Role.PARENT:
+                from accounts.services import fulfill_pending_parent_links
+                fulfill_pending_parent_links(user)
 
         return user
 

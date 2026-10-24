@@ -865,27 +865,34 @@ class CohortDetailView(AcademyScopedView, generics.RetrieveUpdateDestroyAPIView)
         )
 
     def delete(self, request, *args, **kwargs):
-        cohort = self.get_object()
-        seats_count = cohort.seats_taken
-        cohort.cancel(
-            cancelled_by=request.user,
-            reason="Cohort cancelled by academy administration",
-        )
-        try:
-            from audit_logs.services import record_event
-            from audit_logs.models import AuditAction
-            record_event(
-                organization=self.organization,
-                actor=request.user,
-                action=AuditAction.COHORT_CANCELLED,
-                target=cohort,
-                metadata={"seats_cancelled": seats_count},
+        with transaction.atomic():
+            cohort = (
+                Cohort.objects.select_for_update()
+                .filter(level__track__organization=self.organization, pk=self.kwargs["pk"])
+                .first()
             )
-        except Exception:
-            pass
-        if not cohort.seat_bookings.exists():
-            cohort.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+            if not cohort:
+                return Response(status=status.HTTP_404_NOT_FOUND)
+            seats_count = cohort.seats_taken
+            cohort.cancel(
+                cancelled_by=request.user,
+                reason="Cohort cancelled by academy administration",
+            )
+            try:
+                from audit_logs.services import record_event
+                from audit_logs.models import AuditAction
+                record_event(
+                    organization=self.organization,
+                    actor=request.user,
+                    action=AuditAction.COHORT_CANCELLED,
+                    target=cohort,
+                    metadata={"seats_cancelled": seats_count},
+                )
+            except Exception:
+                pass
+            if not cohort.seat_bookings.exists():
+                cohort.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class CohortStudentManageView(AcademyScopedView, APIView):
@@ -929,19 +936,38 @@ class CohortStudentManageView(AcademyScopedView, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not cohort.has_space:
-            return Response(
-                {"detail": f"Cohort is full: {cohort.seats_taken} of {cohort.max_students} seats taken."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if cohort.students.filter(pk=student.pk).exists():
-            return Response(
-                {"detail": "Student already enrolled in this cohort."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         with transaction.atomic():
+            cohort = (
+                Cohort.objects.select_for_update()
+                .filter(level__track__organization=self.organization, pk=cohort.pk)
+                .first()
+            )
+            if not cohort:
+                return Response(
+                    {"detail": "Cohort not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if not cohort.has_space:
+                return Response(
+                    {"detail": f"Cohort is full: {cohort.seats_taken} of {cohort.max_students} seats taken."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if cohort.students.filter(pk=student.pk).exists():
+                return Response(
+                    {"detail": "Student already enrolled in this cohort."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                cohort.add_student(student)
+            except DjangoValidationError as exc:
+                return Response(
+                    {"detail": exc.message if hasattr(exc, "message") else str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             duration = getattr(cohort.level, "duration_minutes", None) or 60
             booking = Booking.objects.create(
                 student=student,
@@ -953,7 +979,6 @@ class CohortStudentManageView(AcademyScopedView, APIView):
                 status=BookingStatus.SCHEDULED,
                 routed_reason=RoutedReason.COHORT_ASSIGNED,
             )
-            cohort.add_student(student)
 
             try:
                 from audit_logs.services import record_event
@@ -1078,19 +1103,38 @@ class CohortSelfEnrollView(AcademyScopedView, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not cohort.has_space:
-            return Response(
-                {"detail": "This cohort is full. Please choose another group session."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if cohort.students.filter(pk=target_student.pk).exists():
-            return Response(
-                {"detail": "Student is already enrolled in this cohort."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         with transaction.atomic():
+            cohort = (
+                Cohort.objects.select_for_update()
+                .filter(level__track__organization=self.organization, pk=cohort.pk)
+                .first()
+            )
+            if not cohort:
+                return Response(
+                    {"detail": "Cohort not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if not cohort.has_space:
+                return Response(
+                    {"detail": "This cohort is full. Please choose another group session."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if cohort.students.filter(pk=target_student.pk).exists():
+                return Response(
+                    {"detail": "Student is already enrolled in this cohort."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                cohort.add_student(target_student)
+            except DjangoValidationError as exc:
+                return Response(
+                    {"detail": exc.message if hasattr(exc, "message") else str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             duration = getattr(cohort.level, "duration_minutes", None) or 60
             booking = Booking.objects.create(
                 student=target_student,
@@ -1102,7 +1146,6 @@ class CohortSelfEnrollView(AcademyScopedView, APIView):
                 status=BookingStatus.SCHEDULED,
                 routed_reason=RoutedReason.COHORT_ASSIGNED,
             )
-            cohort.add_student(target_student)
 
             try:
                 from audit_logs.services import record_event

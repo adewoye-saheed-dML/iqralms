@@ -476,8 +476,13 @@ class UnifiedPaystackWebhookView(APIView):
             if metadata.get("type") == "platform_subscription":
                 from datetime import timedelta
                 from django.utils import timezone as dj_tz
-                from billing.models import PlatformSubscription, SubscriptionStatus
+                from billing.models import BillingWebhookEvent, PlatformSubscription, SubscriptionStatus
                 from billing.services import _find_subscription_for_event
+
+                event_id = str(payload.get("id") or data.get("id") or f"{event}_{data.get('reference') or data.get('subscription_code')}")
+                if BillingWebhookEvent.objects.filter(event_id=event_id).exists():
+                    logger.info("Billing webhook event %s already processed; ignoring.", event_id)
+                    return Response({"status": "success", "message": "already_processed"}, status=status.HTTP_200_OK)
 
                 # Activate the subscription on charge.success for the initial plan payment
                 if event == "charge.success":
@@ -498,6 +503,11 @@ class UnifiedPaystackWebhookView(APIView):
                             sub.organization.is_active = True
                             sub.organization.save(update_fields=["is_active", "updated_at"])
 
+                BillingWebhookEvent.objects.create(
+                    event_id=event_id,
+                    event_type=event,
+                    payload=payload,
+                )
                 return Response({"status": "success", "message": "processed"}, status=status.HTTP_200_OK)
             success, msg = process_tuition_webhook(payload)
             return Response({"status": "success", "message": msg}, status=status.HTTP_200_OK)
