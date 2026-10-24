@@ -42,6 +42,7 @@ from .views import (
     SessionalExamTakeSubmitView,
     SessionalExamGradeView,
     ParentWardSessionalExamsView,
+    SessionalExamAnswerAudioStreamView,
 )
 
 app_name = "assessment"
@@ -222,6 +223,11 @@ urlpatterns = [
         f"{ACADEMY}sessional-exams/<int:pk>/submissions/<int:submission_pk>/grade/",
         SessionalExamGradeView.as_view(),
         name="sessional-exam-grade",
+    ),
+    path(
+        f"{ACADEMY}sessional-exams/<int:pk>/submissions/<int:submission_pk>/answers/<int:answer_pk>/audio/",
+        SessionalExamAnswerAudioStreamView.as_view(),
+        name="sessional-exam-answer-audio",
     ),
     path(
         f"{ACADEMY}sessional-exams/ward/<int:student_id>/",

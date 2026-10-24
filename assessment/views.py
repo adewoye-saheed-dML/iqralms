@@ -24,7 +24,7 @@ from django.utils.dateparse import parse_datetime
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import generics, status
-from rest_framework.authentication import SessionAuthentication
+from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -1479,6 +1479,12 @@ class SubmissionAudioStreamView(AcademyScopedView, APIView):
             raise Http404("No audio recording attached to this submission.")
 
         try:
+            if getattr(submission.audio_recording.storage, "provides_signed_urls", False):
+                from django.http import HttpResponseRedirect
+
+                return HttpResponseRedirect(
+                    submission.audio_recording.storage.signed_url(submission.audio_recording.name, expires_in=300)
+                )
             file_handle = submission.audio_recording.open("rb")
             return FileResponse(
                 file_handle,
@@ -1762,7 +1768,7 @@ class SessionalExamTakeSubmitView(AcademyScopedView, APIView):
         )
         if not submission:
             raise Http404("No submission found for this exam.")
-        return Response(SessionalExamSubmissionSerializer(submission).data)
+        return Response(SessionalExamSubmissionSerializer(submission, context={"request": request}).data)
 
     @extend_schema(
         request=SessionalExamSubmitAnswersSerializer,
@@ -1838,7 +1844,7 @@ class SessionalExamTakeSubmitView(AcademyScopedView, APIView):
 
         submission.refresh_from_db()
         return Response(
-            SessionalExamSubmissionSerializer(submission).data,
+            SessionalExamSubmissionSerializer(submission, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -1903,7 +1909,7 @@ class SessionalExamGradeView(AcademyScopedView, APIView):
             .first()
         )
         return Response(
-            SessionalExamSubmissionSerializer(submission).data,
+            SessionalExamSubmissionSerializer(submission, context={"request": request}).data,
             status=status.HTTP_200_OK,
         )
 
@@ -1939,9 +1945,69 @@ class ParentWardSessionalExamsView(AcademyScopedView, APIView):
         )
 
         return Response(
-            SessionalExamSubmissionSerializer(submissions, many=True).data,
+            SessionalExamSubmissionSerializer(submissions, many=True, context={"request": request}).data,
             status=status.HTTP_200_OK,
         )
+
+
+@extend_schema(
+    responses={
+        200: OpenApiResponse(response=OpenApiTypes.BINARY, description="Sessional exam answer audio stream / download"),
+        403: OpenApiResponse(description="Permission denied"),
+        404: OpenApiResponse(description="Exam, submission, or audio not found"),
+    }
+)
+class SessionalExamAnswerAudioStreamView(AcademyScopedView, APIView):
+    """GET /api/assessment/organizations/{org_id}/sessional-exams/{pk}/submissions/{submission_pk}/answers/{answer_pk}/audio/
+    Stream or download audio recording for an exam question answer."""
+
+    authentication_classes = [QueryParamTokenAuthentication, TokenAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+
+    def get(self, request, pk, submission_pk, answer_pk, *args, **kwargs):
+        exam = get_object_or_404(
+            SessionalExam.objects.in_organization(self.organization),
+            pk=pk,
+        )
+        submission = get_object_or_404(
+            exam.submissions.all().select_related("student"),
+            pk=submission_pk,
+        )
+        answer = get_object_or_404(
+            submission.answers.all(),
+            pk=answer_pk,
+        )
+
+        user = request.user
+        membership = self.caller_membership
+        is_manager = (membership and membership.role in [OrganizationRole.OWNER, OrganizationRole.ADMIN]) or user.role == Role.LEAD
+        is_teacher = (membership and membership.role == OrganizationRole.TEACHER) or user.role in [Role.LEAD, Role.SUB]
+        is_student = submission.student_id == user.id
+        is_parent = False
+        if user.role == Role.PARENT:
+            is_parent = ParentLink.objects.filter(parent=user, student=submission.student).exists()
+
+        if not (is_manager or is_teacher or is_student or is_parent):
+            raise PermissionDenied("You do not have permission to access this exam audio recording.")
+
+        if not answer.audio_recording:
+            raise Http404("No audio recording attached to this answer.")
+
+        try:
+            if getattr(answer.audio_recording.storage, "provides_signed_urls", False):
+                from django.http import HttpResponseRedirect
+
+                return HttpResponseRedirect(
+                    answer.audio_recording.storage.signed_url(answer.audio_recording.name, expires_in=300)
+                )
+            file_handle = answer.audio_recording.open("rb")
+            return FileResponse(
+                file_handle,
+                content_type="audio/webm",
+                filename=os.path.basename(answer.audio_recording.name),
+            )
+        except FileNotFoundError:
+            raise Http404("Audio file not found on disk.")
 
 
 

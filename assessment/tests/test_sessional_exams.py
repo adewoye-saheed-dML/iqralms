@@ -1,4 +1,6 @@
+import json
 from decimal import Decimal
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone as dj_timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -161,3 +163,80 @@ class SessionalExamFlowAPITests(APITestCase):
         self.assertEqual(len(res_ward.data), 1)
         self.assertEqual(Decimal(str(res_ward.data[0]["total_score"])), Decimal("43.00"))
         self.assertEqual(len(res_ward.data[0]["answers"]), 2)
+
+    def test_sessional_exam_audio_submission_and_streaming(self):
+        """Verify student can submit audio answers via multipart upload without SuspiciousOperation,
+        and audio can be streamed securely by authorized roles."""
+        exam = SessionalExam.objects.create(
+            organization=self.org,
+            level=self.level,
+            title="Oral Recitation Examination",
+            academic_session="2026/2027",
+            status=SessionalExamStatus.PUBLISHED,
+            total_marks=Decimal("50.00"),
+            passing_marks=Decimal("25.00"),
+            created_by=self.lead,
+        )
+        q1 = SessionalExamQuestion.objects.create(
+            exam=exam,
+            question_number=1,
+            question_text="Recite Surah Al-Mulk",
+            marks_allotted=Decimal("50.00"),
+            question_type=QuestionType.ORAL_RECITATION,
+        )
+
+        # 1. Student submits with audio file
+        self.client.force_authenticate(user=self.student)
+        submit_url = f"/api/assessment/organizations/{self.org.pk}/sessional-exams/{exam.pk}/submit/"
+        audio_content = b"\x1a\x45\xdf\xa3\x01\x00\x00\x00" + b"\x00" * 64
+        audio_file = SimpleUploadedFile("audio_question_1.webm", audio_content, content_type="audio/webm")
+
+        payload = {
+            "answers": json.dumps([
+                {"question_id": q1.pk, "written_response": "Recitation completed."}
+            ]),
+            f"audio_question_{q1.pk}": audio_file,
+        }
+
+        res_sub = self.client.post(submit_url, payload, format="multipart")
+        self.assertEqual(res_sub.status_code, status.HTTP_201_CREATED)
+        sub_data = res_sub.data
+        self.assertIn("answers", sub_data)
+        self.assertEqual(len(sub_data["answers"]), 1)
+
+        ans_data = sub_data["answers"][0]
+        answer_id = ans_data["id"]
+        submission_id = sub_data["id"]
+
+        # Check audio_recording and audio_recording_url are generated without SuspiciousOperation
+        expected_audio_path = (
+            f"/api/assessment/organizations/{self.org.pk}/sessional-exams/{exam.pk}"
+            f"/submissions/{submission_id}/answers/{answer_id}/audio/"
+        )
+        self.assertIsNotNone(ans_data["audio_recording"])
+        self.assertIn(expected_audio_path, ans_data["audio_recording"])
+        self.assertIn(expected_audio_path, ans_data["audio_recording_url"])
+
+        # 2. Student streams the audio
+        audio_url = ans_data["audio_recording"]
+        res_audio = self.client.get(audio_url)
+        self.assertEqual(res_audio.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_audio.headers.get("Content-Type"), "audio/webm")
+        self.assertEqual(b"".join(res_audio.streaming_content), audio_content)
+
+        # 3. Teacher streams the audio
+        self.client.force_authenticate(user=self.teacher)
+        res_teacher_audio = self.client.get(audio_url)
+        self.assertEqual(res_teacher_audio.status_code, status.HTTP_200_OK)
+
+        # 4. Parent streams the audio
+        self.client.force_authenticate(user=self.parent)
+        res_parent_audio = self.client.get(audio_url)
+        self.assertEqual(res_parent_audio.status_code, status.HTTP_200_OK)
+
+        # 5. Outside student cannot stream the audio
+        other_student = StudentFactory()
+        OrganizationMembershipFactory(user=other_student, organization=self.org, role="student")
+        self.client.force_authenticate(user=other_student)
+        res_other = self.client.get(audio_url)
+        self.assertEqual(res_other.status_code, status.HTTP_403_FORBIDDEN)

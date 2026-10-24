@@ -1216,6 +1216,7 @@ class ExamQuestionAnswerSerializer(serializers.ModelSerializer):
     surah_number = serializers.IntegerField(source="question.surah_number", read_only=True)
     ayah_start = serializers.IntegerField(source="question.ayah_start", read_only=True)
     ayah_end = serializers.IntegerField(source="question.ayah_end", read_only=True)
+    audio_recording = serializers.SerializerMethodField()
     audio_recording_url = serializers.SerializerMethodField()
 
     class Meta:
@@ -1237,11 +1238,49 @@ class ExamQuestionAnswerSerializer(serializers.ModelSerializer):
             "teacher_comment",
         ]
 
-    @extend_schema_field(serializers.CharField(allow_null=True))
-    def get_audio_recording_url(self, obj):
-        if obj.audio_recording:
-            return obj.audio_recording.url
+    def _resolve_audio_url(self, obj) -> str | None:
+        if not obj.audio_recording:
+            return None
+        storage = obj.audio_recording.storage
+        if getattr(storage, "provides_signed_urls", False):
+            try:
+                return storage.signed_url(obj.audio_recording.name, expires_in=3600)
+            except Exception:
+                pass
+
+        try:
+            from django.urls import reverse
+
+            submission = getattr(obj, "submission", None)
+            exam = getattr(submission, "exam", None) if submission else None
+            org_id = getattr(exam, "organization_id", None) if exam else None
+
+            if org_id and exam and submission:
+                url = reverse(
+                    "assessment:sessional-exam-answer-audio",
+                    kwargs={
+                        "organization_pk": org_id,
+                        "pk": exam.pk,
+                        "submission_pk": submission.pk,
+                        "answer_pk": obj.pk,
+                    },
+                )
+                request = self.context.get("request")
+                if request is not None:
+                    return request.build_absolute_uri(url)
+                return url
+        except Exception:
+            pass
+
         return None
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_audio_recording(self, obj) -> str | None:
+        return self._resolve_audio_url(obj)
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_audio_recording_url(self, obj) -> str | None:
+        return self._resolve_audio_url(obj)
 
 
 class SessionalExamSubmissionSerializer(serializers.ModelSerializer):
