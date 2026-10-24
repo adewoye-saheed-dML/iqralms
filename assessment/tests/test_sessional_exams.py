@@ -356,3 +356,87 @@ class SessionalExamFlowAPITests(APITestCase):
             format="json",
         )
         self.assertEqual(res_student_take.status_code, status.HTTP_201_CREATED)
+
+    def test_objective_questions_with_options_and_auto_grading(self):
+        """Verify that objective (multiple choice) questions support options, answer keys,
+        prevent answer leakage to students, and auto-grade submissions."""
+        self.client.force_authenticate(user=self.lead)
+        exam_url = f"/api/assessment/organizations/{self.org.pk}/sessional-exams/"
+
+        payload = {
+            "title": "Tajweed Rules Objective Exam",
+            "academic_session": "2026/2027 First Term",
+            "status": SessionalExamStatus.PUBLISHED,
+            "passing_marks": "10.00",
+            "questions": [
+                {
+                    "question_number": 1,
+                    "question_text": "What is the rule of Nun Sakinah in 'Min Ba'di'?",
+                    "marks_allotted": "10.00",
+                    "question_type": QuestionType.OBJECTIVE,
+                    "options": [
+                        {"id": "A", "text": "Izhar"},
+                        {"id": "B", "text": "Iqlab"},
+                        {"id": "C", "text": "Idghaam"},
+                        {"id": "D", "text": "Ikhfa"},
+                    ],
+                    "correct_answer": "B",
+                    "model_answer": "Iqlab occurs when Nun Sakinah is followed by Baa.",
+                },
+                {
+                    "question_number": 2,
+                    "question_text": "How many letters of Idghaam are there in Yarmaloon?",
+                    "marks_allotted": "10.00",
+                    "question_type": QuestionType.OBJECTIVE,
+                    "options": [
+                        {"id": "A", "text": "4 letters"},
+                        {"id": "B", "text": "5 letters"},
+                        {"id": "C", "text": "6 letters"},
+                        {"id": "D", "text": "7 letters"},
+                    ],
+                    "correct_answer": "C",
+                    "model_answer": "There are 6 letters: Ya, Ra, Meem, Lam, Waw, Noon.",
+                },
+            ],
+        }
+        res_create = self.client.post(exam_url, payload, format="json")
+        self.assertEqual(res_create.status_code, status.HTTP_201_CREATED)
+        exam_id = res_create.data["id"]
+        q1_id = res_create.data["questions"][0]["id"]
+        q2_id = res_create.data["questions"][1]["id"]
+
+        # Owner retrieves exam: sees correct_answer and model_answer
+        detail_url = f"/api/assessment/organizations/{self.org.pk}/sessional-exams/{exam_id}/"
+        res_owner_detail = self.client.get(detail_url)
+        self.assertEqual(res_owner_detail.status_code, status.HTTP_200_OK)
+        q1_owner = res_owner_detail.data["questions"][0]
+        self.assertEqual(q1_owner["correct_answer"], "B")
+        self.assertEqual(len(q1_owner["options"]), 4)
+        self.assertIn("Iqlab", str(q1_owner["options"]))
+
+        # Student retrieves exam: answers must NOT be leaked
+        self.client.force_authenticate(user=self.student)
+        res_student_detail = self.client.get(detail_url)
+        self.assertEqual(res_student_detail.status_code, status.HTTP_200_OK)
+        q1_student = res_student_detail.data["questions"][0]
+        self.assertNotIn("correct_answer", q1_student)
+        self.assertNotIn("model_answer", q1_student)
+        self.assertEqual(len(q1_student["options"]), 4)
+
+        # Student submits answers: Q1 correct ("B"), Q2 incorrect ("A")
+        submit_url = f"/api/assessment/organizations/{self.org.pk}/sessional-exams/{exam_id}/submit/"
+        answers_payload = {
+            "answers": [
+                {"question_id": q1_id, "selected_option": "B"},
+                {"question_id": q2_id, "selected_option": "A"},
+            ]
+        }
+        res_submit = self.client.post(submit_url, answers_payload, format="json")
+        self.assertEqual(res_submit.status_code, status.HTTP_201_CREATED)
+        # Because all questions are objective, submission should be auto-graded
+        sub_data = res_submit.data
+        self.assertEqual(sub_data["status"], SubmissionStatus.GRADED)
+        self.assertEqual(float(sub_data["total_score"]), 10.0)
+        self.assertEqual(float(sub_data["percentage"]), 50.0)
+        self.assertTrue(sub_data["passed"])  # passing_marks is 10.00
+

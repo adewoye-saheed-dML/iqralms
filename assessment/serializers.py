@@ -1069,10 +1069,34 @@ class SessionalExamQuestionSerializer(serializers.ModelSerializer):
             "surah_number",
             "ayah_start",
             "ayah_end",
+            "options",
+            "correct_answer",
             "model_answer",
             "created_at",
         ]
         read_only_fields = ["id", "exam_id", "created_at"]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request and request.user:
+            user = request.user
+            is_staff = user.is_staff or user.is_superuser or getattr(user, "role", None) in [Role.LEAD, Role.SUB]
+            if not is_staff:
+                org = getattr(instance.exam, "organization", None)
+                if org:
+                    from organizations.models import OrganizationRole, active_membership
+                    membership = active_membership(user=user, organization=org)
+                    if membership and membership.role in [
+                        OrganizationRole.OWNER,
+                        OrganizationRole.ADMIN,
+                        OrganizationRole.TEACHER,
+                    ]:
+                        is_staff = True
+            if not is_staff:
+                data.pop("correct_answer", None)
+                data.pop("model_answer", None)
+        return data
 
 
 class SessionalExamQuestionNestedCreateSerializer(serializers.ModelSerializer):
@@ -1088,6 +1112,8 @@ class SessionalExamQuestionNestedCreateSerializer(serializers.ModelSerializer):
             "surah_number",
             "ayah_start",
             "ayah_end",
+            "options",
+            "correct_answer",
             "model_answer",
         ]
 
@@ -1266,6 +1292,8 @@ class ExamQuestionAnswerSerializer(serializers.ModelSerializer):
     surah_number = serializers.IntegerField(source="question.surah_number", read_only=True)
     ayah_start = serializers.IntegerField(source="question.ayah_start", read_only=True)
     ayah_end = serializers.IntegerField(source="question.ayah_end", read_only=True)
+    options = serializers.JSONField(source="question.options", read_only=True)
+    correct_answer = serializers.CharField(source="question.correct_answer", read_only=True)
     audio_recording = serializers.SerializerMethodField()
     audio_recording_url = serializers.SerializerMethodField()
 
@@ -1281,6 +1309,9 @@ class ExamQuestionAnswerSerializer(serializers.ModelSerializer):
             "surah_number",
             "ayah_start",
             "ayah_end",
+            "options",
+            "selected_option",
+            "correct_answer",
             "written_response",
             "audio_recording",
             "audio_recording_url",
@@ -1374,6 +1405,7 @@ class SessionalExamSubmissionSerializer(serializers.ModelSerializer):
 class SingleQuestionAnswerSubmitSerializer(serializers.Serializer):
     question_id = serializers.IntegerField()
     written_response = serializers.CharField(required=False, allow_blank=True, default="")
+    selected_option = serializers.CharField(required=False, allow_blank=True, default="")
     audio_recording = serializers.FileField(required=False, allow_null=True, default=None)
 
 

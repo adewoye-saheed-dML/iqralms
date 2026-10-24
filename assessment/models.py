@@ -1539,6 +1539,7 @@ class SessionalExamStatus(models.TextChoices):
 
 class QuestionType(models.TextChoices):
     ORAL_RECITATION = "oral_recitation", "Oral Recitation"
+    OBJECTIVE = "objective", "Multiple Choice / Objective"
     WRITTEN = "written", "Written Answer"
     TAJWEED_RULES = "tajweed_rules", "Tajweed Rules / Theory"
     MEMORIZATION = "memorization", "Hifz / Memorization"
@@ -1721,6 +1722,16 @@ class SessionalExamQuestion(models.Model):
         blank=True,
         help_text="Optional grading guide, sample recitation standard, or model answer",
     )
+    options = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of choices for objective questions, e.g. [{'id': 'A', 'text': 'Idghaam'}, {'id': 'B', 'text': 'Ikhfa'}]",
+    )
+    correct_answer = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Correct option key or answer text for objective questions",
+    )
     created_at = models.DateTimeField(default=dj_timezone.now)
 
     class Meta:
@@ -1837,6 +1848,11 @@ class ExamQuestionAnswer(models.Model):
         SessionalExamQuestion,
         on_delete=models.CASCADE,
         related_name="answers",
+    )
+    selected_option = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Selected option key or text for objective questions",
     )
     written_response = models.TextField(blank=True)
     audio_recording = models.FileField(

@@ -14,6 +14,7 @@ nothing else — CLAUDE.md's Phase 7 boundary, and the tests assert it.
 """
 
 import os
+from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Q
@@ -1913,6 +1914,7 @@ class SessionalExamTakeSubmitView(AcademyScopedView, APIView):
                 submission.submitted_at = dj_timezone.now()
                 submission.save()
 
+            has_manual_questions = False
             for ans_item in answers_data:
                 question = get_object_or_404(exam.questions.all(), pk=ans_item["question_id"])
                 audio_file = ans_item.get("audio_recording")
@@ -1921,14 +1923,38 @@ class SessionalExamTakeSubmitView(AcademyScopedView, APIView):
                         request.FILES.get(f"audio_question_{question.pk}")
                         or request.FILES.get(f"audio_{question.pk}")
                     )
+                selected_option = (ans_item.get("selected_option") or "").strip()
+                written_resp = ans_item.get("written_response", "")
+
+                defaults = {
+                    "written_response": written_resp,
+                    "selected_option": selected_option,
+                    "audio_recording": audio_file,
+                }
+
+                # Auto-grade objective questions if answer key exists
+                if question.question_type == QuestionType.OBJECTIVE:
+                    correct = (question.correct_answer or "").strip()
+                    if correct:
+                        if selected_option and selected_option.lower() == correct.lower():
+                            defaults["marks_awarded"] = question.marks_allotted
+                            defaults["teacher_comment"] = "Auto-graded: Correct"
+                        else:
+                            defaults["marks_awarded"] = Decimal("0.00")
+                            defaults["teacher_comment"] = f"Auto-graded: Incorrect (Selected {selected_option or 'None'})"
+                else:
+                    has_manual_questions = True
+
                 ExamQuestionAnswer.objects.update_or_create(
                     submission=submission,
                     question=question,
-                    defaults={
-                        "written_response": ans_item.get("written_response", ""),
-                        "audio_recording": audio_file,
-                    },
+                    defaults=defaults,
                 )
+
+            # If all exam questions are objective, automatically calculate final score and grade submission
+            all_questions = exam.questions.all()
+            if all_questions.exists() and all(q.question_type == QuestionType.OBJECTIVE for q in all_questions):
+                submission.calculate_results()
 
         submission.refresh_from_db()
         return Response(
